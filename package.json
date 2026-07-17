@@ -1,7 +1,7 @@
 {
   "name": "photo-pair-cleaner",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.6.1",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "scripts": {

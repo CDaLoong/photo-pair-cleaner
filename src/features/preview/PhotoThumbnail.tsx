@@ -1,11 +1,17 @@
-import { invoke } from "@tauri-apps/api/core";
 import { FileImage, ImageOff, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import {
+  loadPhotoPreviewUrl,
+  peekPhotoPreviewUrl,
+  previewRequestKey,
+  type PreviewRequest,
+} from "./previewCache";
 
 interface PhotoThumbnailProps {
   root: string;
   relativePath: string | null;
   maxEdge: number;
+  version: string;
   alt: string;
   eager?: boolean;
 }
@@ -16,13 +22,30 @@ export function PhotoThumbnail({
   root,
   relativePath,
   maxEdge,
+  version,
   alt,
   eager = false,
 }: PhotoThumbnailProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(eager);
-  const [source, setSource] = useState<string | null>(null);
-  const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [loaded, setLoaded] = useState<{ key: string; url: string } | null>(null);
+  const [status, setStatus] = useState<{ key: string; state: LoadState } | null>(null);
+  const request: PreviewRequest | null = relativePath ? {
+    root,
+    relativePath,
+    maxEdge,
+    version,
+  } : null;
+  const requestKey = request ? previewRequestKey(request) : "";
+  const cachedSource = request ? peekPhotoPreviewUrl(request) : null;
+  const source = cachedSource ?? (loaded?.key === requestKey ? loaded.url : null);
+  const loadState: LoadState = source
+    ? "ready"
+    : status?.key === requestKey
+      ? status.state
+      : relativePath
+        ? "loading"
+        : "idle";
 
   useEffect(() => {
     if (eager) {
@@ -49,37 +72,34 @@ export function PhotoThumbnail({
 
   useEffect(() => {
     if (!relativePath) {
-      setSource(null);
-      setLoadState("idle");
+      setLoaded(null);
+      setStatus(null);
       return;
     }
     if (!visible) return;
     let disposed = false;
-    let objectUrl: string | null = null;
-    setLoadState("loading");
-    setSource(null);
+    const nextRequest: PreviewRequest = { root, relativePath, maxEdge, version };
+    const nextKey = previewRequestKey(nextRequest);
+    const cached = peekPhotoPreviewUrl(nextRequest);
+    if (cached) {
+      setLoaded({ key: nextKey, url: cached });
+      setStatus({ key: nextKey, state: "ready" });
+      return;
+    }
+    setStatus({ key: nextKey, state: "loading" });
 
-    void invoke<ArrayBuffer | number[]>("load_photo_thumbnail", {
-      root,
-      relativePath,
-      maxEdge,
-    }).then((response) => {
+    void loadPhotoPreviewUrl(nextRequest).then((url) => {
       if (disposed) return;
-      const bytes = response instanceof ArrayBuffer
-        ? new Uint8Array(response)
-        : Uint8Array.from(response);
-      objectUrl = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: "image/jpeg" }));
-      setSource(objectUrl);
-      setLoadState("ready");
+      setLoaded({ key: nextKey, url });
+      setStatus({ key: nextKey, state: "ready" });
     }).catch(() => {
-      if (!disposed) setLoadState("error");
+      if (!disposed) setStatus({ key: nextKey, state: "error" });
     });
 
     return () => {
       disposed = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [maxEdge, relativePath, root, visible]);
+  }, [maxEdge, relativePath, root, version, visible]);
 
   return (
     <div ref={containerRef} className={`photo-thumbnail is-${loadState}`}>

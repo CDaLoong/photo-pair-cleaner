@@ -26,6 +26,15 @@ import type { CSSProperties } from "react";
 import { errorMessage, formatBytes, formatDate } from "../../utils";
 import { PhotoThumbnail } from "./PhotoThumbnail";
 import {
+  clearPhotoPreviewCache,
+  loadPhotoPreviewUrl,
+  photoPreviewRequest,
+  photoPreviewVersion,
+  preloadPreviewRequests,
+  type PreloadProgress,
+  type PreviewRequest,
+} from "./previewCache";
+import {
   adjacentPreviewAssetId,
   filterPreviewAssets,
   sortPreviewAssets,
@@ -39,6 +48,9 @@ import type {
 } from "./types";
 
 const PREVIEW_ROOT_STORAGE_KEY = "framepair.preview.root.v1";
+const LOUPE_PREVIEW_EDGE = 1800;
+const PRELOAD_CONCURRENCY = 3;
+const EMPTY_PRELOAD_PROGRESS: PreloadProgress = { total: 0, completed: 0, failed: 0 };
 
 interface PreviewModuleProps {
   active: boolean;
@@ -69,8 +81,10 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tileSize, setTileSize] = useState(180);
   const [dropActive, setDropActive] = useState(false);
+  const [preloadProgress, setPreloadProgress] = useState<PreloadProgress>(EMPTY_PRELOAD_PROGRESS);
   const attemptedStoredRoot = useRef(false);
   const busyRef = useRef(busy);
+  const indexedRootRef = useRef<string | null>(null);
   const loadDirectoryRef = useRef<(path: string) => Promise<void>>(async () => undefined);
   const deferredSearch = useDeferredValue(search);
 
@@ -93,6 +107,8 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     setError(null);
     try {
       const result = await invoke<PhotoIndex>("index_photo_directory", { root: path });
+      if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
+      indexedRootRef.current = result.root;
       setIndex(result);
       setRoot(result.root);
       setSelectedId(result.assets[0]?.id ?? null);
@@ -106,7 +122,10 @@ export function PreviewModule({ active }: PreviewModuleProps) {
       }
     } catch (loadError) {
       setError(errorMessage(loadError));
+      if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
+      indexedRootRef.current = null;
       setIndex(null);
+      setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -178,6 +197,29 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [active, effectiveSelectedId, view, visibleAssets]);
+
+  useEffect(() => {
+    if (!index) {
+      setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
+      return;
+    }
+    const controller = new AbortController();
+    const requests = index.assets
+      .map((asset) => photoPreviewRequest(
+        index.root,
+        asset,
+        LOUPE_PREVIEW_EDGE,
+        index.indexedAtMs,
+      ))
+      .filter((request): request is PreviewRequest => request !== null);
+
+    void preloadPreviewRequests(requests, loadPhotoPreviewUrl, {
+      concurrency: PRELOAD_CONCURRENCY,
+      signal: controller.signal,
+      onProgress: setPreloadProgress,
+    });
+    return () => controller.abort();
+  }, [index]);
 
   async function chooseDirectory() {
     try {
@@ -287,7 +329,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                     aria-pressed={asset.id === effectiveSelectedId}
                     title={`${asset.relativeStem} · ${asset.extensions.join(" + ")}`}
                   >
-                    <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={480} alt="" />
+                    <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={480} version={photoPreviewVersion(asset, index.indexedAtMs)} alt="" />
                     <span className="photo-tile-meta">
                       <strong>{asset.name}</strong>
                       <small>{asset.extensions.join(" + ")}</small>
@@ -310,7 +352,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                 <button className="secondary-command" type="button" onClick={() => void revealAsset(selectedAsset)}><FolderOpen aria-hidden="true" size={16} />在文件管理器中显示</button>
               </div>
               <div className="loupe-stage">
-                <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={1800} alt={selectedAsset.name} eager />
+                <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={LOUPE_PREVIEW_EDGE} version={photoPreviewVersion(selectedAsset, index.indexedAtMs)} alt={selectedAsset.name} eager />
               </div>
               <div className="loupe-metadata">
                 <span><strong>{selectedAsset.extensions.join(" + ")}</strong><small>文件组合</small></span>
@@ -321,7 +363,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
               <div className="loupe-filmstrip" aria-label="照片胶片栏">
                 {visibleAssets.map((asset) => (
                   <button key={asset.id} type="button" className={asset.id === effectiveSelectedId ? "is-selected" : ""} onClick={() => setSelectedId(asset.id)} aria-label={asset.name} aria-pressed={asset.id === effectiveSelectedId} title={asset.name}>
-                    <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={160} alt="" />
+                    <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={160} version={photoPreviewVersion(asset, index.indexedAtMs)} alt="" />
                   </button>
                 ))}
               </div>
@@ -332,6 +374,15 @@ export function PreviewModule({ active }: PreviewModuleProps) {
             <span>{visibleAssets.length} / {index.totalAssets} 张照片</span>
             <span>{index.pairedAssets} 组 JPG + RAW</span>
             {index.rawOnlyAssets > 0 ? <span>{index.rawOnlyAssets} 张仅 RAW</span> : null}
+            {preloadProgress.total > 0 ? (
+              <span className={preloadProgress.completed < preloadProgress.total ? "preload-status is-loading" : "preload-status"} aria-live="polite">
+                {preloadProgress.completed < preloadProgress.total
+                  ? `预加载 ${preloadProgress.completed} / ${preloadProgress.total}`
+                  : preloadProgress.failed > 0
+                    ? `${preloadProgress.total - preloadProgress.failed} 张预览就绪 · ${preloadProgress.failed} 张失败`
+                    : `${preloadProgress.total} 张预览已就绪`}
+              </span>
+            ) : null}
             <span>索引于 {formatDate(index.indexedAtMs)}</span>
           </footer>
         </>

@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  PreviewUrlCache,
+  preloadPreviewRequests,
+} from "../src/features/preview/previewCache.ts";
 import * as previewUtils from "../src/features/preview/previewUtils.ts";
 import * as utils from "../src/utils.ts";
 
@@ -201,4 +205,74 @@ test("preview sorting and keyboard selection are stable", () => {
   assert.equal(previewUtils.adjacentPreviewAssetId(sorted, "day/a", 1), "day/b");
   assert.equal(previewUtils.adjacentPreviewAssetId(sorted, "other/c", 1), "other/c");
   assert.equal(previewUtils.adjacentPreviewAssetId(sorted, "day/b", -1), "day/a");
+});
+
+const previewRequest = {
+  root: "/photos",
+  relativePath: "day/A.JPG",
+  maxEdge: 1800,
+  version: "10:10",
+};
+
+test("preview URL cache deduplicates concurrent and repeated loads", async () => {
+  const cache = new PreviewUrlCache();
+  let calls = 0;
+  let resolveLoad;
+  const loader = () => {
+    calls += 1;
+    return new Promise((resolve) => {
+      resolveLoad = resolve;
+    });
+  };
+
+  const first = cache.getOrLoad(previewRequest, loader);
+  const second = cache.getOrLoad(previewRequest, loader);
+  assert.equal(calls, 1);
+  resolveLoad("blob:photo-a");
+
+  assert.equal(await first, "blob:photo-a");
+  assert.equal(await second, "blob:photo-a");
+  assert.equal(await cache.getOrLoad(previewRequest, loader), "blob:photo-a");
+  assert.equal(cache.peek(previewRequest), "blob:photo-a");
+  assert.equal(calls, 1);
+});
+
+test("clearing a preview root releases URLs and permits a fresh load", async () => {
+  const released = [];
+  const cache = new PreviewUrlCache((url) => released.push(url));
+  let calls = 0;
+  const loader = async () => `blob:photo-${++calls}`;
+
+  assert.equal(await cache.getOrLoad(previewRequest, loader), "blob:photo-1");
+  cache.clearRoot("/photos");
+  assert.deepEqual(released, ["blob:photo-1"]);
+  assert.equal(cache.peek(previewRequest), null);
+  assert.equal(await cache.getOrLoad(previewRequest, loader), "blob:photo-2");
+  assert.equal(calls, 2);
+});
+
+test("preview preloader covers every request with bounded concurrency", async () => {
+  const requests = Array.from({ length: 9 }, (_, index) => index);
+  const progress = [];
+  let active = 0;
+  let maxActive = 0;
+
+  const result = await preloadPreviewRequests(
+    requests,
+    async (request) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      if (request === 4) throw new Error("broken photo");
+    },
+    {
+      concurrency: 3,
+      onProgress: (value) => progress.push({ ...value }),
+    },
+  );
+
+  assert.deepEqual(result, { total: 9, completed: 9, failed: 1 });
+  assert.equal(maxActive, 3);
+  assert.deepEqual(progress.at(-1), result);
 });
