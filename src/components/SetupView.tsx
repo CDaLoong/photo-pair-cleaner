@@ -75,6 +75,7 @@ function DirectoryPicker({
   return (
     <button
       ref={buttonRef}
+      data-tour={isReference ? "reference-picker" : "raw-picker"}
       className={isDropTarget ? "directory-picker is-drop-target" : "directory-picker"}
       type="button"
       onClick={() => onChoose(kind)}
@@ -246,7 +247,7 @@ export function SetupView({
           </div>
         </div>
         <div className="settings-controls">
-          <div className="reference-source-control" role="group" aria-label="保留依据">
+          <div className="reference-source-control" role="group" aria-label="保留依据" data-tour="reference-source">
             {([
               ["directory", "JPG 目录", "以保留下来的 JPG 为准"],
               ["manifest", "文件清单", "读取 UTF-8 相对路径列表"],
@@ -257,7 +258,7 @@ export function SetupView({
               </button>
             ))}
           </div>
-          <div className="scan-mode-control" role="group" aria-label="扫描方向">
+          <div className="scan-mode-control" role="group" aria-label="扫描方向" data-tour="scan-mode">
             <button type="button" aria-pressed={scanMode === "cleanupRaw"} onClick={() => onScanModeChange("cleanupRaw")} disabled={busy}>
               <strong>清理无 JPG 的 RAW</strong><small>生成可执行清理计划</small>
             </button>
@@ -293,7 +294,7 @@ export function SetupView({
         </div>
       </section>
 
-      <div className="setup-command-row">
+      <div className="setup-command-row" data-tour="scan-command">
         <p>{ready ? (scanMode === "cleanupRaw" ? "参考源与 RAW 目录已就绪，可以生成清理预览。" : "目录已就绪，可以生成只读审计结果。") : "请先选择保留依据和 RAW 源目录。"}</p>
         <button
           className="primary-command primary-command-large"

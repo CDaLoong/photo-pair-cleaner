@@ -4,6 +4,7 @@ FramePair 是一个 Windows 与 macOS 桌面工具。它以人工筛选结果为
 
 ## 当前功能
 
+- 首次打开提供 5 步蒙版引导，并可从应用右上角随时重新查看。
 - 支持点击或拖拽选择 JPG 参考目录、XMP 评分目录和 RAW 源目录。
 - 保留依据可以是 JPG 目录、UTF-8 相对路径清单，或 Lightroom/Bridge 已写入磁盘的 XMP Rating。
 - 支持 `.nef/.nrw/.cr2/.cr3/.arw/.sr2/.srf/.raf/.dng/.rw2/.orf/.pef`，格式白名单由 Rust 后端固定控制。

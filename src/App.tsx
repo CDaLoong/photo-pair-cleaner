@@ -5,11 +5,13 @@ import {
   Aperture,
   Check,
   CheckCircle2,
+  CircleHelp,
   LoaderCircle,
   X,
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { GuideDialog } from "./components/GuideDialog";
 import { ResultsWorkspace } from "./components/ResultsWorkspace";
 import { SetupView } from "./components/SetupView";
 import type {
@@ -38,6 +40,7 @@ import {
 } from "./utils";
 
 const STORAGE_KEY = "framepair.settings.v2";
+const GUIDE_STORAGE_KEY = "framepair.guide.completed.v1";
 
 interface StoredSettings {
   referenceRoot: string;
@@ -89,6 +92,14 @@ function loadSettings(): StoredSettings {
   };
 }
 
+function shouldOpenGuide() {
+  try {
+    return localStorage.getItem(GUIDE_STORAGE_KEY) !== "true";
+  } catch {
+    return true;
+  }
+}
+
 function App() {
   const initial = useMemo(loadSettings, []);
   const [referenceRoot, setReferenceRoot] = useState(initial.referenceRoot);
@@ -112,6 +123,7 @@ function App() {
   const [cleanupDestination, setCleanupDestination] = useState<CleanupDestination>("trash");
   const [quarantineOperations, setQuarantineOperations] = useState<QuarantineOperation[]>([]);
   const [confirmAcknowledged, setConfirmAcknowledged] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(shouldOpenGuide);
   const confirmDialog = useRef<HTMLDialogElement>(null);
 
   const busy = phase !== "idle";
@@ -439,6 +451,15 @@ function App() {
     setConfirmAcknowledged(false);
   }
 
+  function dismissGuide() {
+    try {
+      localStorage.setItem(GUIDE_STORAGE_KEY, "true");
+    } catch {
+      // The guide remains available from the header when storage is unavailable.
+    }
+    setGuideOpen(false);
+  }
+
   async function executeCleanup() {
     if (!confirmAcknowledged) return;
     confirmDialog.current?.close();
@@ -581,7 +602,7 @@ function App() {
           <Aperture aria-hidden="true" size={23} strokeWidth={2.25} />
           <div><strong>FramePair</strong><span>影像配对清理</span></div>
         </div>
-        <ol className="workflow-progress" aria-label="清理流程">
+        <ol className="workflow-progress" aria-label="清理流程" data-tour="workflow-progress">
           {["选择目录", "复核结果", "安全执行"].map((label, index) => {
             const step = index + 1;
             return (
@@ -591,11 +612,16 @@ function App() {
             );
           })}
         </ol>
-        <div className="header-state" aria-live="polite">
-          {phase === "scanning" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在只读扫描</>}
-          {phase === "executing" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在安全移动文件</>}
-          {phase === "idle" && scan && <>扫描于 {formatDate(scan.scannedAtMs)}</>}
-          {phase === "idle" && !scan && <>本地处理，不上传照片</>}
+        <div className="header-utilities">
+          <button className="guide-trigger" type="button" onClick={() => setGuideOpen(true)} disabled={busy}>
+            <CircleHelp aria-hidden="true" size={16} />使用引导
+          </button>
+          <div className="header-state" aria-live="polite">
+            {phase === "scanning" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在只读扫描</>}
+            {phase === "executing" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在安全移动文件</>}
+            {phase === "idle" && scan && <>扫描于 {formatDate(scan.scannedAtMs)}</>}
+            {phase === "idle" && !scan && <>本地处理，不上传照片</>}
+          </div>
         </div>
       </header>
 
@@ -609,7 +635,7 @@ function App() {
         </div>
       )}
 
-      {scan ? (
+      {scan && !guideOpen ? (
         <ResultsWorkspace
           scan={scan}
           referenceRoot={activeReferencePath}
@@ -695,6 +721,8 @@ function App() {
         onCancel={closeConfirmDialog}
         onConfirm={() => void executeCleanup()}
       />
+
+      <GuideDialog open={guideOpen} onDismiss={dismissGuide} />
     </div>
   );
 }
