@@ -2,6 +2,11 @@ name: Build desktop installers
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Attach installers to an existing release tag (optional)"
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -54,7 +59,39 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and attach installers
+      - name: Detect complete Apple signing configuration
+        id: apple_signing
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ACCOUNT: ${{ secrets.APPLE_ID }}
+          APPLE_ACCOUNT_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -n "$CERTIFICATE" && -n "$CERTIFICATE_PASSWORD" && -n "$SIGNING_IDENTITY" && -n "$APPLE_ACCOUNT" && -n "$APPLE_ACCOUNT_PASSWORD" && -n "$APPLE_TEAM" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and attach unsigned installers
+        if: runner.os != 'macOS' || steps.apple_signing.outputs.enabled != 'true'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name || 'framepair-v__VERSION__' }}
+          releaseName: "FramePair __VERSION__"
+          releaseBody: "Windows x64、macOS Apple Silicon 与 macOS Intel 安装包。"
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Build and attach signed installers
+        if: runner.os == 'macOS' && steps.apple_signing.outputs.enabled == 'true'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -65,7 +102,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'framepair-v__VERSION__' }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name || 'framepair-v__VERSION__' }}
           releaseName: "FramePair __VERSION__"
           releaseBody: "Windows x64、macOS Apple Silicon 与 macOS Intel 安装包。"
           releaseDraft: true

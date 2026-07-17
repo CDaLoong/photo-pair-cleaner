@@ -88,7 +88,7 @@ macOS 安装包必须在 macOS 上构建。Windows 不能可靠地交叉生成 `
 
 - Windows：受信任的代码签名证书。
 - macOS：Apple Developer ID Application 证书、公证和 stapling。
-- GitHub Actions：按工作流中的变量名配置 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets。
+- GitHub Actions：完整配置 `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID` secrets 后，发布工作流会启用 macOS 签名与公证；未完整配置时会明确走未签名构建，不会尝试导入空证书。
 
 Apple Silicon 与 Intel 可以继续分别发布，也可以在 macOS 构建机上使用 `lipo` 合并应用二进制后再生成 Universal DMG。分别发布更简单，也能保持安装包较小。
 
