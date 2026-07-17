@@ -10,6 +10,9 @@ FramePair 是一个 Windows 与 macOS 本地摄影工作台。它可以把同一
 - 提供不裁切的单张预览、胶片栏、上一张/下一张键盘切换和文件管理器定位。
 - JPG/JPEG 缩略图由 Rust 在后台按 EXIF 方向生成并缓存；目录索引完成后以受控并发预加载并解码全部单张预览，切换照片时复用共享内存 URL，不把原始大图直接传入 WebView。
 - RAW-only 照片会进入索引并显示明确占位；当前版本尚未解析 RAW 内嵌预览。
+- 可以在单张预览中设置 0-5 星评分，数字键 `0-5` 可快速评分；网格和胶片栏显示评分徽标，并可按最低星级筛选。
+- FramePair 评分保存在应用数据目录，不写入原始照片或现有 XMP；评分按规范化照片根目录隔离，应用重启后仍保留。
+- 自动发现标准安装位置中的 Adobe Photoshop 和 Lightroom Classic，也可交给系统默认应用；JPG+RAW 配对照片优先把 RAW 交给外部编辑器。
 - 首次进入配对清理提供 5 步蒙版引导，并可从模块右上角随时重新查看。
 - 支持点击或拖拽选择 JPG 参考目录、XMP 评分目录和 RAW 源目录。
 - 保留依据可以是 JPG 目录、UTF-8 相对路径清单，或 Lightroom/Bridge 已写入磁盘的 XMP Rating。
@@ -39,6 +42,8 @@ FramePair 是一个 Windows 与 macOS 本地摄影工作台。它可以把同一
 ### XMP 星级
 
 FramePair 读取 XMP 中的标准 `Rating`，最低保留星级可设为 1-5。使用 Lightroom Classic 或 Bridge 时，需要先将元数据写入磁盘上的 XMP；FramePair 不读取或修改 `.lrcat`。XMP 评分目录可以与 RAW 根目录相同。
+
+照片浏览模块内设置的 FramePair 评分与这里的“XMP 星级参考源”相互独立。前者用于本机浏览筛选且不修改照片，后者用于读取 Lightroom/Bridge 已经写入磁盘的评分。
 
 ## 开发环境
 
@@ -124,6 +129,8 @@ src/styles.css               共享设计变量与模块响应式样式
 src-tauri/src/lib.rs         扫描编排、Tauri 命令与操作计划
 src-tauri/src/formats.rs     可信格式白名单和 XMP 配对键
 src-tauri/src/preview.rs     逻辑照片索引、路径校验与 JPEG 缩略图缓存
+src-tauri/src/ratings.rs     应用本地评分数据库、路径校验与原子写入
+src-tauri/src/editors.rs     Photoshop/Lightroom 发现与受限照片交接
 src-tauri/src/reference.rs   目录、清单与 XMP 星级参考源
 src-tauri/src/quarantine.rs  隔离、历史清单与冲突安全恢复
 src-tauri/src/safety.rs      扫描计划和文件快照授权
@@ -132,7 +139,7 @@ src-tauri/icons/             Windows/macOS 安装图标
 .github/workflows/release.yml 跨平台构建矩阵
 ```
 
-当前照片浏览阶段不包含评分写入、RAW 解码、AI 筛片、外部编辑器跳转或 Lightroom 目录数据库解析。
+当前照片浏览阶段不包含 RAW 解码、AI 筛片、评分写回 XMP 或 Lightroom 目录数据库解析。Lightroom Classic 外部交接会启动应用并传入照片，但不会定位或修改既有 `.lrcat` 目录记录。
 
 ## 许可
 

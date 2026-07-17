@@ -12,6 +12,7 @@ export interface PhotoAsset {
   extensions: string[];
   sizeBytes: number;
   modifiedMs: number | null;
+  rating: number;
 }
 
 export interface PhotoIndex {
@@ -22,4 +23,15 @@ export interface PhotoIndex {
   previewableAssets: number;
   rawOnlyAssets: number;
   assets: PhotoAsset[];
+}
+
+export interface RatingUpdate {
+  assetId: string;
+  rating: number;
+}
+
+export interface ExternalEditor {
+  id: string;
+  label: string;
+  kind: "system" | "photoshop" | "lightroomClassic";
 }

@@ -25,6 +25,7 @@ pub(crate) struct PhotoAsset {
     pub(crate) extensions: Vec<String>,
     pub(crate) size_bytes: u64,
     pub(crate) modified_ms: Option<u64>,
+    pub(crate) rating: u8,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +103,7 @@ fn finalize_asset(key: String, mut builder: PhotoAssetBuilder) -> PhotoAsset {
         extensions,
         size_bytes: builder.size_bytes,
         modified_ms: builder.modified_ms,
+        rating: 0,
     }
 }
 

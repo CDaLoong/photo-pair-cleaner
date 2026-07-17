@@ -1,6 +1,8 @@
+mod editors;
 mod formats;
 mod preview;
 mod quarantine;
+mod ratings;
 mod reference;
 mod safety;
 
@@ -12,8 +14,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use walkdir::WalkDir;
@@ -147,6 +149,11 @@ struct OperationLogRecord<'a> {
 #[derive(Default)]
 struct ScanPlanStore {
     current: Mutex<Option<CurrentPlan>>,
+}
+
+#[derive(Default)]
+struct RatingStore {
+    access: Arc<Mutex<()>>,
 }
 
 struct CurrentPlan {
@@ -439,6 +446,20 @@ fn resolve_scan_item_path(raw_root: &str, relative_path: &str) -> Result<PathBuf
         .map_err(|error| format!("文件已不存在或不可访问：{error}"))?;
     if !path.starts_with(&root) {
         return Err("文件解析后超出了 RAW 源目录".to_string());
+    }
+    Ok(path)
+}
+
+fn resolve_photo_asset_path(root: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let root = canonical_directory(root, "照片目录")?;
+    let relative = safe_relative_path(relative_path)?;
+    if !formats::is_reference(&relative) && !formats::is_raw(&relative) {
+        return Err("只能使用受支持的 JPG/RAW 照片".to_string());
+    }
+    let path = fs::canonicalize(root.join(relative))
+        .map_err(|error| format!("照片已不存在或不可访问：{error}"))?;
+    if !path.starts_with(&root) || !path.is_file() {
+        return Err("照片解析后超出了所选目录".to_string());
     }
     Ok(path)
 }
@@ -869,10 +890,79 @@ async fn reveal_scan_item(root: String, relative_path: String) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn index_photo_directory(root: String) -> Result<preview::PhotoIndex, String> {
-    tauri::async_runtime::spawn_blocking(move || preview::index_directory(Path::new(&root)))
+async fn index_photo_directory(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RatingStore>,
+    root: String,
+) -> Result<preview::PhotoIndex, String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分数据目录：{error}"))?
+        .join("photo-ratings.json");
+    let access = Arc::clone(&state.access);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access
+            .lock()
+            .map_err(|_| "无法锁定评分数据库".to_string())?;
+        let mut index = preview::index_directory(Path::new(&root))?;
+        let ratings = ratings::load_ratings(&database_path, Path::new(&root))?;
+        for asset in &mut index.assets {
+            asset.rating = ratings.get(&asset.id).copied().unwrap_or_default();
+        }
+        Ok(index)
+    })
+    .await
+    .map_err(|error| format!("照片索引任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn set_photo_rating(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RatingStore>,
+    root: String,
+    relative_path: String,
+    rating: u8,
+) -> Result<ratings::RatingUpdate, String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分数据目录：{error}"))?
+        .join("photo-ratings.json");
+    let access = Arc::clone(&state.access);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access
+            .lock()
+            .map_err(|_| "无法锁定评分数据库".to_string())?;
+        ratings::set_rating(&database_path, Path::new(&root), &relative_path, rating)
+    })
+    .await
+    .map_err(|error| format!("保存照片评分任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn list_external_editors() -> Result<Vec<editors::ExternalEditor>, String> {
+    tauri::async_runtime::spawn_blocking(editors::discover_installed)
         .await
-        .map_err(|error| format!("照片索引任务异常结束：{error}"))?
+        .map_err(|error| format!("发现外部编辑器任务异常结束：{error}"))
+}
+
+#[tauri::command]
+async fn open_photo_in_editor(
+    root: String,
+    relative_path: String,
+    editor_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let photo = resolve_photo_asset_path(&root, &relative_path)?;
+        let editor = editors::discover_installed()
+            .into_iter()
+            .find(|editor| editor.id == editor_id)
+            .ok_or_else(|| "外部编辑器不存在或已经卸载".to_string())?;
+        editors::open_with(&editor, &photo)
+    })
+    .await
+    .map_err(|error| format!("启动外部编辑器任务异常结束：{error}"))?
 }
 
 #[tauri::command]
@@ -921,6 +1011,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(ScanPlanStore::default())
+        .manage(RatingStore::default())
         .invoke_handler(tauri::generate_handler![
             validate_directory_path,
             scan_pairs,
@@ -931,7 +1022,10 @@ pub fn run() {
             reveal_quarantine_operation,
             reveal_scan_item,
             index_photo_directory,
+            set_photo_rating,
             load_photo_thumbnail,
+            list_external_editors,
+            open_photo_in_editor,
             reveal_operation_log,
             open_system_trash
         ])

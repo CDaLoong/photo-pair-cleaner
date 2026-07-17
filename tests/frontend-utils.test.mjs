@@ -148,6 +148,7 @@ const previewAssets = [
     extensions: ["NEF"],
     sizeBytes: 20,
     modifiedMs: 20,
+    rating: 0,
   },
   {
     id: "day/a",
@@ -159,6 +160,7 @@ const previewAssets = [
     extensions: ["JPG", "CR3"],
     sizeBytes: 10,
     modifiedMs: 10,
+    rating: 4,
   },
   {
     id: "other/c",
@@ -170,6 +172,7 @@ const previewAssets = [
     extensions: ["JPEG"],
     sizeBytes: 30,
     modifiedMs: 30,
+    rating: 2,
   },
 ];
 
@@ -196,6 +199,21 @@ test("preview search matches names and relative folders case-insensitively", () 
   assert.deepEqual(
     previewUtils.filterPreviewAssets(previewAssets, "all", "other").map((item) => item.id),
     ["other/c"],
+  );
+});
+
+test("preview rating filter combines with type and search filters", () => {
+  assert.deepEqual(
+    previewUtils.filterPreviewAssets(previewAssets, "all", "", 3).map((item) => item.id),
+    ["day/a"],
+  );
+  assert.deepEqual(
+    previewUtils.filterPreviewAssets(previewAssets, "jpeg", "other", 2).map((item) => item.id),
+    ["other/c"],
+  );
+  assert.deepEqual(
+    previewUtils.filterPreviewAssets(previewAssets, "all", "", 5).map((item) => item.id),
+    [],
   );
 });
 

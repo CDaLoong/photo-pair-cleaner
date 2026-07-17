@@ -13,10 +13,12 @@ export function filterPreviewAssets(
   assets: PhotoAsset[],
   filter: PreviewFilter,
   search: string,
+  minimumRating = 0,
 ): PhotoAsset[] {
   const term = search.trim().toLocaleLowerCase();
   return assets.filter((asset) => {
     if (!matchesFilter(asset, filter)) return false;
+    if (asset.rating < minimumRating) return false;
     if (!term) return true;
     return `${asset.name}\n${asset.relativeStem}\n${asset.extensions.join(" ")}`
       .toLocaleLowerCase()

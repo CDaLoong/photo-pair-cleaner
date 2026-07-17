@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
   ArrowRight,
+  ExternalLink,
   FolderInput,
   FolderOpen,
   Grid3X3,
@@ -13,6 +14,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Star,
   X,
 } from "lucide-react";
 import {
@@ -26,6 +28,7 @@ import {
 import type { CSSProperties } from "react";
 import { errorMessage, formatBytes, formatDate } from "../../utils";
 import { PhotoThumbnail } from "./PhotoThumbnail";
+import { RatingControl } from "./RatingControl";
 import {
   clearPhotoPreviewCache,
   loadPhotoPreviewUrl,
@@ -43,17 +46,24 @@ import {
   sortPreviewAssets,
 } from "./previewUtils";
 import type {
+  ExternalEditor,
   PhotoAsset,
   PhotoIndex,
   PreviewFilter,
   PreviewSort,
   PreviewView,
+  RatingUpdate,
 } from "./types";
 
 const PREVIEW_ROOT_STORAGE_KEY = "framepair.preview.root.v1";
 const LOUPE_PREVIEW_EDGE = 1800;
 const PRELOAD_CONCURRENCY = 3;
 const EMPTY_PRELOAD_PROGRESS: PreloadProgress = { total: 0, completed: 0, failed: 0 };
+const SYSTEM_EDITOR: ExternalEditor = {
+  id: "system",
+  label: "系统默认应用",
+  kind: "system",
+};
 
 interface PreviewModuleProps {
   active: boolean;
@@ -79,31 +89,50 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PreviewFilter>("all");
+  const [minimumRating, setMinimumRating] = useState(0);
   const [sort, setSort] = useState<PreviewSort>("name");
   const [view, setView] = useState<PreviewView>("grid");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tileSize, setTileSize] = useState(180);
   const [dropActive, setDropActive] = useState(false);
+  const [ratings, setRatings] = useState<Record<string, number>>({});
+  const [ratingBusyId, setRatingBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [externalEditors, setExternalEditors] = useState<ExternalEditor[]>([SYSTEM_EDITOR]);
+  const [editorId, setEditorId] = useState("system");
+  const [editorBusy, setEditorBusy] = useState(false);
   const [preloadProgress, setPreloadProgress] = useState<PreloadProgress>(EMPTY_PRELOAD_PROGRESS);
   const attemptedStoredRoot = useRef(false);
   const busyRef = useRef(busy);
   const indexedRootRef = useRef<string | null>(null);
   const filmstripRef = useRef<HTMLDivElement>(null);
   const selectedFilmstripItemRef = useRef<HTMLButtonElement>(null);
+  const attemptedEditorDiscovery = useRef(false);
   const loadDirectoryRef = useRef<(path: string) => Promise<void>>(async () => undefined);
   const deferredSearch = useDeferredValue(search);
 
+  const ratedAssets = useMemo(
+    () => (index?.assets ?? []).map((asset) => ({
+      ...asset,
+      rating: ratings[asset.id] ?? asset.rating,
+    })),
+    [index, ratings],
+  );
   const visibleAssets = useMemo(
     () => sortPreviewAssets(
-      filterPreviewAssets(index?.assets ?? [], filter, deferredSearch),
+      filterPreviewAssets(ratedAssets, filter, deferredSearch, minimumRating),
       sort,
     ),
-    [deferredSearch, filter, index, sort],
+    [deferredSearch, filter, minimumRating, ratedAssets, sort],
   );
   const selectedPosition = previewAssetPosition(visibleAssets, selectedId);
   const effectiveSelectedPosition = selectedPosition || (visibleAssets.length > 0 ? 1 : 0);
   const selectedAsset = visibleAssets[effectiveSelectedPosition - 1] ?? null;
   const effectiveSelectedId = selectedAsset?.id ?? null;
+  const ratedCount = useMemo(
+    () => ratedAssets.filter((asset) => asset.rating > 0).length,
+    [ratedAssets],
+  );
 
   async function loadDirectory(path: string) {
     if (!path || busyRef.current) return;
@@ -115,10 +144,12 @@ export function PreviewModule({ active }: PreviewModuleProps) {
       if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
       indexedRootRef.current = result.root;
       setIndex(result);
+      setRatings(Object.fromEntries(result.assets.map((asset) => [asset.id, asset.rating])));
       setRoot(result.root);
       setSelectedId(result.assets[0]?.id ?? null);
       setSearch("");
       setFilter("all");
+      setMinimumRating(0);
       setView("grid");
       try {
         localStorage.setItem(PREVIEW_ROOT_STORAGE_KEY, result.root);
@@ -130,6 +161,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
       if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
       indexedRootRef.current = null;
       setIndex(null);
+      setRatings({});
       setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
     } finally {
       busyRef.current = false;
@@ -145,6 +177,20 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     attemptedStoredRoot.current = true;
     void loadDirectoryRef.current(root);
   }, [active, root]);
+
+  useEffect(() => {
+    if (!active || !isTauri() || attemptedEditorDiscovery.current) return;
+    attemptedEditorDiscovery.current = true;
+    void invoke<ExternalEditor[]>("list_external_editors")
+      .then((editors) => {
+        const nextEditors = editors.length > 0 ? editors : [SYSTEM_EDITOR];
+        setExternalEditors(nextEditors);
+        setEditorId((current) => nextEditors.some((editor) => editor.id === current)
+          ? current
+          : nextEditors[0].id);
+      })
+      .catch((discoveryError) => setActionError(errorMessage(discoveryError)));
+  }, [active]);
 
   useEffect(() => {
     if (!active || !isTauri()) return;
@@ -189,6 +235,9 @@ export function PreviewModule({ active }: PreviewModuleProps) {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
       if (event.key === "Escape") {
         setView("grid");
+      } else if (/^[0-5]$/.test(event.key) && selectedAsset && !ratingBusyId) {
+        event.preventDefault();
+        void rateAsset(selectedAsset, Number(event.key));
       } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
         const nextId = adjacentPreviewAssetId(
@@ -201,7 +250,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [active, effectiveSelectedId, view, visibleAssets]);
+  }, [active, effectiveSelectedId, ratingBusyId, selectedAsset, view, visibleAssets]);
 
   useLayoutEffect(() => {
     if (!active || view !== "loupe" || !effectiveSelectedId) return;
@@ -261,6 +310,49 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     setView("loupe");
   }
 
+  async function rateAsset(asset: PhotoAsset, rating: number) {
+    if (!index || ratingBusyId) return;
+    const relativePath = asset.rawPaths[0] ?? asset.previewPath ?? asset.jpegPaths[0];
+    if (!relativePath) return;
+    const previousRating = ratings[asset.id] ?? asset.rating;
+    setRatingBusyId(asset.id);
+    setActionError(null);
+    setRatings((current) => ({ ...current, [asset.id]: rating }));
+    try {
+      const update = await invoke<RatingUpdate>("set_photo_rating", {
+        root: index.root,
+        relativePath,
+        rating,
+      });
+      if (update.assetId !== asset.id) throw new Error("评分结果与当前照片不匹配");
+      setRatings((current) => ({ ...current, [update.assetId]: update.rating }));
+    } catch (ratingError) {
+      setRatings((current) => ({ ...current, [asset.id]: previousRating }));
+      setActionError(errorMessage(ratingError));
+    } finally {
+      setRatingBusyId(null);
+    }
+  }
+
+  async function openInEditor(asset: PhotoAsset) {
+    if (!index || editorBusy) return;
+    const relativePath = asset.rawPaths[0] ?? asset.previewPath ?? asset.jpegPaths[0];
+    if (!relativePath) return;
+    setEditorBusy(true);
+    setActionError(null);
+    try {
+      await invoke("open_photo_in_editor", {
+        root: index.root,
+        relativePath,
+        editorId,
+      });
+    } catch (editorError) {
+      setActionError(errorMessage(editorError));
+    } finally {
+      setEditorBusy(false);
+    }
+  }
+
   async function revealAsset(asset: PhotoAsset) {
     const relativePath = asset.previewPath ?? asset.rawPaths[0] ?? asset.jpegPaths[0];
     if (!relativePath || !index) return;
@@ -302,6 +394,13 @@ export function PreviewModule({ active }: PreviewModuleProps) {
           <button className="notice-close" type="button" onClick={() => setError(null)} aria-label="关闭消息" title="关闭消息"><X aria-hidden="true" size={16} /></button>
         </div>
       ) : null}
+      {actionError ? (
+        <div className="notice notice-warning" role="alert">
+          <Image aria-hidden="true" size={18} />
+          <div><strong>操作未完成</strong><span>{actionError}</span></div>
+          <button className="notice-close" type="button" onClick={() => setActionError(null)} aria-label="关闭消息" title="关闭消息"><X aria-hidden="true" size={16} /></button>
+        </div>
+      ) : null}
 
       {index ? (
         <>
@@ -315,6 +414,17 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                 <button key={item.value} type="button" aria-pressed={filter === item.value} onClick={() => setFilter(item.value)}>{item.label}</button>
               ))}
             </div>
+            <label className="preview-rating-filter" title="最低评分">
+              <Star aria-hidden="true" size={15} />
+              <select value={minimumRating} onChange={(event) => setMinimumRating(Number(event.target.value))} aria-label="最低评分">
+                <option value={0}>全部评分</option>
+                <option value={1}>1 星以上</option>
+                <option value={2}>2 星以上</option>
+                <option value={3}>3 星以上</option>
+                <option value={4}>4 星以上</option>
+                <option value={5}>仅 5 星</option>
+              </select>
+            </label>
             <label className="preview-sort">
               <span className="sr-only">排序方式</span>
               <select value={sort} onChange={(event) => setSort(event.target.value as PreviewSort)} aria-label="排序方式">
@@ -352,6 +462,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                     title={`${asset.relativeStem} · ${asset.extensions.join(" + ")}`}
                   >
                     <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={480} version={photoPreviewVersion(asset, index.indexedAtMs)} alt="" />
+                    {asset.rating > 0 ? <span className="photo-rating-badge"><Star aria-hidden="true" size={11} fill="currentColor" />{asset.rating}</span> : null}
                     <span className="photo-tile-meta">
                       <strong>{asset.name}</strong>
                       <small>{asset.extensions.join(" + ")}</small>
@@ -371,12 +482,28 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                   <button className="icon-button" type="button" onClick={() => setSelectedId(adjacentPreviewAssetId(visibleAssets, effectiveSelectedId, 1))} disabled={effectiveSelectedId === visibleAssets.at(-1)?.id} aria-label="下一张" title="下一张"><ArrowRight aria-hidden="true" size={18} /></button>
                 </div>
                 <div className="loupe-title"><strong>{selectedAsset.name}</strong><span>{selectedAsset.relativeStem}</span></div>
-                <button className="secondary-command" type="button" onClick={() => void revealAsset(selectedAsset)}><FolderOpen aria-hidden="true" size={16} />在文件管理器中显示</button>
+                <div className="loupe-actions">
+                  <label className="external-editor-select">
+                    <span className="sr-only">外部编辑器</span>
+                    <select value={editorId} onChange={(event) => setEditorId(event.target.value)} aria-label="外部编辑器">
+                      {externalEditors.map((editor) => <option key={editor.id} value={editor.id}>{editor.label}</option>)}
+                    </select>
+                  </label>
+                  <button className="secondary-command" type="button" onClick={() => void openInEditor(selectedAsset)} disabled={editorBusy}>
+                    {editorBusy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : <ExternalLink aria-hidden="true" size={16} />}
+                    打开编辑
+                  </button>
+                  <button className="icon-button" type="button" onClick={() => void revealAsset(selectedAsset)} aria-label="在文件管理器中显示" title="在文件管理器中显示"><FolderOpen aria-hidden="true" size={16} /></button>
+                </div>
               </div>
               <div className="loupe-stage">
                 <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={LOUPE_PREVIEW_EDGE} version={photoPreviewVersion(selectedAsset, index.indexedAtMs)} alt={selectedAsset.name} eager />
               </div>
               <div className="loupe-metadata">
+                <span className="loupe-rating">
+                  <RatingControl rating={selectedAsset.rating} onChange={(rating) => void rateAsset(selectedAsset, rating)} disabled={ratingBusyId === selectedAsset.id} />
+                  <small>{ratingBusyId === selectedAsset.id ? "正在保存" : selectedAsset.rating > 0 ? `${selectedAsset.rating} 星` : "未评分"}</small>
+                </span>
                 <span><strong>{selectedAsset.extensions.join(" + ")}</strong><small>文件组合</small></span>
                 <span><strong>{formatBytes(selectedAsset.sizeBytes)}</strong><small>组合大小</small></span>
                 <span><strong>{formatDate(selectedAsset.modifiedMs)}</strong><small>修改时间</small></span>
@@ -386,6 +513,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                 {visibleAssets.map((asset) => (
                   <button ref={asset.id === effectiveSelectedId ? selectedFilmstripItemRef : undefined} key={asset.id} type="button" className={asset.id === effectiveSelectedId ? "is-selected" : ""} onClick={() => setSelectedId(asset.id)} aria-label={asset.name} aria-pressed={asset.id === effectiveSelectedId} title={asset.name}>
                     <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={160} version={photoPreviewVersion(asset, index.indexedAtMs)} alt="" />
+                    {asset.rating > 0 ? <span className="filmstrip-rating"><Star aria-hidden="true" size={10} fill="currentColor" />{asset.rating}</span> : null}
                   </button>
                 ))}
               </div>
@@ -399,6 +527,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
               {view === "loupe" ? visibleAssets.length : index.totalAssets} 张照片
             </span>
             <span>{index.pairedAssets} 组 JPG + RAW</span>
+            <span>{ratedCount} 张已评分</span>
             {index.rawOnlyAssets > 0 ? <span>{index.rawOnlyAssets} 张仅 RAW</span> : null}
             {preloadProgress.total > 0 ? (
               <span className={preloadProgress.completed < preloadProgress.total ? "preload-status is-loading" : "preload-status"} aria-live="polite">
