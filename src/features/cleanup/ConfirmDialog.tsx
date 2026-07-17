@@ -1,7 +1,7 @@
 import { AlertTriangle, ArchiveRestore, CheckCircle2, Trash2, X } from "lucide-react";
 import type { RefObject } from "react";
-import type { CleanupDestination, ScanItem } from "../types";
-import { cleanupActionLabel, formatBytes, selectionBreakdown } from "../utils";
+import type { CleanupDestination, ScanItem } from "../../types";
+import { cleanupActionLabel, formatBytes, selectionBreakdown } from "../../utils";
 
 interface ConfirmDialogProps {
   dialogRef: RefObject<HTMLDialogElement | null>;

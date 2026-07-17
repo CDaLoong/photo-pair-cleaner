@@ -149,12 +149,12 @@ function positionPopover(
   };
 }
 
-interface GuideDialogProps {
+interface CleanupGuideDialogProps {
   open: boolean;
   onDismiss: () => void;
 }
 
-export function GuideDialog({ open, onDismiss }: GuideDialogProps) {
+export function CleanupGuideDialog({ open, onDismiss }: CleanupGuideDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [stepIndex, setStepIndex] = useState(0);

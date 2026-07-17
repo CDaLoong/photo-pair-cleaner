@@ -110,7 +110,10 @@ Apple Silicon 与 Intel 可以继续分别发布，也可以在 macOS 构建机�
 ## 项目结构
 
 ```text
-src/                         React/TypeScript 工作台
+src/app/                     全局应用外壳与模块导航
+src/features/cleanup/        配对清理模块、引导、复核与确认界面
+src/App.tsx                  模块组合入口
+src/styles.css               共享设计变量与当前模块样式
 src-tauri/src/lib.rs         扫描编排、Tauri 命令与操作计划
 src-tauri/src/formats.rs     可信格式白名单和 XMP 配对键
 src-tauri/src/reference.rs   目录、清单与 XMP 星级参考源

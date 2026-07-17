@@ -24,7 +24,7 @@ import type {
   ReferenceSourceType,
   ScanItem,
   ScanSummary,
-} from "../types";
+} from "../../types";
 import {
   decisionReason,
   formatBytes,
@@ -32,7 +32,7 @@ import {
   rawFormatCounts,
   reclaimableBytes,
   selectionBreakdown,
-} from "../utils";
+} from "../../utils";
 
 interface SelectionCheckboxProps {
   checked: boolean;

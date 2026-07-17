@@ -12,8 +12,8 @@ import {
   Star,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { DirectoryKind, ReferenceSourceType, ScanMode } from "../types";
-import { directoryDropTargetAtPoint } from "../utils";
+import type { DirectoryKind, ReferenceSourceType, ScanMode } from "../../types";
+import { directoryDropTargetAtPoint } from "../../utils";
 
 interface SetupViewProps {
   referenceRoot: string;
