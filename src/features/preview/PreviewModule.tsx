@@ -39,6 +39,7 @@ import {
   adjacentPreviewAssetId,
   filmstripScrollTarget,
   filterPreviewAssets,
+  previewAssetPosition,
   sortPreviewAssets,
 } from "./previewUtils";
 import type {
@@ -99,10 +100,10 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     ),
     [deferredSearch, filter, index, sort],
   );
-  const effectiveSelectedId = visibleAssets.some((asset) => asset.id === selectedId)
-    ? selectedId
-    : visibleAssets[0]?.id ?? null;
-  const selectedAsset = visibleAssets.find((asset) => asset.id === effectiveSelectedId) ?? null;
+  const selectedPosition = previewAssetPosition(visibleAssets, selectedId);
+  const effectiveSelectedPosition = selectedPosition || (visibleAssets.length > 0 ? 1 : 0);
+  const selectedAsset = visibleAssets[effectiveSelectedPosition - 1] ?? null;
+  const effectiveSelectedId = selectedAsset?.id ?? null;
 
   async function loadDirectory(path: string) {
     if (!path || busyRef.current) return;
@@ -392,7 +393,11 @@ export function PreviewModule({ active }: PreviewModuleProps) {
           ) : null}
 
           <footer className="preview-statusbar">
-            <span>{visibleAssets.length} / {index.totalAssets} 张照片</span>
+            <span>
+              {view === "loupe" ? effectiveSelectedPosition : visibleAssets.length}
+              {" / "}
+              {view === "loupe" ? visibleAssets.length : index.totalAssets} 张照片
+            </span>
             <span>{index.pairedAssets} 组 JPG + RAW</span>
             {index.rawOnlyAssets > 0 ? <span>{index.rawOnlyAssets} 张仅 RAW</span> : null}
             {preloadProgress.total > 0 ? (

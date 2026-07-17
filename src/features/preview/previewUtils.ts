@@ -56,6 +56,15 @@ export function adjacentPreviewAssetId(
   return assets[nextIndex].id;
 }
 
+export function previewAssetPosition(
+  assets: PhotoAsset[],
+  currentId: string | null,
+): number {
+  if (!currentId) return 0;
+  const index = assets.findIndex((asset) => asset.id === currentId);
+  return index < 0 ? 0 : index + 1;
+}
+
 export function filmstripScrollTarget({
   scrollLeft,
   clientWidth,

@@ -207,6 +207,15 @@ test("preview sorting and keyboard selection are stable", () => {
   assert.equal(previewUtils.adjacentPreviewAssetId(sorted, "day/b", -1), "day/a");
 });
 
+test("preview position is one-based and handles a missing selection", () => {
+  const sorted = previewUtils.sortPreviewAssets(previewAssets, "name");
+  assert.equal(typeof previewUtils.previewAssetPosition, "function");
+  assert.equal(previewUtils.previewAssetPosition(sorted, "day/a"), 1);
+  assert.equal(previewUtils.previewAssetPosition(sorted, "day/b"), 2);
+  assert.equal(previewUtils.previewAssetPosition(sorted, "missing"), 0);
+  assert.equal(previewUtils.previewAssetPosition([], null), 0);
+});
+
 test("filmstrip scroll keeps the selected thumbnail inside the viewport", () => {
   assert.equal(typeof previewUtils.filmstripScrollTarget, "function");
   assert.equal(previewUtils.filmstripScrollTarget({
