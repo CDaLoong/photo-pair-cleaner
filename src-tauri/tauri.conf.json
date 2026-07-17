@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FramePair",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "identifier": "com.framepair.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -39,7 +39,7 @@
       "icons/icon.ico"
     ],
     "category": "Photography",
-    "shortDescription": "按 JPG 筛选结果安全清理未配对 RAW 文件",
-    "longDescription": "递归比较 JPG 与 RAW 目录中的相对路径和文件名，将未配对 RAW 与可选 XMP 伴随文件移入系统回收站或废纸篓。"
+    "shortDescription": "按人工筛选结果安全清理未配对 RAW 文件",
+    "longDescription": "根据 JPG 目录、文件清单或 XMP 星级递归匹配 RAW，将未配对 RAW 与可选 XMP 伴随文件移入系统回收站或可恢复隔离区。"
   }
 }

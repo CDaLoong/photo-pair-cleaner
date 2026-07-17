@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "photo-pair-cleaner"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "quick-xml 0.38.4",

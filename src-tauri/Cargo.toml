@@ -1,6 +1,6 @@
 [package]
 name = "photo-pair-cleaner"
-version = "0.1.0"
+version = "0.5.0"
 description = "Safely pair JPG selections with RAW files"
 authors = ["FramePair contributors"]
 edition = "2024"
