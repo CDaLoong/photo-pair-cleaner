@@ -1,10 +1,16 @@
-# FramePair 影像配对
+# FramePair 摄影工作台
 
-FramePair 是一个 Windows 与 macOS 桌面工具。它以人工筛选结果为保留依据，按“相对路径 + 文件名”检查 RAW 目录，并安全处理未配对的 RAW 与可选 XMP 伴随文件。所有扫描、匹配和文件操作均在本机完成。
+FramePair 是一个 Windows 与 macOS 本地摄影工作台。它可以把同一路径、同名的 JPG 与 RAW 组织成一张逻辑照片进行浏览，也可以把人工筛选结果作为保留依据，安全处理未配对的 RAW 与可选 XMP 伴随文件。所有索引、预览、匹配和文件操作均在本机完成。
 
 ## 当前功能
 
-- 首次打开提供 5 步蒙版引导，并可从应用右上角随时重新查看。
+- 通过模块侧栏在“照片浏览”和“配对清理”之间切换，切换时保留各模块当前状态。
+- 递归索引所选目录，把同一路径同名的 JPG/JPEG 与 RAW 合并为一张逻辑照片。
+- 提供缩略图网格、名称/目录搜索、照片类型过滤、名称/时间/大小排序和缩略图尺寸调节。
+- 提供不裁切的单张预览、胶片栏、上一张/下一张键盘切换和文件管理器定位。
+- JPG/JPEG 缩略图由 Rust 在后台按 EXIF 方向生成并缓存，不把原始大图直接传入 WebView。
+- RAW-only 照片会进入索引并显示明确占位；当前版本尚未解析 RAW 内嵌预览。
+- 首次进入配对清理提供 5 步蒙版引导，并可从模块右上角随时重新查看。
 - 支持点击或拖拽选择 JPG 参考目录、XMP 评分目录和 RAW 源目录。
 - 保留依据可以是 JPG 目录、UTF-8 相对路径清单，或 Lightroom/Bridge 已写入磁盘的 XMP Rating。
 - 支持 `.nef/.nrw/.cr2/.cr3/.arw/.sr2/.srf/.raf/.dng/.rw2/.orf/.pef`，格式白名单由 Rust 后端固定控制。
@@ -112,10 +118,12 @@ Apple Silicon 与 Intel 可以继续分别发布，也可以在 macOS 构建机�
 ```text
 src/app/                     全局应用外壳与模块导航
 src/features/cleanup/        配对清理模块、引导、复核与确认界面
+src/features/preview/        照片索引界面、网格/单张浏览与缩略图组件
 src/App.tsx                  模块组合入口
-src/styles.css               共享设计变量与当前模块样式
+src/styles.css               共享设计变量与模块响应式样式
 src-tauri/src/lib.rs         扫描编排、Tauri 命令与操作计划
 src-tauri/src/formats.rs     可信格式白名单和 XMP 配对键
+src-tauri/src/preview.rs     逻辑照片索引、路径校验与 JPEG 缩略图缓存
 src-tauri/src/reference.rs   目录、清单与 XMP 星级参考源
 src-tauri/src/quarantine.rs  隔离、历史清单与冲突安全恢复
 src-tauri/src/safety.rs      扫描计划和文件快照授权
@@ -124,7 +132,7 @@ src-tauri/icons/             Windows/macOS 安装图标
 .github/workflows/release.yml 跨平台构建矩阵
 ```
 
-当前模块聚焦文件配对与安全清理，不包含照片预览、评分写入、RAW 解码、AI 筛片或 Lightroom 目录数据库解析。
+当前照片浏览阶段不包含评分写入、RAW 解码、AI 筛片、外部编辑器跳转或 Lightroom 目录数据库解析。
 
 ## 许可
 

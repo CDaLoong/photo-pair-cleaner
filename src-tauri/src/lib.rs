@@ -1,4 +1,5 @@
 mod formats;
+mod preview;
 mod quarantine;
 mod reference;
 mod safety;
@@ -868,6 +869,33 @@ async fn reveal_scan_item(root: String, relative_path: String) -> Result<(), Str
 }
 
 #[tauri::command]
+async fn index_photo_directory(root: String) -> Result<preview::PhotoIndex, String> {
+    tauri::async_runtime::spawn_blocking(move || preview::index_directory(Path::new(&root)))
+        .await
+        .map_err(|error| format!("照片索引任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn load_photo_thumbnail(
+    app: tauri::AppHandle,
+    root: String,
+    relative_path: String,
+    max_edge: u32,
+) -> Result<tauri::ipc::Response, String> {
+    let cache_root = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("无法确定缩略图缓存目录：{error}"))?
+        .join("photo-thumbnails");
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        preview::load_thumbnail(Path::new(&root), &relative_path, max_edge, &cache_root)
+    })
+    .await
+    .map_err(|error| format!("缩略图任务异常结束：{error}"))??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
 async fn reveal_operation_log(app: tauri::AppHandle, log_path: String) -> Result<(), String> {
     let log_root = app
         .path()
@@ -902,6 +930,8 @@ pub fn run() {
             restore_quarantine_operation,
             reveal_quarantine_operation,
             reveal_scan_item,
+            index_photo_directory,
+            load_photo_thumbnail,
             reveal_operation_log,
             open_system_trash
         ])

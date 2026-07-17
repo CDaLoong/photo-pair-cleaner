@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as previewUtils from "../src/features/preview/previewUtils.ts";
 import * as utils from "../src/utils.ts";
 
 const candidates = [
@@ -130,4 +131,74 @@ test("reverse audit is available only for a directory reference source", () => {
   assert.equal(utils.canAuditReferenceSource("directory"), true);
   assert.equal(utils.canAuditReferenceSource("manifest"), false);
   assert.equal(utils.canAuditReferenceSource("xmpRating"), false);
+});
+
+const previewAssets = [
+  {
+    id: "day/b",
+    name: "B",
+    relativeStem: "day/B",
+    previewPath: null,
+    jpegPaths: [],
+    rawPaths: ["day/B.NEF"],
+    extensions: ["NEF"],
+    sizeBytes: 20,
+    modifiedMs: 20,
+  },
+  {
+    id: "day/a",
+    name: "A",
+    relativeStem: "day/A",
+    previewPath: "day/A.JPG",
+    jpegPaths: ["day/A.JPG"],
+    rawPaths: ["day/A.CR3"],
+    extensions: ["JPG", "CR3"],
+    sizeBytes: 10,
+    modifiedMs: 10,
+  },
+  {
+    id: "other/c",
+    name: "C",
+    relativeStem: "other/C",
+    previewPath: "other/C.jpeg",
+    jpegPaths: ["other/C.jpeg"],
+    rawPaths: [],
+    extensions: ["JPEG"],
+    sizeBytes: 30,
+    modifiedMs: 30,
+  },
+];
+
+test("preview filters distinguish paired, JPEG-only, and RAW-only photos", () => {
+  assert.deepEqual(
+    previewUtils.filterPreviewAssets(previewAssets, "paired", "").map((item) => item.id),
+    ["day/a"],
+  );
+  assert.deepEqual(
+    previewUtils.filterPreviewAssets(previewAssets, "jpeg", "").map((item) => item.id),
+    ["other/c"],
+  );
+  assert.deepEqual(
+    previewUtils.filterPreviewAssets(previewAssets, "raw", "").map((item) => item.id),
+    ["day/b"],
+  );
+});
+
+test("preview search matches names and relative folders case-insensitively", () => {
+  assert.deepEqual(
+    previewUtils.filterPreviewAssets(previewAssets, "all", "DAY/a").map((item) => item.id),
+    ["day/a"],
+  );
+  assert.deepEqual(
+    previewUtils.filterPreviewAssets(previewAssets, "all", "other").map((item) => item.id),
+    ["other/c"],
+  );
+});
+
+test("preview sorting and keyboard selection are stable", () => {
+  const sorted = previewUtils.sortPreviewAssets(previewAssets, "name");
+  assert.deepEqual(sorted.map((item) => item.id), ["day/a", "day/b", "other/c"]);
+  assert.equal(previewUtils.adjacentPreviewAssetId(sorted, "day/a", 1), "day/b");
+  assert.equal(previewUtils.adjacentPreviewAssetId(sorted, "other/c", 1), "other/c");
+  assert.equal(previewUtils.adjacentPreviewAssetId(sorted, "day/b", -1), "day/a");
 });

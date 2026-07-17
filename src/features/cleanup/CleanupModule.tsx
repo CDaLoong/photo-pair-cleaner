@@ -100,7 +100,11 @@ function shouldOpenGuide() {
   }
 }
 
-export function CleanupModule() {
+interface CleanupModuleProps {
+  active: boolean;
+}
+
+export function CleanupModule({ active }: CleanupModuleProps) {
   const initial = useMemo(loadSettings, []);
   const [referenceRoot, setReferenceRoot] = useState(initial.referenceRoot);
   const [rawRoot, setRawRoot] = useState(initial.rawRoot);
@@ -680,6 +684,7 @@ export function CleanupModule() {
         />
       ) : (
         <SetupView
+          active={active}
           referenceRoot={referenceRoot}
           rawRoot={rawRoot}
           referenceSourceType={referenceSourceType}
@@ -722,7 +727,7 @@ export function CleanupModule() {
         onConfirm={() => void executeCleanup()}
       />
 
-      <CleanupGuideDialog open={guideOpen} onDismiss={dismissGuide} />
+      <CleanupGuideDialog open={active && guideOpen} onDismiss={dismissGuide} />
     </section>
   );
 }

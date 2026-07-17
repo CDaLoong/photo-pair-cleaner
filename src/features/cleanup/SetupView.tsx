@@ -16,6 +16,7 @@ import type { DirectoryKind, ReferenceSourceType, ScanMode } from "../../types";
 import { directoryDropTargetAtPoint } from "../../utils";
 
 interface SetupViewProps {
+  active: boolean;
   referenceRoot: string;
   rawRoot: string;
   referenceSourceType: ReferenceSourceType;
@@ -104,6 +105,7 @@ function DirectoryPicker({
 }
 
 export function SetupView({
+  active,
   referenceRoot,
   rawRoot,
   referenceSourceType,
@@ -149,7 +151,7 @@ export function SetupView({
   }, [busy, onDropDirectories, onDropError, referenceSourceType]);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!active || !isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
@@ -200,7 +202,7 @@ export function SetupView({
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [active]);
 
   return (
     <main className="setup-view">

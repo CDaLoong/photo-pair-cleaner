@@ -1,18 +1,20 @@
-import { Aperture, ListChecks, ShieldCheck } from "lucide-react";
+import { Aperture, Images, ListChecks, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 
-export type AppModule = "cleanup";
+export type AppModule = "preview" | "cleanup";
 
 interface AppShellProps {
   activeModule: AppModule;
+  onModuleChange: (module: AppModule) => void;
   children: ReactNode;
 }
 
 const MODULES = [
+  { id: "preview", label: "照片浏览", detail: "预览与筛选", icon: Images },
   { id: "cleanup", label: "配对清理", detail: "筛选与安全处理", icon: ListChecks },
 ] as const;
 
-export function AppShell({ activeModule, children }: AppShellProps) {
+export function AppShell({ activeModule, onModuleChange, children }: AppShellProps) {
   return (
     <div className="app-shell">
       <aside className="module-sidebar">
@@ -23,10 +25,17 @@ export function AppShell({ activeModule, children }: AppShellProps) {
 
         <nav className="module-navigation" aria-label="功能模块">
           {MODULES.map(({ id, label, detail, icon: Icon }) => (
-            <div key={id} className={id === activeModule ? "module-nav-item is-active" : "module-nav-item"} aria-current={id === activeModule ? "page" : undefined} title={label}>
+            <button
+              key={id}
+              className={id === activeModule ? "module-nav-item is-active" : "module-nav-item"}
+              type="button"
+              onClick={() => onModuleChange(id)}
+              aria-current={id === activeModule ? "page" : undefined}
+              title={label}
+            >
               <Icon aria-hidden="true" size={19} />
               <span><strong>{label}</strong><small>{detail}</small></span>
-            </div>
+            </button>
           ))}
         </nav>
 
