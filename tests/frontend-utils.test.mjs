@@ -104,3 +104,8 @@ test("raw format counts are grouped case-insensitively", () => {
 
   assert.deepEqual(utils.rawFormatCounts(items), { NEF: 2, CR3: 1 });
 });
+
+test("cleanup destination copy names the selected operation", () => {
+  assert.equal(utils.cleanupActionLabel("trash"), "移入系统回收站");
+  assert.equal(utils.cleanupActionLabel("quarantine"), "移入 FramePair 隔离区");
+});

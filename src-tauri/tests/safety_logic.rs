@@ -1,7 +1,7 @@
 #[path = "../src/safety.rs"]
 mod safety;
 
-use safety::{DeletionPlan, FileSnapshot, unique_keys};
+use safety::{CleanupPlan, FileSnapshot, unique_keys};
 use std::path::PathBuf;
 
 #[test]
@@ -18,9 +18,9 @@ fn repeated_missing_keys_are_deduplicated() {
 }
 
 #[test]
-fn deletion_plan_rejects_candidates_that_were_not_marked_for_deletion() {
+fn cleanup_plan_rejects_candidates_that_were_not_marked_for_cleanup() {
     let root = PathBuf::from("/photos/raw");
-    let plan = DeletionPlan::new(
+    let plan = CleanupPlan::new(
         "plan-1".to_string(),
         root.clone(),
         [("missing.NEF".to_string(), FileSnapshot::new(12, Some(34)))],
@@ -39,9 +39,9 @@ fn deletion_plan_rejects_candidates_that_were_not_marked_for_deletion() {
 }
 
 #[test]
-fn deletion_plan_binds_plan_root_and_scanned_metadata() {
+fn cleanup_plan_binds_plan_root_and_scanned_metadata() {
     let root = PathBuf::from("/photos/raw");
-    let plan = DeletionPlan::new(
+    let plan = CleanupPlan::new(
         "plan-1".to_string(),
         root.clone(),
         [("missing.NEF".to_string(), FileSnapshot::new(12, Some(34)))],

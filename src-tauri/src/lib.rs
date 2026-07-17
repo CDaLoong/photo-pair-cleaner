@@ -1,8 +1,9 @@
 mod formats;
+mod quarantine;
 mod safety;
 
 use chrono::Utc;
-use safety::{DeletionPlan, FileSnapshot, unique_keys};
+use safety::{CleanupPlan, FileSnapshot, unique_keys};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -69,7 +70,7 @@ pub struct ScanSummary {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteCandidate {
+pub struct CleanupCandidate {
     pub relative_path: String,
     pub expected_size_bytes: u64,
     pub expected_modified_ms: Option<u64>,
@@ -77,15 +78,23 @@ pub struct DeleteCandidate {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteRequest {
+pub struct CleanupRequest {
     pub plan_id: String,
     pub raw_root: String,
-    pub items: Vec<DeleteCandidate>,
+    pub destination: CleanupDestination,
+    pub items: Vec<CleanupCandidate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CleanupDestination {
+    Trash,
+    Quarantine,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteResult {
+pub struct CleanupResult {
     pub relative_path: String,
     pub success: bool,
     pub message: String,
@@ -93,12 +102,23 @@ pub struct DeleteResult {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteSummary {
+pub struct CleanupSummary {
     pub succeeded: usize,
     pub failed: usize,
-    pub results: Vec<DeleteResult>,
+    pub destination: CleanupDestination,
+    pub operation_id: Option<String>,
+    pub quarantine_path: Option<String>,
+    pub results: Vec<CleanupResult>,
     pub log_path: Option<String>,
     pub log_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSummary {
+    pub succeeded: usize,
+    pub failed: usize,
+    pub results: Vec<CleanupResult>,
 }
 
 #[derive(Serialize)]
@@ -107,13 +127,14 @@ struct OperationLogRecord<'a> {
     timestamp: String,
     raw_root: &'a str,
     relative_path: &'a str,
+    destination: CleanupDestination,
     success: bool,
     message: &'a str,
 }
 
 #[derive(Default)]
-struct DeletionPlanStore {
-    current: Mutex<Option<DeletionPlan>>,
+struct CleanupPlanStore {
+    current: Mutex<Option<CleanupPlan>>,
 }
 
 fn next_plan_id() -> String {
@@ -166,7 +187,11 @@ fn match_key(relative: &Path, case_sensitive: bool) -> String {
 
 fn collect_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
-    for entry in WalkDir::new(root).follow_links(false) {
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| entry.depth() != 1 || entry.file_name() != quarantine::QUARANTINE_DIR)
+    {
         let entry = entry.map_err(|error| format!("扫描目录失败：{error}"))?;
         if entry.file_type().is_file() {
             files.push(entry.into_path());
@@ -428,7 +453,7 @@ fn open_trash_location() -> Result<(), String> {
 
 fn validate_delete_candidate(
     raw_root: &Path,
-    candidate: &DeleteCandidate,
+    candidate: &CleanupCandidate,
 ) -> Result<PathBuf, String> {
     let relative = safe_relative_path(&candidate.relative_path)?;
     let extension = formats::extension_of(&relative);
@@ -459,7 +484,8 @@ fn validate_delete_candidate(
 fn write_operation_log(
     log_dir: Option<&Path>,
     raw_root: &str,
-    results: &[DeleteResult],
+    destination: CleanupDestination,
+    results: &[CleanupResult],
 ) -> (Option<String>, Option<String>) {
     let Some(log_dir) = log_dir else {
         return (None, Some("无法确定应用日志目录".to_string()));
@@ -478,6 +504,7 @@ fn write_operation_log(
             timestamp: Utc::now().to_rfc3339(),
             raw_root,
             relative_path: &result.relative_path,
+            destination,
             success: result.success,
             message: &result.message,
         };
@@ -493,11 +520,11 @@ fn write_operation_log(
     (Some(log_path.to_string_lossy().into_owned()), None)
 }
 
-fn delete_impl(
-    request: &DeleteRequest,
+fn cleanup_impl(
+    request: &CleanupRequest,
     log_dir: Option<&Path>,
-    plan: &DeletionPlan,
-) -> Result<DeleteSummary, String> {
+    plan: &CleanupPlan,
+) -> Result<CleanupSummary, String> {
     let raw_root = canonical_directory(&request.raw_root, "RAW 源目录")?;
     let mut results = Vec::with_capacity(request.items.len());
 
@@ -514,18 +541,26 @@ fn delete_impl(
         );
         let outcome = match authorized.and_then(|_| validate_delete_candidate(&raw_root, candidate))
         {
-            Ok(path) => trash::delete(&path)
-                .map(|_| "已移入系统回收站/废纸篓".to_string())
-                .map_err(|error| format!("移入系统回收站/废纸篓失败：{error}")),
+            Ok(path) => match request.destination {
+                CleanupDestination::Trash => trash::delete(&path)
+                    .map(|_| "已移入系统回收站/废纸篓".to_string())
+                    .map_err(|error| format!("移入系统回收站/废纸篓失败：{error}")),
+                CleanupDestination::Quarantine => quarantine::move_file(
+                    &raw_root,
+                    &request.plan_id,
+                    Path::new(&candidate.relative_path),
+                )
+                .map(|_| "已移入 FramePair 隔离区".to_string()),
+            },
             Err(error) => Err(error),
         };
         match outcome {
-            Ok(message) => results.push(DeleteResult {
+            Ok(message) => results.push(CleanupResult {
                 relative_path: candidate.relative_path.clone(),
                 success: true,
                 message,
             }),
-            Err(message) => results.push(DeleteResult {
+            Err(message) => results.push(CleanupResult {
                 relative_path: candidate.relative_path.clone(),
                 success: false,
                 message,
@@ -535,10 +570,18 @@ fn delete_impl(
 
     let succeeded = results.iter().filter(|result| result.success).count();
     let failed = results.len().saturating_sub(succeeded);
-    let (log_path, log_warning) = write_operation_log(log_dir, &request.raw_root, &results);
-    Ok(DeleteSummary {
+    let (log_path, log_warning) =
+        write_operation_log(log_dir, &request.raw_root, request.destination, &results);
+    let quarantined = request.destination == CleanupDestination::Quarantine && succeeded > 0;
+    Ok(CleanupSummary {
         succeeded,
         failed,
+        destination: request.destination,
+        operation_id: quarantined.then(|| request.plan_id.clone()),
+        quarantine_path: quarantined
+            .then(|| quarantine::operation_root(&raw_root, &request.plan_id))
+            .transpose()?
+            .map(|path| path.to_string_lossy().into_owned()),
         results,
         log_path,
         log_warning,
@@ -557,7 +600,7 @@ async fn validate_directory_path(path: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn scan_pairs(
-    state: tauri::State<'_, DeletionPlanStore>,
+    state: tauri::State<'_, CleanupPlanStore>,
     request: ScanRequest,
 ) -> Result<ScanSummary, String> {
     *state
@@ -580,7 +623,7 @@ async fn scan_pairs(
                 FileSnapshot::new(item.size_bytes, item.modified_ms),
             )
         });
-    let plan = DeletionPlan::new(plan_id.clone(), raw_root, candidates);
+    let plan = CleanupPlan::new(plan_id.clone(), raw_root, candidates);
     summary.plan_id = plan_id;
     *state
         .current
@@ -590,11 +633,11 @@ async fn scan_pairs(
 }
 
 #[tauri::command]
-async fn move_to_trash(
+async fn execute_cleanup(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DeletionPlanStore>,
-    request: DeleteRequest,
-) -> Result<DeleteSummary, String> {
+    state: tauri::State<'_, CleanupPlanStore>,
+    request: CleanupRequest,
+) -> Result<CleanupSummary, String> {
     if request.items.is_empty() {
         return Err("清理计划中没有文件".to_string());
     }
@@ -615,9 +658,62 @@ async fn move_to_trash(
             .ok_or_else(|| "清理计划不存在，请重新扫描".to_string())?
     };
     let log_dir = app.path().app_log_dir().ok();
-    tauri::async_runtime::spawn_blocking(move || delete_impl(&request, log_dir.as_deref(), &plan))
+    tauri::async_runtime::spawn_blocking(move || cleanup_impl(&request, log_dir.as_deref(), &plan))
         .await
         .map_err(|error| format!("清理任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn list_quarantine_operations(
+    raw_root: String,
+) -> Result<Vec<quarantine::QuarantineOperation>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = canonical_directory(&raw_root, "RAW 源目录")?;
+        quarantine::list_operations(&root)
+    })
+    .await
+    .map_err(|error| format!("读取隔离历史任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn restore_quarantine_operation(
+    raw_root: String,
+    operation_id: String,
+) -> Result<RestoreSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = canonical_directory(&raw_root, "RAW 源目录")?;
+        let results = quarantine::restore_operation(&root, &operation_id)?
+            .into_iter()
+            .map(|result| CleanupResult {
+                relative_path: result.relative_path,
+                success: result.success,
+                message: result.message,
+            })
+            .collect::<Vec<_>>();
+        let succeeded = results.iter().filter(|result| result.success).count();
+        Ok(RestoreSummary {
+            succeeded,
+            failed: results.len().saturating_sub(succeeded),
+            results,
+        })
+    })
+    .await
+    .map_err(|error| format!("恢复隔离文件任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn reveal_quarantine_operation(raw_root: String, operation_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = canonical_directory(&raw_root, "RAW 源目录")?;
+        let path = quarantine::operation_root(&root, &operation_id)?;
+        let path = fs::canonicalize(path).map_err(|error| format!("隔离目录不可访问：{error}"))?;
+        if !path.starts_with(&root) {
+            return Err("隔离目录解析后超出了 RAW 源目录".to_string());
+        }
+        reveal_path(&path)
+    })
+    .await
+    .map_err(|error| format!("定位隔离目录任务异常结束：{error}"))?
 }
 
 #[tauri::command]
@@ -655,11 +751,14 @@ async fn open_system_trash() -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(DeletionPlanStore::default())
+        .manage(CleanupPlanStore::default())
         .invoke_handler(tauri::generate_handler![
             validate_directory_path,
             scan_pairs,
-            move_to_trash,
+            execute_cleanup,
+            list_quarantine_operations,
+            restore_quarantine_operation,
+            reveal_quarantine_operation,
             reveal_scan_item,
             reveal_operation_log,
             open_system_trash
@@ -736,6 +835,31 @@ mod tests {
     }
 
     #[test]
+    fn scan_excludes_framepair_quarantine_contents() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let reference_root = temp.path().join("JPG");
+        let raw_root = temp.path().join("RAW");
+        fs::create_dir_all(&reference_root).expect("reference directory");
+        fs::create_dir_all(raw_root.join(".framepair-quarantine/operation-1"))
+            .expect("quarantine directory");
+        fs::write(raw_root.join("active.NEF"), b"active").expect("active raw");
+        fs::write(
+            raw_root.join(".framepair-quarantine/operation-1/hidden.NEF"),
+            b"hidden",
+        )
+        .expect("quarantined raw");
+
+        let summary = scan_pairs_impl(&request(&reference_root, &raw_root)).expect("scan");
+        assert_eq!(summary.raw_files, 1);
+        assert!(
+            summary
+                .items
+                .iter()
+                .all(|item| !item.relative_path.contains(".framepair-quarantine"))
+        );
+    }
+
+    #[test]
     fn matches_double_extension_xmp_sidecars_to_missing_raws() {
         let temp = tempfile::tempdir().expect("temp directory");
         let reference_root = temp.path().join("JPG");
@@ -766,7 +890,7 @@ mod tests {
 
         for (name, accepted) in [("photo.CR3", true), ("notes.txt", false)] {
             let metadata = fs::metadata(temp.path().join(name)).expect("metadata");
-            let candidate = DeleteCandidate {
+            let candidate = CleanupCandidate {
                 relative_path: name.to_string(),
                 expected_size_bytes: metadata.len(),
                 expected_modified_ms: modified_ms(&metadata),
@@ -777,6 +901,45 @@ mod tests {
                 "unexpected validation result for {name}"
             );
         }
+    }
+
+    #[test]
+    fn cleanup_plan_can_move_an_authorized_file_to_quarantine() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let raw_root = temp.path().join("RAW");
+        fs::create_dir_all(&raw_root).expect("raw directory");
+        let raw = raw_root.join("day/photo.CR3");
+        fs::create_dir_all(raw.parent().expect("raw parent")).expect("raw parent directory");
+        fs::write(&raw, b"raw").expect("raw file");
+        let metadata = fs::metadata(&raw).expect("metadata");
+        let relative_path = "day/photo.CR3".to_string();
+        let snapshot = FileSnapshot::new(metadata.len(), modified_ms(&metadata));
+        let plan = CleanupPlan::new(
+            "1000-1-1".to_string(),
+            fs::canonicalize(&raw_root).expect("canonical raw root"),
+            [(relative_path.clone(), snapshot)],
+        );
+        let request = CleanupRequest {
+            plan_id: "1000-1-1".to_string(),
+            raw_root: raw_root.to_string_lossy().into_owned(),
+            destination: CleanupDestination::Quarantine,
+            items: vec![CleanupCandidate {
+                relative_path: relative_path.clone(),
+                expected_size_bytes: metadata.len(),
+                expected_modified_ms: modified_ms(&metadata),
+            }],
+        };
+
+        let result = cleanup_impl(&request, None, &plan).expect("cleanup");
+        assert_eq!(result.succeeded, 1);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.operation_id.as_deref(), Some("1000-1-1"));
+        assert!(!raw.exists());
+        assert!(
+            raw_root
+                .join(".framepair-quarantine/1000-1-1/day/photo.CR3")
+                .exists()
+        );
     }
 
     #[test]
@@ -841,7 +1004,7 @@ mod tests {
         let file = temp.path().join("notes.txt");
         fs::write(&file, b"do not delete").expect("file");
         let metadata = fs::metadata(&file).expect("metadata");
-        let candidate = DeleteCandidate {
+        let candidate = CleanupCandidate {
             relative_path: "notes.txt".to_string(),
             expected_size_bytes: metadata.len(),
             expected_modified_ms: modified_ms(&metadata),

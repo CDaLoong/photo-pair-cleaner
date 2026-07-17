@@ -17,13 +17,13 @@ impl FileSnapshot {
 }
 
 #[derive(Debug)]
-pub(crate) struct DeletionPlan {
+pub(crate) struct CleanupPlan {
     id: String,
     raw_root: PathBuf,
     candidates: HashMap<String, FileSnapshot>,
 }
 
-impl DeletionPlan {
+impl CleanupPlan {
     pub(crate) fn new(
         id: String,
         raw_root: PathBuf,

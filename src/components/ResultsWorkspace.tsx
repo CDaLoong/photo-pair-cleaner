@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArchiveRestore,
   Check,
   CheckCircle2,
   FileCode2,
@@ -10,12 +11,19 @@ import {
   PanelRightClose,
   PanelRightOpen,
   RefreshCw,
+  RotateCcw,
   Search,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef } from "react";
-import type { DeleteSummary, FilterMode, ScanItem, ScanSummary } from "../types";
+import type {
+  CleanupSummary,
+  FilterMode,
+  QuarantineOperation,
+  ScanItem,
+  ScanSummary,
+} from "../types";
 import {
   decisionReason,
   formatBytes,
@@ -68,7 +76,8 @@ interface ResultsWorkspaceProps {
   allVisibleSelected: boolean;
   someVisibleSelected: boolean;
   visibleDeleteCount: number;
-  lastOperation: DeleteSummary | null;
+  lastOperation: CleanupSummary | null;
+  quarantineOperations: QuarantineOperation[];
   onFilterChange: (filter: FilterMode) => void;
   onSearchChange: (search: string) => void;
   onToggleItem: (item: ScanItem) => void;
@@ -82,6 +91,8 @@ interface ResultsWorkspaceProps {
   onRevealItem: (item: ScanItem) => void;
   onOpenTrash: () => void;
   onOpenLog: (path: string) => void;
+  onRevealQuarantine: (operationId: string) => void;
+  onRestoreQuarantine: (operationId: string) => void;
 }
 
 export function ResultsWorkspace({
@@ -104,6 +115,7 @@ export function ResultsWorkspace({
   someVisibleSelected,
   visibleDeleteCount,
   lastOperation,
+  quarantineOperations,
   onFilterChange,
   onSearchChange,
   onToggleItem,
@@ -117,6 +129,8 @@ export function ResultsWorkspace({
   onRevealItem,
   onOpenTrash,
   onOpenLog,
+  onRevealQuarantine,
+  onRestoreQuarantine,
 }: ResultsWorkspaceProps) {
   const selectedBreakdown = selectionBreakdown(selectedItems);
   const visibleKeeps = scan.items.filter((item) => item.status === "keep").length;
@@ -124,6 +138,9 @@ export function ResultsWorkspace({
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([extension, count]) => `${extension} ${count}`)
     .join(" · ");
+  const recoverableOperations = quarantineOperations.filter(
+    (operation) => operation.recoverable > 0 && operation.operationId !== lastOperation?.operationId,
+  );
 
   return (
     <main className="review-view">
@@ -157,10 +174,30 @@ export function ResultsWorkspace({
       {lastOperation && (
         <section className="operation-receipt" aria-label="最近一次处理结果">
           <CheckCircle2 aria-hidden="true" size={18} />
-          <div><strong>最近一次处理：成功 {lastOperation.succeeded}，失败 {lastOperation.failed}</strong><span>文件位于系统回收站，可根据操作日志核对。</span></div>
+          <div><strong>最近一次处理：成功 {lastOperation.succeeded}，失败 {lastOperation.failed}</strong><span>{lastOperation.destination === "quarantine" ? "文件位于 FramePair 隔离区，可直接恢复。" : "文件位于系统回收站，可根据操作日志核对。"}</span></div>
           <div className="receipt-actions">
-            <button className="secondary-command" type="button" onClick={onOpenTrash}><Trash2 aria-hidden="true" size={16} />打开回收站</button>
+            {lastOperation.destination === "trash" && <button className="secondary-command" type="button" onClick={onOpenTrash}><Trash2 aria-hidden="true" size={16} />打开回收站</button>}
+            {lastOperation.operationId && <button className="secondary-command" type="button" onClick={() => onRevealQuarantine(lastOperation.operationId!)}><ArchiveRestore aria-hidden="true" size={16} />打开隔离目录</button>}
+            {lastOperation.operationId && <button className="secondary-command" type="button" onClick={() => onRestoreQuarantine(lastOperation.operationId!)}><RotateCcw aria-hidden="true" size={16} />恢复本次文件</button>}
             {lastOperation.logPath && <button className="secondary-command" type="button" onClick={() => onOpenLog(lastOperation.logPath!)}><History aria-hidden="true" size={16} />查看日志</button>}
+          </div>
+        </section>
+      )}
+
+      {recoverableOperations.length > 0 && (
+        <section className="quarantine-history" aria-label="可恢复的隔离操作">
+          <div className="quarantine-history-heading">
+            <ArchiveRestore aria-hidden="true" size={18} />
+            <div><strong>隔离历史</strong><span>{recoverableOperations.length} 次操作仍有文件可以恢复</span></div>
+          </div>
+          <div className="quarantine-operation-list">
+            {recoverableOperations.slice(0, 3).map((operation) => (
+              <div key={operation.operationId}>
+                <span><strong>{formatDate(operation.createdAtMs)}</strong><small>{operation.recoverable} / {operation.moved} 个文件可恢复</small></span>
+                <button className="icon-button" type="button" onClick={() => onRevealQuarantine(operation.operationId)} aria-label="打开隔离目录" title="打开隔离目录"><FolderOpen aria-hidden="true" size={16} /></button>
+                <button className="secondary-command" type="button" onClick={() => onRestoreQuarantine(operation.operationId)}><RotateCcw aria-hidden="true" size={15} />恢复</button>
+              </div>
+            ))}
           </div>
         </section>
       )}
@@ -273,9 +310,9 @@ export function ResultsWorkspace({
               <strong>已选 {selectedBreakdown.total} / {cleanableCount} 个文件</strong>
               <span>{selectedBreakdown.raw} RAW · {selectedBreakdown.sidecar} XMP · {formatBytes(selectedBytes)}</span>
             </div>
-            <div className="action-safety"><ShieldCheck aria-hidden="true" size={16} />仅选中文件会被移入系统回收站</div>
+            <div className="action-safety"><ShieldCheck aria-hidden="true" size={16} />仅处理选中文件，去向将在最终确认时选择</div>
             <button className="danger-command" type="button" onClick={onRequestDelete} disabled={busy || blocked || selectedItems.length === 0}>
-              <Trash2 aria-hidden="true" size={17} />复核并移入回收站
+              <Trash2 aria-hidden="true" size={17} />复核并执行清理
             </button>
           </div>
         </section>

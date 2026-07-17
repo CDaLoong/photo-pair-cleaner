@@ -13,10 +13,13 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ResultsWorkspace } from "./components/ResultsWorkspace";
 import { SetupView } from "./components/SetupView";
 import type {
-  DeleteSummary,
+  CleanupDestination,
+  CleanupSummary,
   DirectoryKind,
   FilterMode,
   Notice,
+  QuarantineOperation,
+  RestoreSummary,
   ScanItem,
   ScanSummary,
   WorkPhase,
@@ -81,7 +84,9 @@ function App() {
   const [filter, setFilter] = useState<FilterMode>("delete");
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [lastOperation, setLastOperation] = useState<DeleteSummary | null>(null);
+  const [lastOperation, setLastOperation] = useState<CleanupSummary | null>(null);
+  const [cleanupDestination, setCleanupDestination] = useState<CleanupDestination>("trash");
+  const [quarantineOperations, setQuarantineOperations] = useState<QuarantineOperation[]>([]);
   const [confirmAcknowledged, setConfirmAcknowledged] = useState(false);
   const confirmDialog = useRef<HTMLDialogElement>(null);
 
@@ -149,6 +154,7 @@ function App() {
     }
     resetReview();
     setLastOperation(null);
+    setQuarantineOperations([]);
   }
 
   async function chooseDirectory(kind: DirectoryKind) {
@@ -216,6 +222,7 @@ function App() {
       setFilter(result.missingRaws > 0 ? "delete" : "all");
       setSearch("");
       persistSettings();
+      void refreshQuarantineOperations(rawRoot);
       if (!options.silent) {
         if (result.duplicateReferenceKeys > 0) {
           setNotice({
@@ -308,9 +315,10 @@ function App() {
       return;
     }
     if (selectedItems.length === 0) {
-      setNotice({ tone: "warning", title: "请先选择需要移入回收站的文件" });
+      setNotice({ tone: "warning", title: "请先选择需要处理的文件" });
       return;
     }
+    setCleanupDestination("trash");
     setConfirmAcknowledged(false);
     confirmDialog.current?.showModal();
   }
@@ -320,7 +328,7 @@ function App() {
     setConfirmAcknowledged(false);
   }
 
-  async function executeDelete() {
+  async function executeCleanup() {
     if (!confirmAcknowledged) return;
     confirmDialog.current?.close();
     setConfirmAcknowledged(false);
@@ -328,13 +336,14 @@ function App() {
       setNotice({ tone: "warning", title: "扫描结果已失效，请重新扫描" });
       return;
     }
-    setPhase("deleting");
+    setPhase("executing");
     setNotice(null);
     try {
-      const result = await invoke<DeleteSummary>("move_to_trash", {
+      const result = await invoke<CleanupSummary>("execute_cleanup", {
         request: {
           planId: scan.planId,
           rawRoot,
+          destination: cleanupDestination,
           items: selectedItems.map((item) => ({
             relativePath: item.relativePath,
             expectedSizeBytes: item.sizeBytes,
@@ -344,7 +353,7 @@ function App() {
       });
       setLastOperation(result);
       const firstFailure = result.results.find((item) => !item.success);
-      const deletionNotice: Notice = result.failed > 0
+      const cleanupNotice: Notice = result.failed > 0
         ? {
             tone: "error",
             title: `${result.succeeded} 个文件已处理，${result.failed} 个失败`,
@@ -354,16 +363,71 @@ function App() {
           }
         : {
             tone: "success",
-            title: `${result.succeeded} 个文件已移入回收站/废纸篓`,
-            detail: result.logWarning ?? "可在下方打开系统回收站或查看操作日志",
+            title: cleanupDestination === "quarantine"
+              ? `${result.succeeded} 个文件已移入 FramePair 隔离区`
+              : `${result.succeeded} 个文件已移入回收站/废纸篓`,
+            detail: result.logWarning ?? (cleanupDestination === "quarantine"
+              ? "可在下方打开隔离目录或恢复本次文件"
+              : "可在下方打开系统回收站或查看操作日志"),
           };
-      setNotice(deletionNotice);
+      setNotice(cleanupNotice);
       const rescan = await runScan({ silent: true });
       if (!rescan.ok) {
-        setNotice(noticeAfterRescanFailure(deletionNotice, rescan.error ?? "未知错误"));
+        setNotice(noticeAfterRescanFailure(cleanupNotice, rescan.error ?? "未知错误"));
       }
     } catch (error) {
       setNotice({ tone: "error", title: "清理失败", detail: errorMessage(error) });
+    } finally {
+      setPhase("idle");
+    }
+  }
+
+  async function refreshQuarantineOperations(root = rawRoot) {
+    if (!root) {
+      setQuarantineOperations([]);
+      return;
+    }
+    try {
+      const operations = await invoke<QuarantineOperation[]>("list_quarantine_operations", {
+        rawRoot: root,
+      });
+      setQuarantineOperations(operations);
+    } catch {
+      setQuarantineOperations([]);
+    }
+  }
+
+  async function restoreQuarantineOperation(operationId: string) {
+    setPhase("executing");
+    setNotice(null);
+    try {
+      const result = await invoke<RestoreSummary>("restore_quarantine_operation", {
+        rawRoot,
+        operationId,
+      });
+      const firstFailure = result.results.find((item) => !item.success);
+      const restoreNotice: Notice = result.failed > 0
+        ? {
+            tone: "error",
+            title: `${result.succeeded} 个文件已恢复，${result.failed} 个失败`,
+            detail: firstFailure
+              ? `${firstFailure.relativePath}：${firstFailure.message}`
+              : undefined,
+          }
+        : {
+            tone: "success",
+            title: `${result.succeeded} 个文件已恢复到原位置`,
+            detail: result.succeeded === 0 ? "本次操作没有待恢复文件" : undefined,
+          };
+      setNotice(restoreNotice);
+      setLastOperation(null);
+      const rescan = await runScan({ silent: true });
+      if (!rescan.ok) {
+        setNotice(noticeAfterRescanFailure(restoreNotice, rescan.error ?? "未知错误"));
+      }
+      await refreshQuarantineOperations();
+    } catch (error) {
+      setNotice({ tone: "error", title: "恢复失败", detail: errorMessage(error) });
     } finally {
       setPhase("idle");
     }
@@ -377,7 +441,7 @@ function App() {
     }
   }
 
-  const currentStep = phase === "deleting" ? 3 : scan ? 2 : 1;
+  const currentStep = phase === "executing" ? 3 : scan ? 2 : 1;
 
   return (
     <div className="app-shell">
@@ -398,7 +462,7 @@ function App() {
         </ol>
         <div className="header-state" aria-live="polite">
           {phase === "scanning" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在只读扫描</>}
-          {phase === "deleting" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在移入回收站</>}
+          {phase === "executing" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在安全移动文件</>}
           {phase === "idle" && scan && <>扫描于 {formatDate(scan.scannedAtMs)}</>}
           {phase === "idle" && !scan && <>本地处理，不上传照片</>}
         </div>
@@ -435,6 +499,7 @@ function App() {
           someVisibleSelected={someVisibleSelected}
           visibleDeleteCount={visibleDeleteItems.length}
           lastOperation={lastOperation}
+          quarantineOperations={quarantineOperations}
           onFilterChange={setFilter}
           onSearchChange={setSearch}
           onToggleItem={toggleItem}
@@ -448,6 +513,8 @@ function App() {
           onRevealItem={(item) => void runLocationCommand("reveal_scan_item", { rawRoot, relativePath: item.relativePath })}
           onOpenTrash={() => void runLocationCommand("open_system_trash")}
           onOpenLog={(logPath) => void runLocationCommand("reveal_operation_log", { logPath })}
+          onRevealQuarantine={(operationId) => void runLocationCommand("reveal_quarantine_operation", { rawRoot, operationId })}
+          onRestoreQuarantine={(operationId) => void restoreQuarantineOperation(operationId)}
         />
       ) : (
         <SetupView
@@ -470,11 +537,13 @@ function App() {
         selectedItems={selectedItems}
         selectedBytes={selectedBytes}
         rawRoot={rawRoot}
+        destination={cleanupDestination}
         acknowledged={confirmAcknowledged}
         busy={busy}
+        onDestinationChange={setCleanupDestination}
         onAcknowledgedChange={setConfirmAcknowledged}
         onCancel={closeConfirmDialog}
-        onConfirm={() => void executeDelete()}
+        onConfirm={() => void executeCleanup()}
       />
     </div>
   );

@@ -1,4 +1,5 @@
 import type {
+  CleanupDestination,
   DirectoryKind,
   FileKind,
   Notice,
@@ -6,6 +7,12 @@ import type {
   ScanStatus,
   ScanSummary,
 } from "./types";
+
+export function cleanupActionLabel(destination: CleanupDestination): string {
+  return destination === "trash"
+    ? "移入系统回收站"
+    : "移入 FramePair 隔离区";
+}
 
 interface ReclaimableItem {
   status: ScanStatus;

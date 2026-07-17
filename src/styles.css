@@ -841,6 +841,68 @@ input[type="checkbox"] {
   color: var(--text);
 }
 
+.quarantine-history {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 58px;
+  padding: 8px 14px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--line);
+}
+
+.quarantine-history-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 180px;
+}
+
+.quarantine-history-heading > svg {
+  color: var(--accent);
+}
+
+.quarantine-history-heading > div,
+.quarantine-operation-list span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.quarantine-history-heading strong,
+.quarantine-operation-list strong {
+  font-size: 12px;
+}
+
+.quarantine-history-heading span,
+.quarantine-operation-list small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.quarantine-operation-list {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  justify-content: flex-end;
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.quarantine-operation-list > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) 34px auto;
+  gap: 6px;
+  align-items: center;
+  min-width: 230px;
+}
+
+.quarantine-operation-list .secondary-command {
+  min-height: 32px;
+  padding: 5px 8px;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1268,6 +1330,56 @@ dd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cleanup-destination {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cleanup-destination > button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 56px;
+  padding: 9px 10px;
+  color: var(--muted);
+  text-align: left;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.cleanup-destination > button[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--surface-active);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 82%);
+}
+
+.cleanup-destination > button:disabled {
+  cursor: not-allowed;
+}
+
+.cleanup-destination span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.cleanup-destination strong {
+  font-size: 12px;
+}
+
+.cleanup-destination small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .dialog-file-preview {

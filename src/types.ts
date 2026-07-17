@@ -28,20 +28,42 @@ export interface ScanSummary {
   items: ScanItem[];
 }
 
-export interface DeleteSummary {
+export type CleanupDestination = "trash" | "quarantine";
+
+export interface CleanupResult {
+  relativePath: string;
+  success: boolean;
+  message: string;
+}
+
+export interface CleanupSummary {
   succeeded: number;
   failed: number;
-  results: Array<{
-    relativePath: string;
-    success: boolean;
-    message: string;
-  }>;
+  destination: CleanupDestination;
+  operationId: string | null;
+  quarantinePath: string | null;
+  results: CleanupResult[];
   logPath: string | null;
   logWarning: string | null;
 }
 
+export interface RestoreSummary {
+  succeeded: number;
+  failed: number;
+  results: CleanupResult[];
+}
+
+export interface QuarantineOperation {
+  operationId: string;
+  createdAtMs: number;
+  moved: number;
+  recoverable: number;
+  restored: number;
+  manifestPath: string;
+}
+
 export type FilterMode = "delete" | "keep" | "all";
-export type WorkPhase = "idle" | "scanning" | "deleting";
+export type WorkPhase = "idle" | "scanning" | "executing";
 
 export interface Notice {
   tone: "success" | "warning" | "error" | "info";
