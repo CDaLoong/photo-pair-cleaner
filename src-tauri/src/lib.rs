@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -381,6 +382,85 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
+fn resolve_scan_item_path(raw_root: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let root = canonical_directory(raw_root, "RAW 源目录")?;
+    let relative = safe_relative_path(relative_path)?;
+    let path = fs::canonicalize(root.join(relative))
+        .map_err(|error| format!("文件已不存在或不可访问：{error}"))?;
+    if !path.starts_with(&root) {
+        return Err("文件解析后超出了 RAW 源目录".to_string());
+    }
+    Ok(path)
+}
+
+fn validate_operation_log_path(log_root: &Path, value: &str) -> Result<PathBuf, String> {
+    let root = fs::canonicalize(log_root).map_err(|error| format!("日志目录不可访问：{error}"))?;
+    let path = fs::canonicalize(value).map_err(|error| format!("操作日志不可访问：{error}"))?;
+    if !path.starts_with(&root)
+        || path.file_name().and_then(|name| name.to_str()) != Some("operations.jsonl")
+    {
+        return Err("操作日志路径不在应用日志目录中".to_string());
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_path(path: &Path) -> Result<(), String> {
+    Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法在 Finder 中显示：{error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path(path: &Path) -> Result<(), String> {
+    Command::new("explorer.exe")
+        .arg(format!("/select,{}", path.display()))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法在文件资源管理器中显示：{error}"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn reveal_path(path: &Path) -> Result<(), String> {
+    let directory = path.parent().unwrap_or(path);
+    Command::new("xdg-open")
+        .arg(directory)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法在文件管理器中显示：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn open_trash_location() -> Result<(), String> {
+    let home = std::env::var_os("HOME").ok_or_else(|| "无法确定用户目录".to_string())?;
+    Command::new("open")
+        .arg(PathBuf::from(home).join(".Trash"))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开废纸篓：{error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn open_trash_location() -> Result<(), String> {
+    Command::new("explorer.exe")
+        .arg("shell:RecycleBinFolder")
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开回收站：{error}"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn open_trash_location() -> Result<(), String> {
+    Command::new("xdg-open")
+        .arg("trash:///")
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开回收站：{error}"))
+}
+
 fn validate_delete_candidate(
     raw_root: &Path,
     candidate: &DeleteCandidate,
@@ -565,12 +645,49 @@ async fn move_to_trash(
         .map_err(|error| format!("清理任务异常结束：{error}"))?
 }
 
+#[tauri::command]
+async fn reveal_scan_item(raw_root: String, relative_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = resolve_scan_item_path(&raw_root, &relative_path)?;
+        reveal_path(&path)
+    })
+    .await
+    .map_err(|error| format!("定位文件任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn reveal_operation_log(app: tauri::AppHandle, log_path: String) -> Result<(), String> {
+    let log_root = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| format!("无法确定应用日志目录：{error}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = validate_operation_log_path(&log_root, &log_path)?;
+        reveal_path(&path)
+    })
+    .await
+    .map_err(|error| format!("定位操作日志任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn open_system_trash() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(open_trash_location)
+        .await
+        .map_err(|error| format!("打开回收站任务异常结束：{error}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(DeletionPlanStore::default())
-        .invoke_handler(tauri::generate_handler![scan_pairs, move_to_trash])
+        .invoke_handler(tauri::generate_handler![
+            scan_pairs,
+            move_to_trash,
+            reveal_scan_item,
+            reveal_operation_log,
+            open_system_trash
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run FramePair");
 }
@@ -678,5 +795,35 @@ mod tests {
         };
         let root = fs::canonicalize(temp.path()).expect("canonical root");
         assert!(validate_delete_candidate(&root, &candidate).is_err());
+    }
+
+    #[test]
+    fn reveal_path_resolution_stays_inside_raw_root() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let raw_root = temp.path().join("RAW");
+        fs::create_dir_all(&raw_root).expect("raw directory");
+        fs::write(raw_root.join("photo.NEF"), b"raw").expect("raw file");
+
+        let raw_root_value = raw_root.to_string_lossy().into_owned();
+        let resolved = resolve_scan_item_path(&raw_root_value, "photo.NEF").expect("safe path");
+        assert_eq!(
+            resolved,
+            fs::canonicalize(raw_root.join("photo.NEF")).expect("canonical")
+        );
+        assert!(resolve_scan_item_path(&raw_root_value, "../outside.NEF").is_err());
+    }
+
+    #[test]
+    fn operation_log_must_use_expected_file_inside_log_root() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let log_root = temp.path().join("logs");
+        fs::create_dir_all(&log_root).expect("log directory");
+        let operation_log = log_root.join("operations.jsonl");
+        let other_log = log_root.join("other.jsonl");
+        fs::write(&operation_log, b"{}").expect("operation log");
+        fs::write(&other_log, b"{}").expect("other log");
+
+        assert!(validate_operation_log_path(&log_root, &operation_log.to_string_lossy()).is_ok());
+        assert!(validate_operation_log_path(&log_root, &other_log.to_string_lossy()).is_err());
     }
 }

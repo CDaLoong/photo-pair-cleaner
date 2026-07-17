@@ -1,4 +1,4 @@
-import type { FileKind, Notice, ScanStatus } from "./types";
+import type { FileKind, Notice, ScanItem, ScanStatus, ScanSummary } from "./types";
 
 interface ReclaimableItem {
   status: ScanStatus;
@@ -16,6 +16,45 @@ export function reclaimableBytes(
         item.status === "delete" && (item.kind === "raw" || includeSidecars),
     )
     .reduce((sum, item) => sum + item.sizeBytes, 0);
+}
+
+export function cleanableItems(
+  items: ScanItem[],
+  includeSidecars: boolean,
+): ScanItem[] {
+  return items.filter(
+    (item) =>
+      item.status === "delete" && (item.kind === "raw" || includeSidecars),
+  );
+}
+
+export function selectionBreakdown(items: ScanItem[]): {
+  raw: number;
+  sidecar: number;
+  total: number;
+} {
+  let raw = 0;
+  let sidecar = 0;
+  for (const item of items) {
+    if (item.kind === "raw") raw += 1;
+    else sidecar += 1;
+  }
+  return { raw, sidecar, total: raw + sidecar };
+}
+
+export function decisionReason(item: ScanItem): string {
+  if (item.status === "keep") {
+    return item.matchedReference
+      ? `匹配 JPG：${item.matchedReference}`
+      : "已找到同路径同名 JPG";
+  }
+  return item.kind === "sidecar"
+    ? "跟随未配对 RAW 处理"
+    : "未找到同路径同名 JPG";
+}
+
+export function scanHasBlockingIssues(scan: ScanSummary | null): boolean {
+  return (scan?.duplicateReferenceKeys ?? 0) > 0;
 }
 
 export function noticeAfterRescanFailure(notice: Notice, error: string): Notice {
