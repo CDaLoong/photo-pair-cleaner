@@ -628,14 +628,20 @@ input:disabled {
   gap: 10px;
 }
 
-.scan-mode-control {
+.scan-mode-control,
+.reference-source-control {
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-.scan-mode-control > button {
+.reference-source-control {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.scan-mode-control > button,
+.reference-source-control > button {
   display: flex;
   min-height: 54px;
   padding: 9px 11px;
@@ -649,21 +655,88 @@ input:disabled {
   cursor: pointer;
 }
 
-.scan-mode-control > button[aria-pressed="true"] {
+.scan-mode-control > button[aria-pressed="true"],
+.reference-source-control > button[aria-pressed="true"] {
   color: var(--text);
   background: var(--surface-active);
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 84%);
 }
 
-.scan-mode-control strong {
+.scan-mode-control strong,
+.reference-source-control strong {
   font-size: 12px;
 }
 
-.scan-mode-control small {
+.scan-mode-control small,
+.reference-source-control small {
   margin-top: 3px;
   color: var(--muted);
   font-size: 10px;
+}
+
+.scan-mode-control > button:disabled,
+.reference-source-control > button:disabled {
+  cursor: not-allowed;
+}
+
+.rating-threshold-row {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  padding: 9px 11px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.rating-threshold-row > span,
+.rating-threshold-row > span > span {
+  display: flex;
+  min-width: 0;
+}
+
+.rating-threshold-row > span {
+  align-items: center;
+  gap: 8px;
+}
+
+.rating-threshold-row > span > svg {
+  color: var(--warning);
+}
+
+.rating-threshold-row > span > span {
+  flex-direction: column;
+}
+
+.rating-threshold-row strong {
+  font-size: 12px;
+}
+
+.rating-threshold-row small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.rating-threshold-row > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rating-threshold-row input[type="number"] {
+  width: 58px;
+  height: 34px;
+  padding: 0 7px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-size: 13px;
 }
 
 .toggle-row {

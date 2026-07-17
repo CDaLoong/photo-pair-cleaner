@@ -21,6 +21,7 @@ import type {
   CleanupSummary,
   FilterMode,
   QuarantineOperation,
+  ReferenceSourceType,
   ScanItem,
   ScanSummary,
 } from "../types";
@@ -60,6 +61,7 @@ function SelectionCheckbox({ checked, indeterminate, disabled, onChange }: Selec
 interface ResultsWorkspaceProps {
   scan: ScanSummary;
   referenceRoot: string;
+  referenceSourceType: ReferenceSourceType;
   rawRoot: string;
   includeSidecars: boolean;
   busy: boolean;
@@ -99,6 +101,7 @@ interface ResultsWorkspaceProps {
 export function ResultsWorkspace({
   scan,
   referenceRoot,
+  referenceSourceType,
   rawRoot,
   includeSidecars,
   busy,
@@ -136,6 +139,16 @@ export function ResultsWorkspace({
 }: ResultsWorkspaceProps) {
   const selectedBreakdown = selectionBreakdown(selectedItems);
   const audit = scan.mode === "auditReference";
+  const referenceSourceLabel = referenceSourceType === "directory"
+    ? audit ? "JPG 审计范围" : "JPG 只读参考"
+    : referenceSourceType === "manifest"
+      ? "保留文件清单"
+      : "XMP 星级参考";
+  const referenceCountLabel = referenceSourceType === "directory"
+    ? "参考 JPG"
+    : referenceSourceType === "manifest"
+      ? "清单条目"
+      : "达标 XMP";
   const visibleMatched = scan.items.filter((item) => item.matchStatus === "matched").length;
   const formatSummary = Object.entries(rawFormatCounts(scan.items))
     .sort(([left], [right]) => left.localeCompare(right))
@@ -149,7 +162,7 @@ export function ResultsWorkspace({
     <main className="review-view">
       <section className="review-source-bar" aria-label="本次扫描目录">
         <div className="source-summary">
-          <div><FileImage aria-hidden="true" size={17} /><span><small>{audit ? "JPG 审计范围" : "JPG 只读参考"}</small><strong title={referenceRoot}>{referenceRoot}</strong></span></div>
+          <div><FileImage aria-hidden="true" size={17} /><span><small>{referenceSourceLabel}</small><strong title={referenceRoot}>{referenceRoot}</strong></span></div>
           <div><FolderOpen aria-hidden="true" size={17} /><span><small>{audit ? "RAW 只读参照" : "RAW 处理范围"}</small><strong title={rawRoot}>{rawRoot}</strong></span></div>
         </div>
         <div className="source-actions">
@@ -159,7 +172,7 @@ export function ResultsWorkspace({
       </section>
 
       <section className="summary-band" aria-label="扫描汇总">
-        <div><span>参考 JPG</span><strong>{scan.referenceFiles}</strong></div>
+        <div><span>{referenceCountLabel}</span><strong>{scan.referenceFiles}</strong></div>
         <div><span title={formatSummary}>扫描 RAW{formatSummary ? ` · ${formatSummary}` : ""}</span><strong>{scan.rawFiles}</strong></div>
         <div className="summary-ok"><span>{audit ? "有 RAW 的 JPG" : "已配对 RAW"}</span><strong>{scan.matched}</strong></div>
         <div className="summary-warning"><span>{audit ? "无 RAW 的 JPG" : "未配对 RAW"}</span><strong>{scan.unmatched}</strong></div>
@@ -170,7 +183,7 @@ export function ResultsWorkspace({
       {blocked && (
         <section className="blocking-banner" role="alert">
           <AlertTriangle aria-hidden="true" size={19} />
-          <div><strong>发现 {scan.duplicateReferenceKeys} 组重复匹配键，已暂停清理</strong><span>请整理 JPG 参考目录后重新扫描，避免对歧义结果执行批量操作。</span></div>
+          <div><strong>发现 {scan.duplicateReferenceKeys} 组重复匹配键，已暂停清理</strong><span>请整理当前参考源后重新扫描，避免对歧义结果执行批量操作。</span></div>
         </section>
       )}
 

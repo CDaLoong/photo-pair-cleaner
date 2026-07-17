@@ -1,4 +1,9 @@
 export type ScanMode = "cleanupRaw" | "auditReference";
+export type ReferenceSourceType = "directory" | "manifest" | "xmpRating";
+export type ReferenceSource =
+  | { type: "directory"; root: string }
+  | { type: "manifest"; path: string }
+  | { type: "xmpRating"; root: string; minimumRating: number };
 export type MatchStatus = "matched" | "unmatched";
 export type FileKind = "raw" | "reference" | "sidecar";
 export type DirectoryKind = "reference" | "raw";

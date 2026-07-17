@@ -1,5 +1,6 @@
 mod formats;
 mod quarantine;
+mod reference;
 mod safety;
 
 use chrono::Utc;
@@ -19,7 +20,7 @@ use walkdir::WalkDir;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanRequest {
-    pub reference_root: String,
+    pub reference_source: reference::ReferenceSource,
     pub raw_root: String,
     pub case_sensitive: bool,
     pub mode: ScanMode,
@@ -255,28 +256,23 @@ fn scan_item(
 }
 
 pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
-    let reference_root = canonical_directory(&request.reference_root, "JPG 参考目录")?;
     let raw_root = canonical_directory(&request.raw_root, "RAW 源目录")?;
-    if reference_root.starts_with(&raw_root) || raw_root.starts_with(&reference_root) {
-        return Err("JPG 参考目录与 RAW 源目录不能相同或互相嵌套".to_string());
+    if request.mode == ScanMode::AuditReference && !request.reference_source.is_directory() {
+        return Err("反向审计只支持 JPG 目录参考源".to_string());
     }
-
-    let mut references: HashMap<String, Vec<(PathBuf, String)>> = HashMap::new();
-    for path in collect_files(&reference_root)? {
-        if !formats::is_reference(&path) {
-            continue;
+    let reference_index =
+        reference::build_index(&request.reference_source, request.case_sensitive)?;
+    if let reference::ReferenceSource::Directory { .. } = &request.reference_source {
+        let reference_root = reference_index
+            .root
+            .as_ref()
+            .ok_or_else(|| "JPG 参考目录缺失".to_string())?;
+        if reference_root.starts_with(&raw_root) || raw_root.starts_with(reference_root) {
+            return Err("JPG 参考目录与 RAW 源目录不能相同或互相嵌套".to_string());
         }
-        let relative = path
-            .strip_prefix(&reference_root)
-            .map_err(|_| "参考文件超出了参考目录".to_string())?;
-        let relative_display = display_relative(relative);
-        references
-            .entry(match_key(relative, request.case_sensitive))
-            .or_default()
-            .push((path, relative_display));
     }
 
-    let duplicate_reference_keys = references.values().filter(|paths| paths.len() > 1).count();
+    let duplicate_reference_keys = reference_index.duplicate_keys;
     let mut raw_paths = Vec::new();
     let mut raws: HashMap<String, Vec<String>> = HashMap::new();
     let mut sidecars: HashMap<String, Vec<PathBuf>> = HashMap::new();
@@ -309,10 +305,11 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
                     .strip_prefix(&raw_root)
                     .map_err(|_| "RAW 文件超出了源目录".to_string())?;
                 let key = match_key(relative, request.case_sensitive);
-                let matched_path = references
+                let matched_path = reference_index
+                    .entries
                     .get(&key)
                     .and_then(|paths| paths.first())
-                    .map(|(_, relative)| relative.clone());
+                    .map(|reference| reference.display_path.clone());
                 let match_status = if matched_path.is_some() {
                     matched += 1;
                     MatchStatus::Matched
@@ -329,9 +326,17 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
             }
         }
         ScanMode::AuditReference => {
-            for (key, paths) in &references {
+            let reference_root = reference_index
+                .root
+                .as_ref()
+                .ok_or_else(|| "JPG 参考目录缺失".to_string())?;
+            for (key, paths) in &reference_index.entries {
                 let matched_path = raws.get(key).and_then(|paths| paths.first()).cloned();
-                for (path, _) in paths {
+                for reference in paths {
+                    let path = reference
+                        .physical_path
+                        .as_ref()
+                        .ok_or_else(|| "反向审计缺少 JPG 文件路径".to_string())?;
                     let match_status = if matched_path.is_some() {
                         matched += 1;
                         MatchStatus::Matched
@@ -340,7 +345,7 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
                         MatchStatus::Unmatched
                     };
                     items.push(scan_item(
-                        &reference_root,
+                        reference_root,
                         path,
                         match_status,
                         FileKind::Reference,
@@ -399,7 +404,7 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
     Ok(ScanSummary {
         plan_id: String::new(),
         mode: request.mode,
-        reference_files: references.values().map(Vec::len).sum(),
+        reference_files: reference_index.source_items,
         raw_files: raw_paths.len(),
         matched,
         unmatched,
@@ -910,7 +915,9 @@ mod tests {
 
     fn request(reference_root: &Path, raw_root: &Path) -> ScanRequest {
         ScanRequest {
-            reference_root: reference_root.to_string_lossy().into_owned(),
+            reference_source: reference::ReferenceSource::Directory {
+                root: reference_root.to_string_lossy().into_owned(),
+            },
             raw_root: raw_root.to_string_lossy().into_owned(),
             case_sensitive: false,
             mode: ScanMode::CleanupRaw,
@@ -1041,6 +1048,56 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn cleanup_scan_accepts_a_manifest_reference_source() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let raw_root = temp.path().join("raw");
+        let manifest = temp.path().join("keepers.txt");
+        fs::create_dir_all(raw_root.join("day")).expect("raw day");
+        fs::write(raw_root.join("day/a.NEF"), b"kept").expect("kept raw");
+        fs::write(raw_root.join("day/b.NEF"), b"missing").expect("missing raw");
+        fs::write(&manifest, "day/a.JPG\n").expect("manifest");
+
+        let summary = scan_pairs_impl(&ScanRequest {
+            reference_source: reference::ReferenceSource::Manifest {
+                path: manifest.to_string_lossy().into_owned(),
+            },
+            raw_root: raw_root.to_string_lossy().into_owned(),
+            case_sensitive: false,
+            mode: ScanMode::CleanupRaw,
+        })
+        .expect("manifest scan");
+        assert_eq!(summary.matched, 1);
+        assert_eq!(summary.unmatched, 1);
+    }
+
+    #[test]
+    fn cleanup_scan_accepts_xmp_ratings_inside_the_raw_root() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let raw_root = temp.path().join("raw");
+        fs::create_dir_all(&raw_root).expect("raw root");
+        fs::write(raw_root.join("a.NEF"), b"kept").expect("kept raw");
+        fs::write(raw_root.join("b.NEF"), b"missing").expect("missing raw");
+        fs::write(
+            raw_root.join("a.NEF.xmp"),
+            br#"<rdf:Description xmp:Rating="5" />"#,
+        )
+        .expect("rated xmp");
+
+        let summary = scan_pairs_impl(&ScanRequest {
+            reference_source: reference::ReferenceSource::XmpRating {
+                root: raw_root.to_string_lossy().into_owned(),
+                minimum_rating: 4,
+            },
+            raw_root: raw_root.to_string_lossy().into_owned(),
+            case_sensitive: false,
+            mode: ScanMode::CleanupRaw,
+        })
+        .expect("xmp scan");
+        assert_eq!(summary.matched, 1);
+        assert_eq!(summary.unmatched, 1);
     }
 
     #[test]

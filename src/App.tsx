@@ -19,6 +19,8 @@ import type {
   FilterMode,
   Notice,
   QuarantineOperation,
+  ReferenceSource,
+  ReferenceSourceType,
   RestoreSummary,
   ScanItem,
   ScanMode,
@@ -27,6 +29,7 @@ import type {
 } from "./types";
 import {
   cleanableItems,
+  canAuditReferenceSource,
   errorMessage,
   formatBytes,
   formatDate,
@@ -42,6 +45,10 @@ interface StoredSettings {
   includeSidecars: boolean;
   caseSensitive: boolean;
   scanMode: ScanMode;
+  referenceSourceType: ReferenceSourceType;
+  manifestPath: string;
+  ratingRoot: string;
+  minimumRating: number;
 }
 
 interface ScanRunResult {
@@ -59,6 +66,10 @@ function loadSettings(): StoredSettings {
         includeSidecars: true,
         caseSensitive: false,
         scanMode: "cleanupRaw",
+        referenceSourceType: "directory",
+        manifestPath: "",
+        ratingRoot: "",
+        minimumRating: 4,
         ...(JSON.parse(stored) as Partial<StoredSettings>),
       };
     }
@@ -71,6 +82,10 @@ function loadSettings(): StoredSettings {
     includeSidecars: true,
     caseSensitive: false,
     scanMode: "cleanupRaw",
+    referenceSourceType: "directory",
+    manifestPath: "",
+    ratingRoot: "",
+    minimumRating: 4,
   };
 }
 
@@ -81,6 +96,10 @@ function App() {
   const [includeSidecars, setIncludeSidecars] = useState(initial.includeSidecars);
   const [caseSensitive, setCaseSensitive] = useState(initial.caseSensitive);
   const [scanMode, setScanMode] = useState<ScanMode>(initial.scanMode);
+  const [referenceSourceType, setReferenceSourceType] = useState<ReferenceSourceType>(initial.referenceSourceType);
+  const [manifestPath, setManifestPath] = useState(initial.manifestPath);
+  const [ratingRoot, setRatingRoot] = useState(initial.ratingRoot);
+  const [minimumRating, setMinimumRating] = useState(initial.minimumRating);
   const [phase, setPhase] = useState<WorkPhase>("idle");
   const [scan, setScan] = useState<ScanSummary | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -107,6 +126,11 @@ function App() {
   );
   const selectedBytes = selectedItems.reduce((sum, item) => sum + item.sizeBytes, 0);
   const selectedRow = scan?.items.find((item) => item.id === selectedRowId) ?? null;
+  const activeReferencePath = referenceSourceType === "directory"
+    ? referenceRoot
+    : referenceSourceType === "manifest"
+      ? manifestPath
+      : ratingRoot || rawRoot;
 
   const visibleItems = useMemo(() => {
     const term = search.trim().toLocaleLowerCase();
@@ -138,6 +162,10 @@ function App() {
         includeSidecars,
         caseSensitive,
         scanMode,
+        referenceSourceType,
+        manifestPath,
+        ratingRoot,
+        minimumRating,
         ...next,
       }),
     );
@@ -154,8 +182,13 @@ function App() {
 
   function applyDirectory(kind: DirectoryKind, path: string) {
     if (kind === "reference") {
-      setReferenceRoot(path);
-      persistSettings({ referenceRoot: path });
+      if (referenceSourceType === "xmpRating") {
+        setRatingRoot(path);
+        persistSettings({ ratingRoot: path });
+      } else {
+        setReferenceRoot(path);
+        persistSettings({ referenceRoot: path });
+      }
     } else {
       setRawRoot(path);
       persistSettings({ rawRoot: path });
@@ -170,12 +203,33 @@ function App() {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: kind === "reference" ? "选择 JPG 参考目录" : "选择 RAW 源目录",
+        title: kind === "reference"
+          ? referenceSourceType === "xmpRating" ? "选择 XMP 评分目录" : "选择 JPG 参考目录"
+          : "选择 RAW 源目录",
       });
       if (typeof selected !== "string") return;
       applyDirectory(kind, selected);
     } catch (error) {
       setNotice({ tone: "error", title: "无法打开目录选择器", detail: errorMessage(error) });
+    }
+  }
+
+  async function chooseManifest() {
+    try {
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        title: "选择保留文件清单",
+        filters: [{ name: "UTF-8 文本清单", extensions: ["txt"] }],
+      });
+      if (typeof selected !== "string") return;
+      setManifestPath(selected);
+      persistSettings({ manifestPath: selected });
+      resetReview();
+      setLastOperation(null);
+      setNotice({ tone: "success", title: "已添加保留文件清单", detail: selected });
+    } catch (error) {
+      setNotice({ tone: "error", title: "无法打开文件清单选择器", detail: errorMessage(error) });
     }
   }
 
@@ -194,7 +248,9 @@ function App() {
       applyDirectory(kind, path);
       setNotice({
         tone: "success",
-        title: kind === "reference" ? "已添加 JPG 参考目录" : "已添加 RAW 源目录",
+        title: kind === "reference"
+          ? referenceSourceType === "xmpRating" ? "已添加 XMP 评分目录" : "已添加 JPG 参考目录"
+          : "已添加 RAW 源目录",
         detail: path,
       });
     } catch (error) {
@@ -207,7 +263,7 @@ function App() {
   }
 
   async function runScan(options: { silent?: boolean } = {}): Promise<ScanRunResult> {
-    if (!referenceRoot || !rawRoot) {
+    if (!activeReferencePath || !rawRoot) {
       const error = "目录尚未选择";
       if (!options.silent) setNotice({ tone: "warning", title: error });
       return { ok: false, error };
@@ -215,9 +271,14 @@ function App() {
     setPhase("scanning");
     if (!options.silent) setNotice(null);
     try {
+      const referenceSource: ReferenceSource = referenceSourceType === "directory"
+        ? { type: "directory", root: referenceRoot }
+        : referenceSourceType === "manifest"
+          ? { type: "manifest", path: manifestPath }
+          : { type: "xmpRating", root: ratingRoot || rawRoot, minimumRating };
       const result = await invoke<ScanSummary>("scan_pairs", {
         request: {
-          referenceRoot,
+          referenceSource,
           rawRoot,
           caseSensitive,
           mode: scanMode,
@@ -237,7 +298,7 @@ function App() {
           setNotice({
             tone: "error",
             title: "扫描发现重复匹配键，清理操作已暂停",
-            detail: "请整理 JPG 参考目录后重新扫描",
+            detail: "请整理当前参考源后重新扫描",
           });
         } else if (result.unmatched > 0) {
           setNotice({
@@ -318,8 +379,29 @@ function App() {
   }
 
   function updateScanMode(mode: ScanMode) {
+    if (mode === "auditReference" && !canAuditReferenceSource(referenceSourceType)) {
+      setNotice({ tone: "warning", title: "反向审计只支持 JPG 目录参考源" });
+      return;
+    }
     setScanMode(mode);
     persistSettings({ scanMode: mode });
+    resetReview();
+    setLastOperation(null);
+  }
+
+  function updateReferenceSourceType(source: ReferenceSourceType) {
+    setReferenceSourceType(source);
+    const nextMode = canAuditReferenceSource(source) ? scanMode : "cleanupRaw";
+    if (nextMode !== scanMode) setScanMode(nextMode);
+    persistSettings({ referenceSourceType: source, scanMode: nextMode });
+    resetReview();
+    setLastOperation(null);
+  }
+
+  function updateMinimumRating(value: number) {
+    const next = Math.max(1, Math.min(5, Math.round(value)));
+    setMinimumRating(next);
+    persistSettings({ minimumRating: next });
     resetReview();
     setLastOperation(null);
   }
@@ -530,7 +612,8 @@ function App() {
       {scan ? (
         <ResultsWorkspace
           scan={scan}
-          referenceRoot={referenceRoot}
+          referenceRoot={activeReferencePath}
+          referenceSourceType={referenceSourceType}
           rawRoot={rawRoot}
           includeSidecars={includeSidecars}
           busy={busy}
@@ -573,16 +656,28 @@ function App() {
         <SetupView
           referenceRoot={referenceRoot}
           rawRoot={rawRoot}
+          referenceSourceType={referenceSourceType}
+          manifestPath={manifestPath}
+          ratingRoot={ratingRoot || rawRoot}
+          minimumRating={minimumRating}
           includeSidecars={includeSidecars}
           caseSensitive={caseSensitive}
           scanMode={scanMode}
           busy={busy}
           onChooseDirectory={chooseDirectory}
+          onChooseManifest={() => void chooseManifest()}
           onDropDirectories={(kind, paths) => void dropDirectories(kind, paths)}
           onDropError={(message) => setNotice({ tone: "warning", title: message })}
           onIncludeSidecarsChange={updateSidecars}
           onCaseSensitiveChange={updateCaseSensitivity}
           onScanModeChange={updateScanMode}
+          onReferenceSourceTypeChange={updateReferenceSourceType}
+          onMinimumRatingChange={updateMinimumRating}
+          onUseRawRootForRatings={() => {
+            setRatingRoot("");
+            persistSettings({ ratingRoot: "" });
+            resetReview();
+          }}
           onScan={() => void runScan()}
         />
       )}

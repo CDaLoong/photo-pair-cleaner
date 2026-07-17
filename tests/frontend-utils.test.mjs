@@ -125,3 +125,9 @@ test("only unmatched cleanup items are actionable", () => {
     false,
   );
 });
+
+test("reverse audit is available only for a directory reference source", () => {
+  assert.equal(utils.canAuditReferenceSource("directory"), true);
+  assert.equal(utils.canAuditReferenceSource("manifest"), false);
+  assert.equal(utils.canAuditReferenceSource("xmpRating"), false);
+});

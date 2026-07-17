@@ -4,10 +4,15 @@ import type {
   FileKind,
   MatchStatus,
   Notice,
+  ReferenceSourceType,
   ScanItem,
   ScanMode,
   ScanSummary,
 } from "./types";
+
+export function canAuditReferenceSource(source: ReferenceSourceType): boolean {
+  return source === "directory";
+}
 
 export function cleanupActionLabel(destination: CleanupDestination): string {
   return destination === "trash"
