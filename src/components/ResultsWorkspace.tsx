@@ -93,6 +93,7 @@ interface ResultsWorkspaceProps {
   onOpenLog: (path: string) => void;
   onRevealQuarantine: (operationId: string) => void;
   onRestoreQuarantine: (operationId: string) => void;
+  onExportAudit: () => void;
 }
 
 export function ResultsWorkspace({
@@ -131,9 +132,11 @@ export function ResultsWorkspace({
   onOpenLog,
   onRevealQuarantine,
   onRestoreQuarantine,
+  onExportAudit,
 }: ResultsWorkspaceProps) {
   const selectedBreakdown = selectionBreakdown(selectedItems);
-  const visibleKeeps = scan.items.filter((item) => item.status === "keep").length;
+  const audit = scan.mode === "auditReference";
+  const visibleMatched = scan.items.filter((item) => item.matchStatus === "matched").length;
   const formatSummary = Object.entries(rawFormatCounts(scan.items))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([extension, count]) => `${extension} ${count}`)
@@ -146,8 +149,8 @@ export function ResultsWorkspace({
     <main className="review-view">
       <section className="review-source-bar" aria-label="本次扫描目录">
         <div className="source-summary">
-          <div><FileImage aria-hidden="true" size={17} /><span><small>JPG 只读参考</small><strong title={referenceRoot}>{referenceRoot}</strong></span></div>
-          <div><FolderOpen aria-hidden="true" size={17} /><span><small>RAW 处理范围</small><strong title={rawRoot}>{rawRoot}</strong></span></div>
+          <div><FileImage aria-hidden="true" size={17} /><span><small>{audit ? "JPG 审计范围" : "JPG 只读参考"}</small><strong title={referenceRoot}>{referenceRoot}</strong></span></div>
+          <div><FolderOpen aria-hidden="true" size={17} /><span><small>{audit ? "RAW 只读参照" : "RAW 处理范围"}</small><strong title={rawRoot}>{rawRoot}</strong></span></div>
         </div>
         <div className="source-actions">
           <button className="secondary-command" type="button" onClick={onChangeDirectories} disabled={busy}>更换目录或设置</button>
@@ -158,10 +161,10 @@ export function ResultsWorkspace({
       <section className="summary-band" aria-label="扫描汇总">
         <div><span>参考 JPG</span><strong>{scan.referenceFiles}</strong></div>
         <div><span title={formatSummary}>扫描 RAW{formatSummary ? ` · ${formatSummary}` : ""}</span><strong>{scan.rawFiles}</strong></div>
-        <div className="summary-ok"><span>已配对 RAW</span><strong>{scan.matchedRaws}</strong></div>
-        <div className="summary-warning"><span>未配对 RAW</span><strong>{scan.missingRaws}</strong></div>
-        <div><span>可处理文件</span><strong>{cleanableCount}</strong></div>
-        <div><span>预计释放</span><strong>{formatBytes(reclaimableBytes(scan.items, includeSidecars))}</strong></div>
+        <div className="summary-ok"><span>{audit ? "有 RAW 的 JPG" : "已配对 RAW"}</span><strong>{scan.matched}</strong></div>
+        <div className="summary-warning"><span>{audit ? "无 RAW 的 JPG" : "未配对 RAW"}</span><strong>{scan.unmatched}</strong></div>
+        <div><span>{audit ? "审计模式" : "可处理文件"}</span><strong>{audit ? "只读" : cleanableCount}</strong></div>
+        <div><span>{audit ? "文件写入" : "预计释放"}</span><strong>{audit ? "无" : formatBytes(reclaimableBytes(scan.items, includeSidecars))}</strong></div>
       </section>
 
       {blocked && (
@@ -171,7 +174,7 @@ export function ResultsWorkspace({
         </section>
       )}
 
-      {lastOperation && (
+      {!audit && lastOperation && (
         <section className="operation-receipt" aria-label="最近一次处理结果">
           <CheckCircle2 aria-hidden="true" size={18} />
           <div><strong>最近一次处理：成功 {lastOperation.succeeded}，失败 {lastOperation.failed}</strong><span>{lastOperation.destination === "quarantine" ? "文件位于 FramePair 隔离区，可直接恢复。" : "文件位于系统回收站，可根据操作日志核对。"}</span></div>
@@ -184,7 +187,7 @@ export function ResultsWorkspace({
         </section>
       )}
 
-      {recoverableOperations.length > 0 && (
+      {!audit && recoverableOperations.length > 0 && (
         <section className="quarantine-history" aria-label="可恢复的隔离操作">
           <div className="quarantine-history-heading">
             <ArchiveRestore aria-hidden="true" size={18} />
@@ -207,8 +210,8 @@ export function ResultsWorkspace({
           <div className="results-toolbar">
             <div className="segment-control" role="tablist" aria-label="结果过滤">
               {([
-                ["delete", `待清理文件 ${cleanableCount}`],
-                ["keep", `已配对 RAW ${visibleKeeps}`],
+                ["unmatched", `${audit ? "无 RAW 的 JPG" : "未配对 RAW"} ${scan.unmatched}`],
+                ["matched", `已配对 ${visibleMatched}`],
                 ["all", `全部可见 ${scan.items.length - (!includeSidecars ? scan.sidecars : 0)}`],
               ] as const).map(([value, label]) => (
                 <button key={value} type="button" role="tab" aria-selected={filter === value} onClick={() => onFilterChange(value)}>
@@ -217,14 +220,14 @@ export function ResultsWorkspace({
               ))}
             </div>
             <div className="toolbar-actions">
-              <label className="inline-option">
+              {!audit && <label className="inline-option">
                 <input type="checkbox" checked={includeSidecars} onChange={(event) => onIncludeSidecarsChange(event.target.checked)} disabled={busy} />
                 包含 XMP
-              </label>
+              </label>}
               <label className="search-field">
                 <Search aria-hidden="true" size={16} />
                 <span className="sr-only">搜索路径或匹配参考</span>
-                <input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="搜索路径或 JPG" />
+                <input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder={audit ? "搜索 JPG 路径或 RAW" : "搜索 RAW 路径或 JPG"} />
               </label>
               <button
                 className="icon-button"
@@ -251,12 +254,12 @@ export function ResultsWorkspace({
               <thead>
                 <tr>
                   <th>
-                    <SelectionCheckbox
+                    {audit ? <ShieldCheck aria-hidden="true" size={16} /> : <SelectionCheckbox
                       checked={allVisibleSelected}
                       indeterminate={someVisibleSelected}
                       onChange={onToggleVisibleItems}
                       disabled={visibleDeleteCount === 0 || busy || blocked}
-                    />
+                    />}
                   </th>
                   <th>处理建议</th>
                   <th>文件与判定依据</th>
@@ -268,7 +271,7 @@ export function ResultsWorkspace({
                 {visibleItems.map((item) => (
                   <tr key={item.id} className={selectedRow?.id === item.id ? "is-active" : ""}>
                     <td>
-                      {item.status === "delete" ? (
+                      {!audit && item.matchStatus === "unmatched" ? (
                         <input
                           type="checkbox"
                           checked={selectedIds.has(item.id)}
@@ -276,12 +279,14 @@ export function ResultsWorkspace({
                           disabled={busy || blocked}
                           aria-label={`选择 ${item.relativePath}`}
                         />
-                      ) : <Check aria-hidden="true" className="keep-check" size={17} />}
+                      ) : item.matchStatus === "matched"
+                        ? <Check aria-hidden="true" className="keep-check" size={17} />
+                        : <AlertTriangle aria-hidden="true" className="audit-warning" size={17} />}
                     </td>
                     <td>
-                      <span className={`row-status status-${item.status}`}>
-                        {item.status === "keep" ? <CheckCircle2 aria-hidden="true" size={16} /> : <AlertTriangle aria-hidden="true" size={16} />}
-                        {item.status === "keep" ? "保留" : "可清理"}
+                      <span className={`row-status status-${item.matchStatus}`}>
+                        {item.matchStatus === "matched" ? <CheckCircle2 aria-hidden="true" size={16} /> : <AlertTriangle aria-hidden="true" size={16} />}
+                        {item.matchStatus === "matched" ? "已配对" : audit ? "缺少 RAW" : "可清理"}
                       </span>
                     </td>
                     <td>
@@ -290,7 +295,7 @@ export function ResultsWorkspace({
                         <span>{decisionReason(item)}</span>
                       </button>
                     </td>
-                    <td>{item.kind === "raw" ? <><FileImage aria-hidden="true" size={15} />RAW</> : <><FileCode2 aria-hidden="true" size={15} />XMP</>}</td>
+                    <td>{item.kind === "raw" ? <><FileImage aria-hidden="true" size={15} />RAW</> : item.kind === "reference" ? <><FileImage aria-hidden="true" size={15} />JPG</> : <><FileCode2 aria-hidden="true" size={15} />XMP</>}</td>
                     <td className="numeric">{formatBytes(item.sizeBytes)}</td>
                   </tr>
                 ))}
@@ -298,14 +303,20 @@ export function ResultsWorkspace({
             </table>
             {visibleItems.length === 0 && (
               <div className="empty-state compact">
-                {filter === "delete" && cleanableCount === 0 ? <CheckCircle2 aria-hidden="true" size={30} /> : <Search aria-hidden="true" size={28} />}
-                <strong>{filter === "delete" && cleanableCount === 0 ? "没有待清理文件" : "没有匹配结果"}</strong>
-                <span>{filter === "delete" && cleanableCount === 0 ? "所有 RAW 都找到了对应 JPG" : "尝试调整筛选或搜索条件"}</span>
+                {filter === "unmatched" && scan.unmatched === 0 ? <CheckCircle2 aria-hidden="true" size={30} /> : <Search aria-hidden="true" size={28} />}
+                <strong>{filter === "unmatched" && scan.unmatched === 0 ? (audit ? "没有缺少 RAW 的 JPG" : "没有待清理文件") : "没有匹配结果"}</strong>
+                <span>{filter === "unmatched" && scan.unmatched === 0 ? (audit ? "所有 JPG 都找到了对应 RAW" : "所有 RAW 都找到了对应 JPG") : "尝试调整筛选或搜索条件"}</span>
               </div>
             )}
           </div>
 
-          <div className="action-bar">
+          {audit ? <div className="action-bar audit-action-bar">
+            <div className="selection-summary"><strong>只读审计完成</strong><span>{scan.unmatched} 个 JPG 没有对应 RAW</span></div>
+            <div className="action-safety"><ShieldCheck aria-hidden="true" size={16} />不会修改 JPG 或 RAW 文件</div>
+            <button className="primary-command" type="button" onClick={onExportAudit} disabled={busy || scan.unmatched === 0}>
+              <FileCode2 aria-hidden="true" size={17} />导出未配对清单
+            </button>
+          </div> : <div className="action-bar">
             <div className="selection-summary">
               <strong>已选 {selectedBreakdown.total} / {cleanableCount} 个文件</strong>
               <span>{selectedBreakdown.raw} RAW · {selectedBreakdown.sidecar} XMP · {formatBytes(selectedBytes)}</span>
@@ -314,7 +325,7 @@ export function ResultsWorkspace({
             <button className="danger-command" type="button" onClick={onRequestDelete} disabled={busy || blocked || selectedItems.length === 0}>
               <Trash2 aria-hidden="true" size={17} />复核并执行清理
             </button>
-          </div>
+          </div>}
         </section>
 
         {inspectorOpen && selectedRow && (
@@ -323,9 +334,9 @@ export function ResultsWorkspace({
               <h2>文件详情</h2>
               <button className="icon-button" type="button" onClick={() => onInspectorOpenChange(false)} aria-label="关闭文件详情" title="关闭文件详情"><PanelRightClose aria-hidden="true" size={18} /></button>
             </div>
-            <section className={`decision-panel decision-${selectedRow.status}`}>
-              {selectedRow.status === "keep" ? <CheckCircle2 aria-hidden="true" size={18} /> : <AlertTriangle aria-hidden="true" size={18} />}
-              <div><strong>{selectedRow.status === "keep" ? "建议保留" : "进入清理候选"}</strong><span>{decisionReason(selectedRow)}</span></div>
+            <section className={`decision-panel decision-${selectedRow.matchStatus}`}>
+              {selectedRow.matchStatus === "matched" ? <CheckCircle2 aria-hidden="true" size={18} /> : <AlertTriangle aria-hidden="true" size={18} />}
+              <div><strong>{selectedRow.matchStatus === "matched" ? "已配对" : audit ? "缺少对应 RAW" : "进入清理候选"}</strong><span>{decisionReason(selectedRow)}</span></div>
             </section>
             <section className="file-detail">
               <dl>
@@ -333,7 +344,7 @@ export function ResultsWorkspace({
                 <div><dt>相对路径</dt><dd>{selectedRow.relativePath}</dd></div>
                 <div><dt>大小</dt><dd>{formatBytes(selectedRow.sizeBytes)}</dd></div>
                 <div><dt>修改时间</dt><dd>{formatDate(selectedRow.modifiedMs)}</dd></div>
-                <div><dt>对应 JPG</dt><dd>{selectedRow.matchedReference ?? "未找到"}</dd></div>
+                <div><dt>{selectedRow.kind === "reference" ? "对应 RAW" : "对应 JPG"}</dt><dd>{selectedRow.matchedPath ?? "未找到"}</dd></div>
               </dl>
               <button className="secondary-command full-width-command" type="button" onClick={() => onRevealItem(selectedRow)}><FolderOpen aria-hidden="true" size={16} />在文件管理器中显示</button>
             </section>

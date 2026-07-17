@@ -10,7 +10,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { DirectoryKind } from "../types";
+import type { DirectoryKind, ScanMode } from "../types";
 import { directoryDropTargetAtPoint } from "../utils";
 
 interface SetupViewProps {
@@ -18,12 +18,14 @@ interface SetupViewProps {
   rawRoot: string;
   includeSidecars: boolean;
   caseSensitive: boolean;
+  scanMode: ScanMode;
   busy: boolean;
   onChooseDirectory: (kind: DirectoryKind) => void;
   onDropDirectories: (kind: DirectoryKind, paths: string[]) => void;
   onDropError: (message: string) => void;
   onIncludeSidecarsChange: (checked: boolean) => void;
   onCaseSensitiveChange: (checked: boolean) => void;
+  onScanModeChange: (mode: ScanMode) => void;
   onScan: () => void;
 }
 
@@ -86,12 +88,14 @@ export function SetupView({
   rawRoot,
   includeSidecars,
   caseSensitive,
+  scanMode,
   busy,
   onChooseDirectory,
   onDropDirectories,
   onDropError,
   onIncludeSidecarsChange,
   onCaseSensitiveChange,
+  onScanModeChange,
   onScan,
 }: SetupViewProps) {
   const ready = Boolean(referenceRoot && rawRoot);
@@ -168,7 +172,7 @@ export function SetupView({
       <section className="setup-heading" aria-labelledby="setup-title">
         <div>
           <h1 id="setup-title">选择目录并进行只读扫描</h1>
-          <p>按相对路径和文件名比较 JPG 与主流 RAW，扫描阶段不会修改任何文件。</p>
+          <p>{scanMode === "cleanupRaw" ? "以保留的 JPG 为准，找出未配对 RAW。" : "反向检查保留的 JPG 是否仍有对应 RAW。"}扫描阶段不会修改任何文件。</p>
         </div>
         <div className="safety-assurance">
           <ShieldCheck aria-hidden="true" size={18} />
@@ -205,7 +209,15 @@ export function SetupView({
           </div>
         </div>
         <div className="settings-controls">
-          <label className="toggle-row">
+          <div className="scan-mode-control" role="group" aria-label="扫描方向">
+            <button type="button" aria-pressed={scanMode === "cleanupRaw"} onClick={() => onScanModeChange("cleanupRaw")} disabled={busy}>
+              <strong>清理无 JPG 的 RAW</strong><small>生成可执行清理计划</small>
+            </button>
+            <button type="button" aria-pressed={scanMode === "auditReference"} onClick={() => onScanModeChange("auditReference")} disabled={busy}>
+              <strong>检查无 RAW 的 JPG</strong><small>只读审计并可导出清单</small>
+            </button>
+          </div>
+          {scanMode === "cleanupRaw" && <label className="toggle-row">
             <span><strong>包含 XMP</strong><small>跟随对应的未配对 RAW 一起处理</small></span>
             <input
               type="checkbox"
@@ -213,7 +225,7 @@ export function SetupView({
               onChange={(event) => onIncludeSidecarsChange(event.target.checked)}
               disabled={busy}
             />
-          </label>
+          </label>}
           <label className="toggle-row">
             <span><strong>区分大小写</strong><small>关闭时 DSC_001 与 dsc_001 视为同名</small></span>
             <input
@@ -227,7 +239,7 @@ export function SetupView({
       </section>
 
       <div className="setup-command-row">
-        <p>{ready ? "目录已就绪，可以安全生成清理预览。" : "请先选择 JPG 参考目录和 RAW 源目录。"}</p>
+        <p>{ready ? (scanMode === "cleanupRaw" ? "目录已就绪，可以安全生成清理预览。" : "目录已就绪，可以生成只读审计结果。") : "请先选择 JPG 参考目录和 RAW 源目录。"}</p>
         <button
           className="primary-command primary-command-large"
           type="button"
@@ -235,7 +247,7 @@ export function SetupView({
           disabled={busy || !ready}
         >
           <ScanSearch aria-hidden="true" size={19} />
-          {busy ? "正在扫描" : "开始只读扫描"}
+          {busy ? "正在扫描" : scanMode === "cleanupRaw" ? "开始只读扫描" : "开始反向检查"}
         </button>
       </div>
     </main>

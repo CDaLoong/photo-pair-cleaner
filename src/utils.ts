@@ -2,9 +2,10 @@ import type {
   CleanupDestination,
   DirectoryKind,
   FileKind,
+  MatchStatus,
   Notice,
   ScanItem,
-  ScanStatus,
+  ScanMode,
   ScanSummary,
 } from "./types";
 
@@ -15,9 +16,18 @@ export function cleanupActionLabel(destination: CleanupDestination): string {
 }
 
 interface ReclaimableItem {
-  status: ScanStatus;
+  matchStatus: MatchStatus;
   kind: FileKind;
   sizeBytes: number;
+}
+
+export function isActionableItem(
+  item: Pick<ScanItem, "kind" | "matchStatus">,
+  mode: ScanMode,
+): boolean {
+  return mode === "cleanupRaw"
+    && item.matchStatus === "unmatched"
+    && (item.kind === "raw" || item.kind === "sidecar");
 }
 
 export interface DirectoryDropBounds {
@@ -57,7 +67,7 @@ export function reclaimableBytes(
   return items
     .filter(
       (item) =>
-        item.status === "delete" && (item.kind === "raw" || includeSidecars),
+        item.matchStatus === "unmatched" && (item.kind === "raw" || includeSidecars),
     )
     .reduce((sum, item) => sum + item.sizeBytes, 0);
 }
@@ -65,10 +75,11 @@ export function reclaimableBytes(
 export function cleanableItems(
   items: ScanItem[],
   includeSidecars: boolean,
+  mode: ScanMode = "cleanupRaw",
 ): ScanItem[] {
   return items.filter(
     (item) =>
-      item.status === "delete" && (item.kind === "raw" || includeSidecars),
+      isActionableItem(item, mode) && (item.kind === "raw" || includeSidecars),
   );
 }
 
@@ -87,18 +98,21 @@ export function selectionBreakdown(items: ScanItem[]): {
 }
 
 export function decisionReason(item: ScanItem): string {
-  if (item.status === "keep") {
-    return item.matchedReference
-      ? `匹配 JPG：${item.matchedReference}`
-      : "已找到同路径同名 JPG";
+  if (item.matchStatus === "matched") {
+    if (item.kind === "reference") {
+      return item.matchedPath ? `匹配 RAW：${item.matchedPath}` : "已找到同路径同名 RAW";
+    }
+    return item.matchedPath ? `匹配 JPG：${item.matchedPath}` : "已找到同路径同名 JPG";
   }
   return item.kind === "sidecar"
     ? "跟随未配对 RAW 处理"
-    : "未找到同路径同名 JPG";
+    : item.kind === "reference"
+      ? "未找到同路径同名 RAW"
+      : "未找到同路径同名 JPG";
 }
 
 export function scanHasBlockingIssues(scan: ScanSummary | null): boolean {
-  return (scan?.duplicateReferenceKeys ?? 0) > 0;
+  return scan?.mode === "cleanupRaw" && scan.duplicateReferenceKeys > 0;
 }
 
 export function noticeAfterRescanFailure(notice: Notice, error: string): Notice {

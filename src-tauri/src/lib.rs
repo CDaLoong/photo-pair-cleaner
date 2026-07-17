@@ -22,19 +22,28 @@ pub struct ScanRequest {
     pub reference_root: String,
     pub raw_root: String,
     pub case_sensitive: bool,
+    pub mode: ScanMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScanMode {
+    CleanupRaw,
+    AuditReference,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ScanStatus {
-    Keep,
-    Delete,
+pub enum MatchStatus {
+    Matched,
+    Unmatched,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FileKind {
     Raw,
+    Reference,
     Sidecar,
 }
 
@@ -47,19 +56,20 @@ pub struct ScanItem {
     pub extension: String,
     pub size_bytes: u64,
     pub modified_ms: Option<u64>,
-    pub status: ScanStatus,
+    pub match_status: MatchStatus,
     pub kind: FileKind,
-    pub matched_reference: Option<String>,
+    pub matched_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanSummary {
     pub plan_id: String,
+    pub mode: ScanMode,
     pub reference_files: usize,
     pub raw_files: usize,
-    pub matched_raws: usize,
-    pub missing_raws: usize,
+    pub matched: usize,
+    pub unmatched: usize,
     pub sidecars: usize,
     pub reclaimable_bytes: u64,
     pub duplicate_reference_keys: usize,
@@ -133,8 +143,14 @@ struct OperationLogRecord<'a> {
 }
 
 #[derive(Default)]
-struct CleanupPlanStore {
-    current: Mutex<Option<CleanupPlan>>,
+struct ScanPlanStore {
+    current: Mutex<Option<CurrentPlan>>,
+}
+
+struct CurrentPlan {
+    cleanup: CleanupPlan,
+    mode: ScanMode,
+    audit_paths: Vec<String>,
 }
 
 fn next_plan_id() -> String {
@@ -204,9 +220,9 @@ fn collect_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 fn scan_item(
     root: &Path,
     path: &Path,
-    status: ScanStatus,
+    match_status: MatchStatus,
     kind: FileKind,
-    matched_reference: Option<String>,
+    matched_path: Option<String>,
 ) -> Result<ScanItem, String> {
     let relative = path
         .strip_prefix(root)
@@ -215,6 +231,7 @@ fn scan_item(
     let relative_path = display_relative(relative);
     let prefix = match kind {
         FileKind::Raw => "raw",
+        FileKind::Reference => "reference",
         FileKind::Sidecar => "sidecar",
     };
 
@@ -231,9 +248,9 @@ fn scan_item(
             .unwrap_or_default(),
         size_bytes: metadata.len(),
         modified_ms: modified_ms(&metadata),
-        status,
+        match_status,
         kind,
-        matched_reference,
+        matched_path,
     })
 }
 
@@ -244,8 +261,7 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
         return Err("JPG 参考目录与 RAW 源目录不能相同或互相嵌套".to_string());
     }
 
-    let mut references: HashMap<String, Vec<String>> = HashMap::new();
-    let mut reference_files = 0usize;
+    let mut references: HashMap<String, Vec<(PathBuf, String)>> = HashMap::new();
     for path in collect_files(&reference_root)? {
         if !formats::is_reference(&path) {
             continue;
@@ -253,21 +269,25 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
         let relative = path
             .strip_prefix(&reference_root)
             .map_err(|_| "参考文件超出了参考目录".to_string())?;
+        let relative_display = display_relative(relative);
         references
             .entry(match_key(relative, request.case_sensitive))
             .or_default()
-            .push(display_relative(relative));
-        reference_files += 1;
+            .push((path, relative_display));
     }
 
     let duplicate_reference_keys = references.values().filter(|paths| paths.len() > 1).count();
     let mut raw_paths = Vec::new();
+    let mut raws: HashMap<String, Vec<String>> = HashMap::new();
     let mut sidecars: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for path in collect_files(&raw_root)? {
         let relative = path
             .strip_prefix(&raw_root)
             .map_err(|_| "RAW 文件超出了源目录".to_string())?;
         if formats::is_raw(&path) {
+            raws.entry(match_key(relative, request.case_sensitive))
+                .or_default()
+                .push(display_relative(relative));
             raw_paths.push(path);
         } else if formats::is_sidecar(&path) {
             for key in formats::sidecar_match_keys(relative, request.case_sensitive) {
@@ -277,54 +297,87 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
     }
 
     let mut items = Vec::new();
-    let mut missing_keys = Vec::new();
-    let mut matched_raws = 0usize;
-    let mut missing_raws = 0usize;
+    let mut unmatched_keys = Vec::new();
+    let mut matched = 0usize;
+    let mut unmatched = 0usize;
     let mut reclaimable_bytes = 0u64;
 
-    for path in &raw_paths {
-        let relative = path
-            .strip_prefix(&raw_root)
-            .map_err(|_| "RAW 文件超出了源目录".to_string())?;
-        let key = match_key(relative, request.case_sensitive);
-        let matched_reference = references
-            .get(&key)
-            .and_then(|paths| paths.first())
-            .cloned();
-        let status = if matched_reference.is_some() {
-            matched_raws += 1;
-            ScanStatus::Keep
-        } else {
-            missing_raws += 1;
-            missing_keys.push(key);
-            ScanStatus::Delete
-        };
-        let item = scan_item(&raw_root, path, status, FileKind::Raw, matched_reference)?;
-        if status == ScanStatus::Delete {
-            reclaimable_bytes = reclaimable_bytes.saturating_add(item.size_bytes);
+    match request.mode {
+        ScanMode::CleanupRaw => {
+            for path in &raw_paths {
+                let relative = path
+                    .strip_prefix(&raw_root)
+                    .map_err(|_| "RAW 文件超出了源目录".to_string())?;
+                let key = match_key(relative, request.case_sensitive);
+                let matched_path = references
+                    .get(&key)
+                    .and_then(|paths| paths.first())
+                    .map(|(_, relative)| relative.clone());
+                let match_status = if matched_path.is_some() {
+                    matched += 1;
+                    MatchStatus::Matched
+                } else {
+                    unmatched += 1;
+                    unmatched_keys.push(key);
+                    MatchStatus::Unmatched
+                };
+                let item = scan_item(&raw_root, path, match_status, FileKind::Raw, matched_path)?;
+                if match_status == MatchStatus::Unmatched {
+                    reclaimable_bytes = reclaimable_bytes.saturating_add(item.size_bytes);
+                }
+                items.push(item);
+            }
         }
-        items.push(item);
+        ScanMode::AuditReference => {
+            for (key, paths) in &references {
+                let matched_path = raws.get(key).and_then(|paths| paths.first()).cloned();
+                for (path, _) in paths {
+                    let match_status = if matched_path.is_some() {
+                        matched += 1;
+                        MatchStatus::Matched
+                    } else {
+                        unmatched += 1;
+                        MatchStatus::Unmatched
+                    };
+                    items.push(scan_item(
+                        &reference_root,
+                        path,
+                        match_status,
+                        FileKind::Reference,
+                        matched_path.clone(),
+                    )?);
+                }
+            }
+        }
     }
 
     let mut sidecar_count = 0usize;
-    for key in unique_keys(missing_keys) {
-        if let Some(paths) = sidecars.get(&key) {
-            for path in paths {
-                let item = scan_item(&raw_root, path, ScanStatus::Delete, FileKind::Sidecar, None)?;
-                reclaimable_bytes = reclaimable_bytes.saturating_add(item.size_bytes);
-                sidecar_count += 1;
-                items.push(item);
+    if request.mode == ScanMode::CleanupRaw {
+        for key in unique_keys(unmatched_keys) {
+            if let Some(paths) = sidecars.get(&key) {
+                for path in paths {
+                    let item = scan_item(
+                        &raw_root,
+                        path,
+                        MatchStatus::Unmatched,
+                        FileKind::Sidecar,
+                        None,
+                    )?;
+                    reclaimable_bytes = reclaimable_bytes.saturating_add(item.size_bytes);
+                    sidecar_count += 1;
+                    items.push(item);
+                }
             }
         }
     }
 
     items.sort_by(|left, right| {
-        let left_rank = if left.status == ScanStatus::Delete {
+        let left_rank = if left.match_status == MatchStatus::Unmatched {
             0
         } else {
             1
         };
-        let right_rank = if right.status == ScanStatus::Delete {
+        let right_rank = if right.match_status == MatchStatus::Unmatched {
             0
         } else {
             1
@@ -337,7 +390,7 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
     });
 
     let mut warnings = Vec::new();
-    if duplicate_reference_keys > 0 {
+    if request.mode == ScanMode::CleanupRaw && duplicate_reference_keys > 0 {
         warnings.push(format!(
             "参考目录中有 {duplicate_reference_keys} 组重复匹配键，请在执行前核对"
         ));
@@ -345,10 +398,11 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
 
     Ok(ScanSummary {
         plan_id: String::new(),
-        reference_files,
+        mode: request.mode,
+        reference_files: references.values().map(Vec::len).sum(),
         raw_files: raw_paths.len(),
-        matched_raws,
-        missing_raws,
+        matched,
+        unmatched,
         sidecars: sidecar_count,
         reclaimable_bytes,
         duplicate_reference_keys,
@@ -392,6 +446,37 @@ fn validate_operation_log_path(log_root: &Path, value: &str) -> Result<PathBuf, 
         return Err("操作日志路径不在应用日志目录中".to_string());
     }
     Ok(path)
+}
+
+fn write_audit_manifest(paths: &[String], destination: &Path) -> Result<(), String> {
+    if formats::extension_of(destination) != "txt" {
+        return Err("审计清单必须保存为 .txt 文件".to_string());
+    }
+    if paths.iter().any(|path| path.contains(['\r', '\n'])) {
+        return Err("审计路径包含换行符，无法导出为逐行清单".to_string());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "无法确定审计清单保存目录".to_string())?;
+    if !parent.is_dir() {
+        return Err("审计清单保存目录不存在".to_string());
+    }
+    if let Ok(metadata) = fs::symlink_metadata(destination) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err("审计清单目标不是可信普通文件".to_string());
+        }
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(destination)
+        .map_err(|error| format!("无法创建审计清单：{error}"))?;
+    for path in paths {
+        writeln!(file, "{path}").map_err(|error| format!("无法写入审计清单：{error}"))?;
+    }
+    file.sync_data()
+        .map_err(|error| format!("无法同步审计清单：{error}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -600,7 +685,7 @@ async fn validate_directory_path(path: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn scan_pairs(
-    state: tauri::State<'_, CleanupPlanStore>,
+    state: tauri::State<'_, ScanPlanStore>,
     request: ScanRequest,
 ) -> Result<ScanSummary, String> {
     *state
@@ -616,26 +701,42 @@ async fn scan_pairs(
     let candidates = summary
         .items
         .iter()
-        .filter(|item| item.status == ScanStatus::Delete)
+        .filter(|item| {
+            summary.mode == ScanMode::CleanupRaw && item.match_status == MatchStatus::Unmatched
+        })
         .map(|item| {
             (
                 item.relative_path.clone(),
                 FileSnapshot::new(item.size_bytes, item.modified_ms),
             )
         });
+    let audit_paths = summary
+        .items
+        .iter()
+        .filter(|item| {
+            summary.mode == ScanMode::AuditReference
+                && item.match_status == MatchStatus::Unmatched
+                && item.kind == FileKind::Reference
+        })
+        .map(|item| item.relative_path.clone())
+        .collect();
     let plan = CleanupPlan::new(plan_id.clone(), raw_root, candidates);
     summary.plan_id = plan_id;
     *state
         .current
         .lock()
-        .map_err(|_| "无法保存清理计划状态".to_string())? = Some(plan);
+        .map_err(|_| "无法保存清理计划状态".to_string())? = Some(CurrentPlan {
+        cleanup: plan,
+        mode: summary.mode,
+        audit_paths,
+    });
     Ok(summary)
 }
 
 #[tauri::command]
 async fn execute_cleanup(
     app: tauri::AppHandle,
-    state: tauri::State<'_, CleanupPlanStore>,
+    state: tauri::State<'_, ScanPlanStore>,
     request: CleanupRequest,
 ) -> Result<CleanupSummary, String> {
     if request.items.is_empty() {
@@ -647,20 +748,55 @@ async fn execute_cleanup(
             .current
             .lock()
             .map_err(|_| "无法读取清理计划状态".to_string())?;
-        let plan = current
+        let current_plan = current
             .as_ref()
             .ok_or_else(|| "清理计划不存在，请重新扫描".to_string())?;
-        if !plan.matches(&request.plan_id, &raw_root) {
+        if current_plan.mode != ScanMode::CleanupRaw {
+            return Err("当前是只读审计计划，不能执行清理".to_string());
+        }
+        if !current_plan.cleanup.matches(&request.plan_id, &raw_root) {
             return Err("清理计划已失效或 RAW 源目录不匹配，请重新扫描".to_string());
         }
         current
             .take()
             .ok_or_else(|| "清理计划不存在，请重新扫描".to_string())?
+            .cleanup
     };
     let log_dir = app.path().app_log_dir().ok();
     tauri::async_runtime::spawn_blocking(move || cleanup_impl(&request, log_dir.as_deref(), &plan))
         .await
         .map_err(|error| format!("清理任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn export_audit_manifest(
+    state: tauri::State<'_, ScanPlanStore>,
+    plan_id: String,
+    raw_root: String,
+    destination: String,
+) -> Result<(), String> {
+    let raw_root = canonical_directory(&raw_root, "RAW 源目录")?;
+    let audit_paths = {
+        let current = state
+            .current
+            .lock()
+            .map_err(|_| "无法读取审计计划状态".to_string())?;
+        let plan = current
+            .as_ref()
+            .ok_or_else(|| "审计计划不存在，请重新扫描".to_string())?;
+        if plan.mode != ScanMode::AuditReference {
+            return Err("当前计划不是反向审计计划".to_string());
+        }
+        if !plan.cleanup.matches(&plan_id, &raw_root) {
+            return Err("审计计划已失效或 RAW 源目录不匹配，请重新扫描".to_string());
+        }
+        plan.audit_paths.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        write_audit_manifest(&audit_paths, Path::new(&destination))
+    })
+    .await
+    .map_err(|error| format!("导出审计清单任务异常结束：{error}"))?
 }
 
 #[tauri::command]
@@ -717,9 +853,9 @@ async fn reveal_quarantine_operation(raw_root: String, operation_id: String) -> 
 }
 
 #[tauri::command]
-async fn reveal_scan_item(raw_root: String, relative_path: String) -> Result<(), String> {
+async fn reveal_scan_item(root: String, relative_path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = resolve_scan_item_path(&raw_root, &relative_path)?;
+        let path = resolve_scan_item_path(&root, &relative_path)?;
         reveal_path(&path)
     })
     .await
@@ -751,11 +887,12 @@ async fn open_system_trash() -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(CleanupPlanStore::default())
+        .manage(ScanPlanStore::default())
         .invoke_handler(tauri::generate_handler![
             validate_directory_path,
             scan_pairs,
             execute_cleanup,
+            export_audit_manifest,
             list_quarantine_operations,
             restore_quarantine_operation,
             reveal_quarantine_operation,
@@ -776,6 +913,7 @@ mod tests {
             reference_root: reference_root.to_string_lossy().into_owned(),
             raw_root: raw_root.to_string_lossy().into_owned(),
             case_sensitive: false,
+            mode: ScanMode::CleanupRaw,
         }
     }
 
@@ -797,18 +935,18 @@ mod tests {
         let summary = scan_pairs_impl(&request(&reference_root, &raw_root)).expect("scan");
         assert_eq!(summary.reference_files, 1);
         assert_eq!(summary.raw_files, 2);
-        assert_eq!(summary.matched_raws, 1);
-        assert_eq!(summary.missing_raws, 1);
+        assert_eq!(summary.matched, 1);
+        assert_eq!(summary.unmatched, 1);
         assert_eq!(summary.sidecars, 1);
         assert_eq!(summary.items.len(), 3);
         assert!(summary.items.iter().any(|item| {
             item.relative_path == "20260712/DSC_0002.NEF"
-                && item.status == ScanStatus::Delete
+                && item.match_status == MatchStatus::Unmatched
                 && item.kind == FileKind::Raw
         }));
         assert!(summary.items.iter().any(|item| {
             item.relative_path == "20260712/DSC_0002.xmp"
-                && item.status == ScanStatus::Delete
+                && item.match_status == MatchStatus::Unmatched
                 && item.kind == FileKind::Sidecar
         }));
     }
@@ -831,7 +969,7 @@ mod tests {
 
         let summary = scan_pairs_impl(&request(&reference_root, &raw_root)).expect("scan");
         assert_eq!(summary.raw_files, formats::RAW_EXTENSIONS.len());
-        assert_eq!(summary.missing_raws, formats::RAW_EXTENSIONS.len());
+        assert_eq!(summary.unmatched, formats::RAW_EXTENSIONS.len());
     }
 
     #[test]
@@ -856,6 +994,52 @@ mod tests {
                 .items
                 .iter()
                 .all(|item| !item.relative_path.contains(".framepair-quarantine"))
+        );
+    }
+
+    #[test]
+    fn audits_references_without_matching_raws() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let reference_root = temp.path().join("jpg");
+        let raw_root = temp.path().join("raw");
+        fs::create_dir_all(reference_root.join("day")).expect("jpg day");
+        fs::create_dir_all(raw_root.join("day")).expect("raw day");
+        fs::write(reference_root.join("day/kept.JPG"), b"jpg").expect("kept jpg");
+        fs::write(reference_root.join("day/orphan.JPG"), b"jpg").expect("orphan jpg");
+        fs::write(raw_root.join("day/kept.CR3"), b"raw").expect("kept raw");
+
+        let mut scan_request = request(&reference_root, &raw_root);
+        scan_request.mode = ScanMode::AuditReference;
+        let summary = scan_pairs_impl(&scan_request).expect("reverse audit");
+        assert_eq!(summary.mode, ScanMode::AuditReference);
+        assert_eq!(summary.matched, 1);
+        assert_eq!(summary.unmatched, 1);
+        assert!(summary.items.iter().any(|item| {
+            item.relative_path == "day/orphan.JPG"
+                && item.kind == FileKind::Reference
+                && item.match_status == MatchStatus::Unmatched
+        }));
+    }
+
+    #[test]
+    fn writes_a_utf8_audit_manifest_and_rejects_other_extensions() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let destination = temp.path().join("unmatched.txt");
+        write_audit_manifest(
+            &["day/orphan.JPG".to_string(), "第二天/照片.jpeg".to_string()],
+            &destination,
+        )
+        .expect("manifest export");
+        assert_eq!(
+            fs::read_to_string(destination).expect("manifest contents"),
+            "day/orphan.JPG\n第二天/照片.jpeg\n"
+        );
+        assert!(
+            write_audit_manifest(
+                &["day/orphan.JPG".to_string()],
+                &temp.path().join("bad.csv")
+            )
+            .is_err()
         );
     }
 
@@ -983,7 +1167,7 @@ mod tests {
 
         let summary = scan_pairs_impl(&request(&reference_root, &raw_root)).expect("scan");
 
-        assert_eq!(summary.missing_raws, 2);
+        assert_eq!(summary.unmatched, 2);
         assert_eq!(summary.sidecars, 1);
         assert_eq!(
             summary

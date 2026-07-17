@@ -1,5 +1,6 @@
-export type ScanStatus = "keep" | "delete";
-export type FileKind = "raw" | "sidecar";
+export type ScanMode = "cleanupRaw" | "auditReference";
+export type MatchStatus = "matched" | "unmatched";
+export type FileKind = "raw" | "reference" | "sidecar";
 export type DirectoryKind = "reference" | "raw";
 
 export interface ScanItem {
@@ -9,17 +10,18 @@ export interface ScanItem {
   extension: string;
   sizeBytes: number;
   modifiedMs: number | null;
-  status: ScanStatus;
+  matchStatus: MatchStatus;
   kind: FileKind;
-  matchedReference: string | null;
+  matchedPath: string | null;
 }
 
 export interface ScanSummary {
   planId: string;
+  mode: ScanMode;
   referenceFiles: number;
   rawFiles: number;
-  matchedRaws: number;
-  missingRaws: number;
+  matched: number;
+  unmatched: number;
   sidecars: number;
   reclaimableBytes: number;
   duplicateReferenceKeys: number;
@@ -62,7 +64,7 @@ export interface QuarantineOperation {
   manifestPath: string;
 }
 
-export type FilterMode = "delete" | "keep" | "all";
+export type FilterMode = "unmatched" | "matched" | "all";
 export type WorkPhase = "idle" | "scanning" | "executing";
 
 export interface Notice {

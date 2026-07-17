@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
   Aperture,
@@ -21,6 +21,7 @@ import type {
   QuarantineOperation,
   RestoreSummary,
   ScanItem,
+  ScanMode,
   ScanSummary,
   WorkPhase,
 } from "./types";
@@ -40,6 +41,7 @@ interface StoredSettings {
   rawRoot: string;
   includeSidecars: boolean;
   caseSensitive: boolean;
+  scanMode: ScanMode;
 }
 
 interface ScanRunResult {
@@ -56,6 +58,7 @@ function loadSettings(): StoredSettings {
         rawRoot: "",
         includeSidecars: true,
         caseSensitive: false,
+        scanMode: "cleanupRaw",
         ...(JSON.parse(stored) as Partial<StoredSettings>),
       };
     }
@@ -67,6 +70,7 @@ function loadSettings(): StoredSettings {
     rawRoot: "",
     includeSidecars: true,
     caseSensitive: false,
+    scanMode: "cleanupRaw",
   };
 }
 
@@ -76,12 +80,13 @@ function App() {
   const [rawRoot, setRawRoot] = useState(initial.rawRoot);
   const [includeSidecars, setIncludeSidecars] = useState(initial.includeSidecars);
   const [caseSensitive, setCaseSensitive] = useState(initial.caseSensitive);
+  const [scanMode, setScanMode] = useState<ScanMode>(initial.scanMode);
   const [phase, setPhase] = useState<WorkPhase>("idle");
   const [scan, setScan] = useState<ScanSummary | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [filter, setFilter] = useState<FilterMode>("delete");
+  const [filter, setFilter] = useState<FilterMode>("unmatched");
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [lastOperation, setLastOperation] = useState<CleanupSummary | null>(null);
@@ -93,8 +98,8 @@ function App() {
   const busy = phase !== "idle";
   const blocked = scanHasBlockingIssues(scan);
   const deleteItems = useMemo(
-    () => cleanableItems(scan?.items ?? [], includeSidecars),
-    [includeSidecars, scan],
+    () => cleanableItems(scan?.items ?? [], includeSidecars, scan?.mode ?? scanMode),
+    [includeSidecars, scan, scanMode],
   );
   const selectedItems = useMemo(
     () => deleteItems.filter((item) => selectedIds.has(item.id)),
@@ -107,19 +112,21 @@ function App() {
     const term = search.trim().toLocaleLowerCase();
     return (scan?.items ?? []).filter((item) => {
       if (!includeSidecars && item.kind === "sidecar") return false;
-      if (filter !== "all" && item.status !== filter) return false;
+      if (filter !== "all" && item.matchStatus !== filter) return false;
       if (!term) return true;
       return (
         item.relativePath.toLocaleLowerCase().includes(term) ||
-        item.matchedReference?.toLocaleLowerCase().includes(term)
+        item.matchedPath?.toLocaleLowerCase().includes(term)
       );
     });
   }, [filter, includeSidecars, scan, search]);
 
-  const visibleDeleteItems = visibleItems.filter((item) => item.status === "delete");
-  const visibleSelectedCount = visibleDeleteItems.filter((item) => selectedIds.has(item.id)).length;
+  const visibleActionableItems = visibleItems.filter((item) =>
+    cleanableItems([item], includeSidecars, scan?.mode ?? scanMode).length > 0,
+  );
+  const visibleSelectedCount = visibleActionableItems.filter((item) => selectedIds.has(item.id)).length;
   const allVisibleSelected =
-    visibleDeleteItems.length > 0 && visibleSelectedCount === visibleDeleteItems.length;
+    visibleActionableItems.length > 0 && visibleSelectedCount === visibleActionableItems.length;
   const someVisibleSelected = visibleSelectedCount > 0 && !allVisibleSelected;
 
   function persistSettings(next?: Partial<StoredSettings>) {
@@ -130,6 +137,7 @@ function App() {
         rawRoot,
         includeSidecars,
         caseSensitive,
+        scanMode,
         ...next,
       }),
     );
@@ -212,6 +220,7 @@ function App() {
           referenceRoot,
           rawRoot,
           caseSensitive,
+          mode: scanMode,
         },
       });
       const cleanable = cleanableItems(result.items, includeSidecars);
@@ -219,25 +228,34 @@ function App() {
       setSelectedIds(new Set());
       setSelectedRowId(null);
       setInspectorOpen(false);
-      setFilter(result.missingRaws > 0 ? "delete" : "all");
+      setFilter(result.unmatched > 0 ? "unmatched" : "all");
       setSearch("");
       persistSettings();
       void refreshQuarantineOperations(rawRoot);
       if (!options.silent) {
-        if (result.duplicateReferenceKeys > 0) {
+        if (result.mode === "cleanupRaw" && result.duplicateReferenceKeys > 0) {
           setNotice({
             tone: "error",
             title: "扫描发现重复匹配键，清理操作已暂停",
             detail: "请整理 JPG 参考目录后重新扫描",
           });
-        } else if (result.missingRaws > 0) {
+        } else if (result.unmatched > 0) {
           setNotice({
-            tone: "warning",
-            title: `发现 ${result.missingRaws} 个未配对 RAW`,
-            detail: `${cleanable.length} 个文件可供复核，当前未选择任何文件`,
+            tone: result.mode === "cleanupRaw" ? "warning" : "info",
+            title: result.mode === "cleanupRaw"
+              ? `发现 ${result.unmatched} 个未配对 RAW`
+              : `发现 ${result.unmatched} 个没有对应 RAW 的 JPG`,
+            detail: result.mode === "cleanupRaw"
+              ? `${cleanable.length} 个文件可供复核，当前未选择任何文件`
+              : "这是只读审计结果，不会修改 JPG 文件",
           });
         } else {
-          setNotice({ tone: "success", title: "所有 RAW 均有对应参考文件" });
+          setNotice({
+            tone: "success",
+            title: result.mode === "cleanupRaw"
+              ? "所有 RAW 均有对应参考文件"
+              : "所有 JPG 均有对应 RAW",
+          });
         }
       }
       return { ok: true };
@@ -252,7 +270,7 @@ function App() {
   }
 
   function toggleItem(item: ScanItem) {
-    if (item.status !== "delete" || blocked) return;
+    if (!scan || cleanableItems([item], includeSidecars, scan.mode).length === 0 || blocked) return;
     setSelectedIds((current) => {
       const next = new Set(current);
       if (next.has(item.id)) next.delete(item.id);
@@ -265,7 +283,7 @@ function App() {
     if (blocked) return;
     setSelectedIds((current) => {
       const next = new Set(current);
-      for (const item of visibleDeleteItems) {
+      for (const item of visibleActionableItems) {
         if (allVisibleSelected) next.delete(item.id);
         else next.add(item.id);
       }
@@ -299,6 +317,13 @@ function App() {
     setLastOperation(null);
   }
 
+  function updateScanMode(mode: ScanMode) {
+    setScanMode(mode);
+    persistSettings({ scanMode: mode });
+    resetReview();
+    setLastOperation(null);
+  }
+
   function changeDirectories() {
     resetReview();
     setLastOperation(null);
@@ -310,6 +335,10 @@ function App() {
   }
 
   function requestDelete() {
+    if (scan?.mode !== "cleanupRaw") {
+      setNotice({ tone: "warning", title: "反向审计是只读模式，不能执行清理" });
+      return;
+    }
     if (blocked) {
       setNotice({ tone: "error", title: "存在重复匹配键，不能执行清理" });
       return;
@@ -433,6 +462,26 @@ function App() {
     }
   }
 
+  async function exportAuditManifest() {
+    if (!scan || scan.mode !== "auditReference") return;
+    try {
+      const destination = await save({
+        title: "导出未配对 JPG 清单",
+        defaultPath: "framepair-unmatched-jpg.txt",
+        filters: [{ name: "文本清单", extensions: ["txt"] }],
+      });
+      if (typeof destination !== "string") return;
+      await invoke("export_audit_manifest", {
+        planId: scan.planId,
+        rawRoot,
+        destination,
+      });
+      setNotice({ tone: "success", title: "审计清单已导出", detail: destination });
+    } catch (error) {
+      setNotice({ tone: "error", title: "无法导出审计清单", detail: errorMessage(error) });
+    }
+  }
+
   async function runLocationCommand(command: string, args: Record<string, unknown> = {}) {
     try {
       await invoke(command, args);
@@ -497,7 +546,7 @@ function App() {
           inspectorOpen={inspectorOpen}
           allVisibleSelected={allVisibleSelected}
           someVisibleSelected={someVisibleSelected}
-          visibleDeleteCount={visibleDeleteItems.length}
+          visibleDeleteCount={visibleActionableItems.length}
           lastOperation={lastOperation}
           quarantineOperations={quarantineOperations}
           onFilterChange={setFilter}
@@ -510,11 +559,15 @@ function App() {
           onChangeDirectories={changeDirectories}
           onRescan={() => void runScan()}
           onRequestDelete={requestDelete}
-          onRevealItem={(item) => void runLocationCommand("reveal_scan_item", { rawRoot, relativePath: item.relativePath })}
+          onRevealItem={(item) => void runLocationCommand("reveal_scan_item", {
+            root: item.kind === "reference" ? referenceRoot : rawRoot,
+            relativePath: item.relativePath,
+          })}
           onOpenTrash={() => void runLocationCommand("open_system_trash")}
           onOpenLog={(logPath) => void runLocationCommand("reveal_operation_log", { logPath })}
           onRevealQuarantine={(operationId) => void runLocationCommand("reveal_quarantine_operation", { rawRoot, operationId })}
           onRestoreQuarantine={(operationId) => void restoreQuarantineOperation(operationId)}
+          onExportAudit={() => void exportAuditManifest()}
         />
       ) : (
         <SetupView
@@ -522,12 +575,14 @@ function App() {
           rawRoot={rawRoot}
           includeSidecars={includeSidecars}
           caseSensitive={caseSensitive}
+          scanMode={scanMode}
           busy={busy}
           onChooseDirectory={chooseDirectory}
           onDropDirectories={(kind, paths) => void dropDirectories(kind, paths)}
           onDropError={(message) => setNotice({ tone: "warning", title: message })}
           onIncludeSidecarsChange={updateSidecars}
           onCaseSensitiveChange={updateCaseSensitivity}
+          onScanModeChange={updateScanMode}
           onScan={() => void runScan()}
         />
       )}

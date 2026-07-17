@@ -628,6 +628,44 @@ input:disabled {
   gap: 10px;
 }
 
+.scan-mode-control {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scan-mode-control > button {
+  display: flex;
+  min-height: 54px;
+  padding: 9px 11px;
+  flex-direction: column;
+  justify-content: center;
+  color: var(--muted);
+  text-align: left;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.scan-mode-control > button[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--surface-active);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 84%);
+}
+
+.scan-mode-control strong {
+  font-size: 12px;
+}
+
+.scan-mode-control small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .toggle-row {
   display: flex;
   align-items: center;
@@ -1079,8 +1117,12 @@ tbody tr.is-active {
   font-weight: 650;
 }
 
-.status-keep { color: var(--success); }
-.status-delete { color: var(--warning); }
+.status-matched { color: var(--success); }
+.status-unmatched { color: var(--warning); }
+
+.audit-warning {
+  color: var(--warning);
+}
 
 .file-path-button {
   display: flex;
@@ -1231,8 +1273,8 @@ tbody tr.is-active {
   overflow-wrap: anywhere;
 }
 
-.decision-keep { color: var(--success); }
-.decision-delete { color: var(--warning); }
+.decision-matched { color: var(--success); }
+.decision-unmatched { color: var(--warning); }
 
 .file-detail dl {
   margin: 0 0 14px;

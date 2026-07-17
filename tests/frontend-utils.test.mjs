@@ -5,24 +5,24 @@ import * as utils from "../src/utils.ts";
 const candidates = [
   {
     id: "raw:1",
-    status: "delete",
+    matchStatus: "unmatched",
     kind: "raw",
     sizeBytes: 12,
-    matchedReference: null,
+    matchedPath: null,
   },
   {
     id: "sidecar:1",
-    status: "delete",
+    matchStatus: "unmatched",
     kind: "sidecar",
     sizeBytes: 3,
-    matchedReference: null,
+    matchedPath: null,
   },
   {
     id: "raw:2",
-    status: "keep",
+    matchStatus: "matched",
     kind: "raw",
     sizeBytes: 100,
-    matchedReference: "day/one.JPG",
+    matchedPath: "day/one.JPG",
   },
 ];
 
@@ -78,8 +78,9 @@ test("decision reason explains keep, delete, and sidecar outcomes", () => {
 
 test("duplicate reference keys block destructive execution", () => {
   assert.equal(utils.scanHasBlockingIssues(null), false);
-  assert.equal(utils.scanHasBlockingIssues({ duplicateReferenceKeys: 0 }), false);
-  assert.equal(utils.scanHasBlockingIssues({ duplicateReferenceKeys: 2 }), true);
+  assert.equal(utils.scanHasBlockingIssues({ mode: "cleanupRaw", duplicateReferenceKeys: 0 }), false);
+  assert.equal(utils.scanHasBlockingIssues({ mode: "cleanupRaw", duplicateReferenceKeys: 2 }), true);
+  assert.equal(utils.scanHasBlockingIssues({ mode: "auditReference", duplicateReferenceKeys: 2 }), false);
 });
 
 test("directory drop coordinates select only the hovered target", () => {
@@ -108,4 +109,19 @@ test("raw format counts are grouped case-insensitively", () => {
 test("cleanup destination copy names the selected operation", () => {
   assert.equal(utils.cleanupActionLabel("trash"), "移入系统回收站");
   assert.equal(utils.cleanupActionLabel("quarantine"), "移入 FramePair 隔离区");
+});
+
+test("only unmatched cleanup items are actionable", () => {
+  assert.equal(
+    utils.isActionableItem({ kind: "raw", matchStatus: "unmatched" }, "cleanupRaw"),
+    true,
+  );
+  assert.equal(
+    utils.isActionableItem({ kind: "raw", matchStatus: "matched" }, "cleanupRaw"),
+    false,
+  );
+  assert.equal(
+    utils.isActionableItem({ kind: "reference", matchStatus: "unmatched" }, "auditReference"),
+    false,
+  );
 });
