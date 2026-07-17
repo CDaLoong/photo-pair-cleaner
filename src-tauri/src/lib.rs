@@ -1,9 +1,10 @@
+mod formats;
 mod safety;
 
 use chrono::Utc;
 use safety::{DeletionPlan, FileSnapshot, unique_keys};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -19,9 +20,6 @@ use walkdir::WalkDir;
 pub struct ScanRequest {
     pub reference_root: String,
     pub raw_root: String,
-    pub reference_extensions: Vec<String>,
-    pub raw_extensions: Vec<String>,
-    pub sidecar_extensions: Vec<String>,
     pub case_sensitive: bool,
 }
 
@@ -153,32 +151,6 @@ fn canonical_directory(input: &str, label: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn normalize_extensions(values: &[String], label: &str) -> Result<HashSet<String>, String> {
-    let extensions: HashSet<String> = values
-        .iter()
-        .map(|value| value.trim().trim_start_matches('.').to_lowercase())
-        .filter(|value| !value.is_empty())
-        .collect();
-
-    if extensions.is_empty() {
-        return Err(format!("{label}不能为空"));
-    }
-    if extensions.iter().any(|value| {
-        !value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-    }) {
-        return Err(format!("{label}只能包含字母和数字"));
-    }
-    Ok(extensions)
-}
-
-fn extension_of(path: &Path) -> String {
-    path.extension()
-        .map(|extension| extension.to_string_lossy().to_lowercase())
-        .unwrap_or_default()
-}
-
 fn display_relative(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -247,15 +219,10 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
         return Err("JPG 参考目录与 RAW 源目录不能相同或互相嵌套".to_string());
     }
 
-    let reference_extensions =
-        normalize_extensions(&request.reference_extensions, "参考文件扩展名")?;
-    let raw_extensions = normalize_extensions(&request.raw_extensions, "RAW 扩展名")?;
-    let sidecar_extensions = normalize_extensions(&request.sidecar_extensions, "伴随文件扩展名")?;
-
     let mut references: HashMap<String, Vec<String>> = HashMap::new();
     let mut reference_files = 0usize;
     for path in collect_files(&reference_root)? {
-        if !reference_extensions.contains(&extension_of(&path)) {
+        if !formats::is_reference(&path) {
             continue;
         }
         let relative = path
@@ -272,17 +239,15 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
     let mut raw_paths = Vec::new();
     let mut sidecars: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for path in collect_files(&raw_root)? {
-        let extension = extension_of(&path);
         let relative = path
             .strip_prefix(&raw_root)
             .map_err(|_| "RAW 文件超出了源目录".to_string())?;
-        if raw_extensions.contains(&extension) {
+        if formats::is_raw(&path) {
             raw_paths.push(path);
-        } else if sidecar_extensions.contains(&extension) {
-            sidecars
-                .entry(match_key(relative, request.case_sensitive))
-                .or_default()
-                .push(path);
+        } else if formats::is_sidecar(&path) {
+            for key in formats::sidecar_match_keys(relative, request.case_sensitive) {
+                sidecars.entry(key).or_default().push(path.clone());
+            }
         }
     }
 
@@ -466,8 +431,8 @@ fn validate_delete_candidate(
     candidate: &DeleteCandidate,
 ) -> Result<PathBuf, String> {
     let relative = safe_relative_path(&candidate.relative_path)?;
-    let extension = extension_of(&relative);
-    if !matches!(extension.as_str(), "nef" | "xmp") {
+    let extension = formats::extension_of(&relative);
+    if !formats::is_raw(&relative) && !formats::is_sidecar(&relative) {
         return Err(format!("不允许处理 .{extension} 文件"));
     }
 
@@ -711,9 +676,6 @@ mod tests {
         ScanRequest {
             reference_root: reference_root.to_string_lossy().into_owned(),
             raw_root: raw_root.to_string_lossy().into_owned(),
-            reference_extensions: vec!["jpg".to_string(), "jpeg".to_string()],
-            raw_extensions: vec!["nef".to_string()],
-            sidecar_extensions: vec!["xmp".to_string()],
             case_sensitive: false,
         }
     }
@@ -753,6 +715,71 @@ mod tests {
     }
 
     #[test]
+    fn scans_every_supported_raw_extension_from_the_backend_policy() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let reference_root = temp.path().join("JPG");
+        let raw_root = temp.path().join("RAW");
+        fs::create_dir_all(&reference_root).expect("reference directory");
+        fs::create_dir_all(&raw_root).expect("raw directory");
+
+        for extension in formats::RAW_EXTENSIONS {
+            fs::write(
+                raw_root.join(format!("photo-{extension}.{extension}")),
+                b"raw",
+            )
+            .expect("raw file");
+        }
+
+        let summary = scan_pairs_impl(&request(&reference_root, &raw_root)).expect("scan");
+        assert_eq!(summary.raw_files, formats::RAW_EXTENSIONS.len());
+        assert_eq!(summary.missing_raws, formats::RAW_EXTENSIONS.len());
+    }
+
+    #[test]
+    fn matches_double_extension_xmp_sidecars_to_missing_raws() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let reference_root = temp.path().join("JPG");
+        let raw_root = temp.path().join("RAW");
+        fs::create_dir_all(&reference_root).expect("reference directory");
+        fs::create_dir_all(&raw_root).expect("raw directory");
+        fs::write(raw_root.join("photo.NEF"), b"raw").expect("raw file");
+        fs::write(raw_root.join("photo.NEF.xmp"), b"xmp").expect("xmp file");
+
+        let summary = scan_pairs_impl(&request(&reference_root, &raw_root)).expect("scan");
+        assert_eq!(summary.sidecars, 1);
+        assert!(
+            summary
+                .items
+                .iter()
+                .any(|item| item.relative_path == "photo.NEF.xmp")
+        );
+    }
+
+    #[test]
+    fn delete_validation_accepts_supported_raws_and_rejects_other_files() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let raw = temp.path().join("photo.CR3");
+        let text = temp.path().join("notes.txt");
+        fs::write(&raw, b"raw").expect("raw file");
+        fs::write(&text, b"text").expect("text file");
+        let root = fs::canonicalize(temp.path()).expect("canonical root");
+
+        for (name, accepted) in [("photo.CR3", true), ("notes.txt", false)] {
+            let metadata = fs::metadata(temp.path().join(name)).expect("metadata");
+            let candidate = DeleteCandidate {
+                relative_path: name.to_string(),
+                expected_size_bytes: metadata.len(),
+                expected_modified_ms: modified_ms(&metadata),
+            };
+            assert_eq!(
+                validate_delete_candidate(&root, &candidate).is_ok(),
+                accepted,
+                "unexpected validation result for {name}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_overlapping_roots() {
         let temp = tempfile::tempdir().expect("temp directory");
         let root = temp.path().join("photos");
@@ -788,12 +815,10 @@ mod tests {
         fs::create_dir_all(&raw_root).expect("raw directory");
 
         fs::write(raw_root.join("DSC_0001.NEF"), b"nef").expect("nef");
-        fs::write(raw_root.join("DSC_0001.RAW"), b"raw").expect("raw");
+        fs::write(raw_root.join("DSC_0001.CR3"), b"raw").expect("raw");
         fs::write(raw_root.join("DSC_0001.xmp"), b"xmp").expect("xmp");
 
-        let mut scan_request = request(&reference_root, &raw_root);
-        scan_request.raw_extensions.push("raw".to_string());
-        let summary = scan_pairs_impl(&scan_request).expect("scan");
+        let summary = scan_pairs_impl(&request(&reference_root, &raw_root)).expect("scan");
 
         assert_eq!(summary.missing_raws, 2);
         assert_eq!(summary.sidecars, 1);

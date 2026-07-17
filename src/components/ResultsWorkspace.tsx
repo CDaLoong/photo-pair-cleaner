@@ -20,6 +20,7 @@ import {
   decisionReason,
   formatBytes,
   formatDate,
+  rawFormatCounts,
   reclaimableBytes,
   selectionBreakdown,
 } from "../utils";
@@ -119,6 +120,10 @@ export function ResultsWorkspace({
 }: ResultsWorkspaceProps) {
   const selectedBreakdown = selectionBreakdown(selectedItems);
   const visibleKeeps = scan.items.filter((item) => item.status === "keep").length;
+  const formatSummary = Object.entries(rawFormatCounts(scan.items))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([extension, count]) => `${extension} ${count}`)
+    .join(" · ");
 
   return (
     <main className="review-view">
@@ -135,7 +140,7 @@ export function ResultsWorkspace({
 
       <section className="summary-band" aria-label="扫描汇总">
         <div><span>参考 JPG</span><strong>{scan.referenceFiles}</strong></div>
-        <div><span>扫描 RAW</span><strong>{scan.rawFiles}</strong></div>
+        <div><span title={formatSummary}>扫描 RAW{formatSummary ? ` · ${formatSummary}` : ""}</span><strong>{scan.rawFiles}</strong></div>
         <div className="summary-ok"><span>已配对 RAW</span><strong>{scan.matchedRaws}</strong></div>
         <div className="summary-warning"><span>未配对 RAW</span><strong>{scan.missingRaws}</strong></div>
         <div><span>可处理文件</span><strong>{cleanableCount}</strong></div>

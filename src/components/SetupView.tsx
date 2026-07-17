@@ -168,7 +168,7 @@ export function SetupView({
       <section className="setup-heading" aria-labelledby="setup-title">
         <div>
           <h1 id="setup-title">选择目录并进行只读扫描</h1>
-          <p>按相对路径和文件名比较 JPG 与 NEF，扫描阶段不会修改任何文件。</p>
+          <p>按相对路径和文件名比较 JPG 与主流 RAW，扫描阶段不会修改任何文件。</p>
         </div>
         <div className="safety-assurance">
           <ShieldCheck aria-hidden="true" size={18} />
@@ -201,7 +201,7 @@ export function SetupView({
           <Settings2 aria-hidden="true" size={18} />
           <div>
             <h2 id="settings-title">扫描设置</h2>
-            <p>参考格式 JPG/JPEG，RAW 格式 NEF，匹配键为相对路径和文件名。</p>
+            <p>支持 Nikon、Canon、Sony、Fujifilm、DNG 等主流 RAW，匹配键为相对路径和文件名。</p>
           </div>
         </div>
         <div className="settings-controls">

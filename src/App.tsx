@@ -205,9 +205,6 @@ function App() {
         request: {
           referenceRoot,
           rawRoot,
-          referenceExtensions: ["jpg", "jpeg"],
-          rawExtensions: ["nef"],
-          sidecarExtensions: ["xmp"],
           caseSensitive,
         },
       });

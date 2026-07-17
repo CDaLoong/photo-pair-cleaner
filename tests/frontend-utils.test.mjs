@@ -93,3 +93,14 @@ test("directory drop coordinates select only the hovered target", () => {
   assert.equal(utils.directoryDropTargetAtPoint(230, 60, bounds), null);
   assert.equal(utils.directoryDropTargetAtPoint(100, 140, bounds), null);
 });
+
+test("raw format counts are grouped case-insensitively", () => {
+  const items = [
+    { kind: "raw", extension: ".NEF" },
+    { kind: "raw", extension: ".nef" },
+    { kind: "raw", extension: ".CR3" },
+    { kind: "sidecar", extension: ".xmp" },
+  ];
+
+  assert.deepEqual(utils.rawFormatCounts(items), { NEF: 2, CR3: 1 });
+});

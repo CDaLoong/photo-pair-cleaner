@@ -32,6 +32,17 @@ export function directoryDropTargetAtPoint(
   )?.kind ?? null;
 }
 
+export function rawFormatCounts(
+  items: Array<Pick<ScanItem, "kind" | "extension">>,
+): Record<string, number> {
+  return items.reduce<Record<string, number>>((counts, item) => {
+    if (item.kind !== "raw") return counts;
+    const key = item.extension.replace(/^\./, "").toUpperCase();
+    counts[key] = (counts[key] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
 export function reclaimableBytes(
   items: ReclaimableItem[],
   includeSidecars: boolean,
