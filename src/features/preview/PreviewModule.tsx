@@ -18,6 +18,7 @@ import {
 import {
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -36,6 +37,7 @@ import {
 } from "./previewCache";
 import {
   adjacentPreviewAssetId,
+  filmstripScrollTarget,
   filterPreviewAssets,
   sortPreviewAssets,
 } from "./previewUtils";
@@ -85,6 +87,8 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const attemptedStoredRoot = useRef(false);
   const busyRef = useRef(busy);
   const indexedRootRef = useRef<string | null>(null);
+  const filmstripRef = useRef<HTMLDivElement>(null);
+  const selectedFilmstripItemRef = useRef<HTMLButtonElement>(null);
   const loadDirectoryRef = useRef<(path: string) => Promise<void>>(async () => undefined);
   const deferredSearch = useDeferredValue(search);
 
@@ -196,6 +200,23 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [active, effectiveSelectedId, view, visibleAssets]);
+
+  useLayoutEffect(() => {
+    if (!active || view !== "loupe" || !effectiveSelectedId) return;
+    const filmstrip = filmstripRef.current;
+    const selectedItem = selectedFilmstripItemRef.current;
+    if (!filmstrip || !selectedItem) return;
+
+    const filmstripRect = filmstrip.getBoundingClientRect();
+    const itemRect = selectedItem.getBoundingClientRect();
+    filmstrip.scrollLeft = filmstripScrollTarget({
+      scrollLeft: filmstrip.scrollLeft,
+      clientWidth: filmstrip.clientWidth,
+      scrollWidth: filmstrip.scrollWidth,
+      itemOffsetLeft: itemRect.left - filmstripRect.left + filmstrip.scrollLeft,
+      itemWidth: itemRect.width,
+    });
   }, [active, effectiveSelectedId, view, visibleAssets]);
 
   useEffect(() => {
@@ -360,9 +381,9 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                 <span><strong>{formatDate(selectedAsset.modifiedMs)}</strong><small>修改时间</small></span>
                 <span className="loupe-safety"><ShieldCheck aria-hidden="true" size={15} /><strong>只读预览</strong><small>不会修改原始照片</small></span>
               </div>
-              <div className="loupe-filmstrip" aria-label="照片胶片栏">
+              <div ref={filmstripRef} className="loupe-filmstrip" aria-label="照片胶片栏">
                 {visibleAssets.map((asset) => (
-                  <button key={asset.id} type="button" className={asset.id === effectiveSelectedId ? "is-selected" : ""} onClick={() => setSelectedId(asset.id)} aria-label={asset.name} aria-pressed={asset.id === effectiveSelectedId} title={asset.name}>
+                  <button ref={asset.id === effectiveSelectedId ? selectedFilmstripItemRef : undefined} key={asset.id} type="button" className={asset.id === effectiveSelectedId ? "is-selected" : ""} onClick={() => setSelectedId(asset.id)} aria-label={asset.name} aria-pressed={asset.id === effectiveSelectedId} title={asset.name}>
                     <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={160} version={photoPreviewVersion(asset, index.indexedAtMs)} alt="" />
                   </button>
                 ))}

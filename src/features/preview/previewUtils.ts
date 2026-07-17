@@ -55,3 +55,32 @@ export function adjacentPreviewAssetId(
   const nextIndex = Math.max(0, Math.min(assets.length - 1, currentIndex + direction));
   return assets[nextIndex].id;
 }
+
+export function filmstripScrollTarget({
+  scrollLeft,
+  clientWidth,
+  scrollWidth,
+  itemOffsetLeft,
+  itemWidth,
+  padding = 10,
+}: {
+  scrollLeft: number;
+  clientWidth: number;
+  scrollWidth: number;
+  itemOffsetLeft: number;
+  itemWidth: number;
+  padding?: number;
+}): number {
+  const visibleLeft = scrollLeft + padding;
+  const visibleRight = scrollLeft + clientWidth - padding;
+  const itemRight = itemOffsetLeft + itemWidth;
+  let target = scrollLeft;
+
+  if (itemOffsetLeft < visibleLeft) {
+    target = itemOffsetLeft - padding;
+  } else if (itemRight > visibleRight) {
+    target = itemRight - clientWidth + padding;
+  }
+
+  return Math.max(0, Math.min(scrollWidth - clientWidth, target));
+}

@@ -207,6 +207,38 @@ test("preview sorting and keyboard selection are stable", () => {
   assert.equal(previewUtils.adjacentPreviewAssetId(sorted, "day/b", -1), "day/a");
 });
 
+test("filmstrip scroll keeps the selected thumbnail inside the viewport", () => {
+  assert.equal(typeof previewUtils.filmstripScrollTarget, "function");
+  assert.equal(previewUtils.filmstripScrollTarget({
+    scrollLeft: 240,
+    clientWidth: 400,
+    scrollWidth: 1000,
+    itemOffsetLeft: 360,
+    itemWidth: 88,
+  }), 240);
+  assert.equal(previewUtils.filmstripScrollTarget({
+    scrollLeft: 240,
+    clientWidth: 400,
+    scrollWidth: 1000,
+    itemOffsetLeft: 620,
+    itemWidth: 88,
+  }), 318);
+  assert.equal(previewUtils.filmstripScrollTarget({
+    scrollLeft: 240,
+    clientWidth: 400,
+    scrollWidth: 1000,
+    itemOffsetLeft: 230,
+    itemWidth: 88,
+  }), 220);
+  assert.equal(previewUtils.filmstripScrollTarget({
+    scrollLeft: 500,
+    clientWidth: 400,
+    scrollWidth: 1000,
+    itemOffsetLeft: 950,
+    itemWidth: 88,
+  }), 600);
+});
+
 const previewRequest = {
   root: "/photos",
   relativePath: "day/A.JPG",
