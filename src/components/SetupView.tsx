@@ -1,12 +1,17 @@
+import { isTauri } from "@tauri-apps/api/core";
 import {
   ArrowRight,
   FileImage,
+  FolderInput,
   FolderOpen,
   HardDrive,
   ScanSearch,
   Settings2,
   ShieldCheck,
 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import type { DirectoryKind } from "../types";
+import { directoryDropTargetAtPoint } from "../utils";
 
 interface SetupViewProps {
   referenceRoot: string;
@@ -14,20 +19,31 @@ interface SetupViewProps {
   includeSidecars: boolean;
   caseSensitive: boolean;
   busy: boolean;
-  onChooseDirectory: (kind: "reference" | "raw") => void;
+  onChooseDirectory: (kind: DirectoryKind) => void;
+  onDropDirectories: (kind: DirectoryKind, paths: string[]) => void;
+  onDropError: (message: string) => void;
   onIncludeSidecarsChange: (checked: boolean) => void;
   onCaseSensitiveChange: (checked: boolean) => void;
   onScan: () => void;
 }
 
 interface DirectoryPickerProps {
-  kind: "reference" | "raw";
+  kind: DirectoryKind;
   path: string;
   busy: boolean;
-  onChoose: (kind: "reference" | "raw") => void;
+  isDropTarget: boolean;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
+  onChoose: (kind: DirectoryKind) => void;
 }
 
-function DirectoryPicker({ kind, path, busy, onChoose }: DirectoryPickerProps) {
+function DirectoryPicker({
+  kind,
+  path,
+  busy,
+  isDropTarget,
+  buttonRef,
+  onChoose,
+}: DirectoryPickerProps) {
   const isReference = kind === "reference";
   const Icon = isReference ? FileImage : HardDrive;
   const label = isReference ? "JPG 参考目录" : "RAW 源目录";
@@ -37,7 +53,8 @@ function DirectoryPicker({ kind, path, busy, onChoose }: DirectoryPickerProps) {
 
   return (
     <button
-      className="directory-picker"
+      ref={buttonRef}
+      className={isDropTarget ? "directory-picker is-drop-target" : "directory-picker"}
       type="button"
       onClick={() => onChoose(kind)}
       disabled={busy}
@@ -49,10 +66,17 @@ function DirectoryPicker({ kind, path, busy, onChoose }: DirectoryPickerProps) {
         <strong>{label}</strong>
         <span>{description}</span>
         <span className={path ? "directory-path" : "directory-path is-empty"}>
-          {path || "点击选择目录"}
+          {path || "拖拽目录到这里，或点击选择"}
         </span>
       </span>
       <FolderOpen aria-hidden="true" size={20} />
+      {isDropTarget && (
+        <span className="directory-drop-overlay" aria-live="polite">
+          <FolderInput aria-hidden="true" size={24} />
+          <strong>松开以添加{label}</strong>
+          <small>{path ? "将替换当前目录" : "仅接受单个文件夹"}</small>
+        </span>
+      )}
     </button>
   );
 }
@@ -64,11 +88,80 @@ export function SetupView({
   caseSensitive,
   busy,
   onChooseDirectory,
+  onDropDirectories,
+  onDropError,
   onIncludeSidecarsChange,
   onCaseSensitiveChange,
   onScan,
 }: SetupViewProps) {
   const ready = Boolean(referenceRoot && rawRoot);
+  const referenceButton = useRef<HTMLButtonElement>(null);
+  const rawButton = useRef<HTMLButtonElement>(null);
+  const busyRef = useRef(busy);
+  const dropDirectoriesRef = useRef(onDropDirectories);
+  const dropErrorRef = useRef(onDropError);
+  const [dropTarget, setDropTarget] = useState<DirectoryKind | null>(null);
+
+  useEffect(() => {
+    busyRef.current = busy;
+    dropDirectoriesRef.current = onDropDirectories;
+    dropErrorRef.current = onDropError;
+    if (busy) setDropTarget(null);
+  }, [busy, onDropDirectories, onDropError]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    async function listenForDrops() {
+      const [{ getCurrentWebview }, { getCurrentWindow }] = await Promise.all([
+        import("@tauri-apps/api/webview"),
+        import("@tauri-apps/api/window"),
+      ]);
+      const scaleFactor = await getCurrentWindow().scaleFactor();
+      const stopListening = await getCurrentWebview().onDragDropEvent((event) => {
+        if (disposed) return;
+        if (event.payload.type === "leave") {
+          setDropTarget(null);
+          return;
+        }
+        if (busyRef.current) return;
+
+        const position = event.payload.position.toLogical(scaleFactor);
+        const elements = [
+          { kind: "reference" as const, element: referenceButton.current },
+          { kind: "raw" as const, element: rawButton.current },
+        ];
+        const target = directoryDropTargetAtPoint(
+          position.x,
+          position.y,
+          elements.flatMap(({ kind, element }) => {
+            if (!element) return [];
+            const rect = element.getBoundingClientRect();
+            return [{ kind, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }];
+          }),
+        );
+        setDropTarget(target);
+
+        if (event.payload.type === "drop") {
+          setDropTarget(null);
+          if (target) dropDirectoriesRef.current(target, event.payload.paths);
+        }
+      });
+      if (disposed) stopListening();
+      else unlisten = stopListening;
+    }
+
+    void listenForDrops().catch(() => {
+      if (!disposed) dropErrorRef.current("无法启用目录拖放，请使用点击选择");
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   return (
     <main className="setup-view">
@@ -88,6 +181,8 @@ export function SetupView({
           kind="reference"
           path={referenceRoot}
           busy={busy}
+          isDropTarget={dropTarget === "reference"}
+          buttonRef={referenceButton}
           onChoose={onChooseDirectory}
         />
         <ArrowRight className="directory-arrow" aria-hidden="true" size={22} />
@@ -95,6 +190,8 @@ export function SetupView({
           kind="raw"
           path={rawRoot}
           busy={busy}
+          isDropTarget={dropTarget === "raw"}
+          buttonRef={rawButton}
           onChoose={onChooseDirectory}
         />
       </section>

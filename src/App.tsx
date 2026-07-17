@@ -14,6 +14,7 @@ import { ResultsWorkspace } from "./components/ResultsWorkspace";
 import { SetupView } from "./components/SetupView";
 import type {
   DeleteSummary,
+  DirectoryKind,
   FilterMode,
   Notice,
   ScanItem,
@@ -138,7 +139,19 @@ function App() {
     setNotice(null);
   }
 
-  async function chooseDirectory(kind: "reference" | "raw") {
+  function applyDirectory(kind: DirectoryKind, path: string) {
+    if (kind === "reference") {
+      setReferenceRoot(path);
+      persistSettings({ referenceRoot: path });
+    } else {
+      setRawRoot(path);
+      persistSettings({ rawRoot: path });
+    }
+    resetReview();
+    setLastOperation(null);
+  }
+
+  async function chooseDirectory(kind: DirectoryKind) {
     try {
       const selected = await open({
         directory: true,
@@ -146,17 +159,36 @@ function App() {
         title: kind === "reference" ? "选择 JPG 参考目录" : "选择 RAW 源目录",
       });
       if (typeof selected !== "string") return;
-      if (kind === "reference") {
-        setReferenceRoot(selected);
-        persistSettings({ referenceRoot: selected });
-      } else {
-        setRawRoot(selected);
-        persistSettings({ rawRoot: selected });
-      }
-      resetReview();
-      setLastOperation(null);
+      applyDirectory(kind, selected);
     } catch (error) {
       setNotice({ tone: "error", title: "无法打开目录选择器", detail: errorMessage(error) });
+    }
+  }
+
+  async function dropDirectories(kind: DirectoryKind, paths: string[]) {
+    if (busy) return;
+    if (paths.length !== 1) {
+      setNotice({
+        tone: "warning",
+        title: "一次只能拖入一个文件夹",
+        detail: `当前拖入了 ${paths.length} 个项目`,
+      });
+      return;
+    }
+    try {
+      const path = await invoke<string>("validate_directory_path", { path: paths[0] });
+      applyDirectory(kind, path);
+      setNotice({
+        tone: "success",
+        title: kind === "reference" ? "已添加 JPG 参考目录" : "已添加 RAW 源目录",
+        detail: path,
+      });
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        title: "无法添加拖入的项目",
+        detail: errorMessage(error),
+      });
     }
   }
 
@@ -428,6 +460,8 @@ function App() {
           caseSensitive={caseSensitive}
           busy={busy}
           onChooseDirectory={chooseDirectory}
+          onDropDirectories={(kind, paths) => void dropDirectories(kind, paths)}
+          onDropError={(message) => setNotice({ tone: "warning", title: message })}
           onIncludeSidecarsChange={updateSidecars}
           onCaseSensitiveChange={updateCaseSensitivity}
           onScan={() => void runScan()}

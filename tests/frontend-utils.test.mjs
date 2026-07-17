@@ -81,3 +81,15 @@ test("duplicate reference keys block destructive execution", () => {
   assert.equal(utils.scanHasBlockingIssues({ duplicateReferenceKeys: 0 }), false);
   assert.equal(utils.scanHasBlockingIssues({ duplicateReferenceKeys: 2 }), true);
 });
+
+test("directory drop coordinates select only the hovered target", () => {
+  const bounds = [
+    { kind: "reference", left: 10, top: 20, right: 210, bottom: 120 },
+    { kind: "raw", left: 250, top: 20, right: 450, bottom: 120 },
+  ];
+
+  assert.equal(utils.directoryDropTargetAtPoint(100, 60, bounds), "reference");
+  assert.equal(utils.directoryDropTargetAtPoint(300, 60, bounds), "raw");
+  assert.equal(utils.directoryDropTargetAtPoint(230, 60, bounds), null);
+  assert.equal(utils.directoryDropTargetAtPoint(100, 140, bounds), null);
+});

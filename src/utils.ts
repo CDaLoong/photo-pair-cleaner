@@ -1,9 +1,35 @@
-import type { FileKind, Notice, ScanItem, ScanStatus, ScanSummary } from "./types";
+import type {
+  DirectoryKind,
+  FileKind,
+  Notice,
+  ScanItem,
+  ScanStatus,
+  ScanSummary,
+} from "./types";
 
 interface ReclaimableItem {
   status: ScanStatus;
   kind: FileKind;
   sizeBytes: number;
+}
+
+export interface DirectoryDropBounds {
+  kind: DirectoryKind;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export function directoryDropTargetAtPoint(
+  x: number,
+  y: number,
+  bounds: DirectoryDropBounds[],
+): DirectoryKind | null {
+  return bounds.find(
+    (item) =>
+      x >= item.left && x <= item.right && y >= item.top && y <= item.bottom,
+  )?.kind ?? null;
 }
 
 export function reclaimableBytes(

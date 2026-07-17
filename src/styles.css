@@ -475,6 +475,7 @@ input:disabled {
 }
 
 .directory-picker {
+  position: relative;
   display: grid;
   grid-template-columns: 24px 46px minmax(0, 1fr) 24px;
   gap: 12px;
@@ -482,6 +483,7 @@ input:disabled {
   width: 100%;
   min-height: 128px;
   padding: 18px;
+  overflow: hidden;
   color: var(--text);
   background: var(--surface-subtle);
   border: 1px solid var(--line-strong);
@@ -493,6 +495,45 @@ input:disabled {
 .directory-picker:not(:disabled):hover {
   border-color: color-mix(in srgb, var(--accent), var(--line-strong) 35%);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 82%);
+}
+
+.directory-picker.is-drop-target {
+  background: var(--surface-active);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 76%);
+}
+
+.directory-picker.is-drop-target > :not(.directory-drop-overlay) {
+  opacity: 0.12;
+}
+
+.directory-drop-overlay {
+  position: absolute;
+  z-index: 2;
+  inset: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent), var(--surface) 86%);
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+.directory-drop-overlay svg {
+  margin-bottom: 3px;
+  color: var(--warning);
+}
+
+.directory-drop-overlay strong {
+  font-size: 13px;
+}
+
+.directory-drop-overlay small {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .directory-step {

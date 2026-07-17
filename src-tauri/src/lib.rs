@@ -581,6 +581,16 @@ fn delete_impl(
 }
 
 #[tauri::command]
+async fn validate_directory_path(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        canonical_directory(&path, "拖入路径")
+            .map(|directory| directory.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("目录校验任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 async fn scan_pairs(
     state: tauri::State<'_, DeletionPlanStore>,
     request: ScanRequest,
@@ -682,6 +692,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(DeletionPlanStore::default())
         .invoke_handler(tauri::generate_handler![
+            validate_directory_path,
             scan_pairs,
             move_to_trash,
             reveal_scan_item,
@@ -749,6 +760,23 @@ mod tests {
         fs::create_dir_all(&nested).expect("directories");
         let error = scan_pairs_impl(&request(&root, &nested)).expect_err("overlap should fail");
         assert!(error.contains("不能相同或互相嵌套"));
+    }
+
+    #[test]
+    fn validates_dropped_directories_and_rejects_files() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let directory = temp.path().join("photos");
+        let file = temp.path().join("photo.NEF");
+        fs::create_dir_all(&directory).expect("photo directory");
+        fs::write(&file, b"raw").expect("raw file");
+
+        let canonical = canonical_directory(&directory.to_string_lossy(), "拖入路径")
+            .expect("directory should be accepted");
+        assert_eq!(
+            canonical,
+            fs::canonicalize(directory).expect("canonical path")
+        );
+        assert!(canonical_directory(&file.to_string_lossy(), "拖入路径").is_err());
     }
 
     #[test]

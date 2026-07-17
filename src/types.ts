@@ -1,5 +1,6 @@
 export type ScanStatus = "keep" | "delete";
 export type FileKind = "raw" | "sidecar";
+export type DirectoryKind = "reference" | "raw";
 
 export interface ScanItem {
   id: string;
