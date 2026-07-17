@@ -247,6 +247,14 @@ export function SetupView({
           </div>
         </div>
         <div className="settings-controls">
+          <div className="scan-mode-control" role="group" aria-label="扫描方向" data-tour="scan-mode">
+            <button type="button" aria-pressed={scanMode === "cleanupRaw"} onClick={() => onScanModeChange("cleanupRaw")} disabled={busy}>
+              <strong>清理无 JPG 的 RAW</strong><small>生成可执行清理计划</small>
+            </button>
+            <button type="button" aria-pressed={scanMode === "auditReference"} onClick={() => onScanModeChange("auditReference")} disabled={busy || referenceSourceType !== "directory"} title={referenceSourceType === "directory" ? undefined : "反向审计只支持 JPG 目录参考源"}>
+              <strong>检查无 RAW 的 JPG</strong><small>只读审计并可导出清单</small>
+            </button>
+          </div>
           <div className="reference-source-control" role="group" aria-label="保留依据" data-tour="reference-source">
             {([
               ["directory", "JPG 目录", "以保留下来的 JPG 为准"],
@@ -257,14 +265,6 @@ export function SetupView({
                 <strong>{label}</strong><small>{detail}</small>
               </button>
             ))}
-          </div>
-          <div className="scan-mode-control" role="group" aria-label="扫描方向" data-tour="scan-mode">
-            <button type="button" aria-pressed={scanMode === "cleanupRaw"} onClick={() => onScanModeChange("cleanupRaw")} disabled={busy}>
-              <strong>清理无 JPG 的 RAW</strong><small>生成可执行清理计划</small>
-            </button>
-            <button type="button" aria-pressed={scanMode === "auditReference"} onClick={() => onScanModeChange("auditReference")} disabled={busy || referenceSourceType !== "directory"} title={referenceSourceType === "directory" ? undefined : "反向审计只支持 JPG 目录参考源"}>
-              <strong>检查无 RAW 的 JPG</strong><small>只读审计并可导出清单</small>
-            </button>
           </div>
           {referenceSourceType === "xmpRating" && <div className="rating-threshold-row">
             <span><Star aria-hidden="true" size={17} /><span><strong>最低保留星级</strong><small>读取磁盘 XMP 中的 Rating，不修改评分</small></span></span>
