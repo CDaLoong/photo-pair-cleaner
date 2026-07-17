@@ -14,6 +14,7 @@ export interface ScanItem {
 }
 
 export interface ScanSummary {
+  planId: string;
   referenceFiles: number;
   rawFiles: number;
   matchedRaws: number;
@@ -46,4 +47,3 @@ export interface Notice {
   title: string;
   detail?: string;
 }
-

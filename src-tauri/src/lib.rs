@@ -1,9 +1,14 @@
+mod safety;
+
 use chrono::Utc;
+use safety::{DeletionPlan, FileSnapshot, unique_keys};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use walkdir::WalkDir;
@@ -50,6 +55,7 @@ pub struct ScanItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanSummary {
+    pub plan_id: String,
     pub reference_files: usize,
     pub raw_files: usize,
     pub matched_raws: usize,
@@ -73,6 +79,7 @@ pub struct DeleteCandidate {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteRequest {
+    pub plan_id: String,
     pub raw_root: String,
     pub items: Vec<DeleteCandidate>,
 }
@@ -103,6 +110,17 @@ struct OperationLogRecord<'a> {
     relative_path: &'a str,
     success: bool,
     message: &'a str,
+}
+
+#[derive(Default)]
+struct DeletionPlanStore {
+    current: Mutex<Option<DeletionPlan>>,
+}
+
+fn next_plan_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{}-{sequence}", now_ms(), std::process::id())
 }
 
 fn now_ms() -> u64 {
@@ -298,7 +316,7 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
     }
 
     let mut sidecar_count = 0usize;
-    for key in missing_keys {
+    for key in unique_keys(missing_keys) {
         if let Some(paths) = sidecars.get(&key) {
             for path in paths {
                 let item = scan_item(&raw_root, path, ScanStatus::Delete, FileKind::Sidecar, None)?;
@@ -335,6 +353,7 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
     }
 
     Ok(ScanSummary {
+        plan_id: String::new(),
         reference_files,
         raw_files: raw_paths.len(),
         matched_raws,
@@ -429,12 +448,27 @@ fn write_operation_log(
     (Some(log_path.to_string_lossy().into_owned()), None)
 }
 
-fn delete_impl(request: &DeleteRequest, log_dir: Option<&Path>) -> Result<DeleteSummary, String> {
+fn delete_impl(
+    request: &DeleteRequest,
+    log_dir: Option<&Path>,
+    plan: &DeletionPlan,
+) -> Result<DeleteSummary, String> {
     let raw_root = canonical_directory(&request.raw_root, "RAW 源目录")?;
     let mut results = Vec::with_capacity(request.items.len());
 
     for candidate in &request.items {
-        let outcome = match validate_delete_candidate(&raw_root, candidate) {
+        let snapshot = FileSnapshot::new(
+            candidate.expected_size_bytes,
+            candidate.expected_modified_ms,
+        );
+        let authorized = plan.authorize(
+            &request.plan_id,
+            &raw_root,
+            &candidate.relative_path,
+            &snapshot,
+        );
+        let outcome = match authorized.and_then(|_| validate_delete_candidate(&raw_root, candidate))
+        {
             Ok(path) => trash::delete(&path)
                 .map(|_| "已移入系统回收站/废纸篓".to_string())
                 .map_err(|error| format!("移入系统回收站/废纸篓失败：{error}")),
@@ -467,19 +501,66 @@ fn delete_impl(request: &DeleteRequest, log_dir: Option<&Path>) -> Result<Delete
 }
 
 #[tauri::command]
-async fn scan_pairs(request: ScanRequest) -> Result<ScanSummary, String> {
-    tauri::async_runtime::spawn_blocking(move || scan_pairs_impl(&request))
+async fn scan_pairs(
+    state: tauri::State<'_, DeletionPlanStore>,
+    request: ScanRequest,
+) -> Result<ScanSummary, String> {
+    *state
+        .current
+        .lock()
+        .map_err(|_| "无法重置清理计划状态".to_string())? = None;
+    let raw_root = canonical_directory(&request.raw_root, "RAW 源目录")?;
+    let mut summary = tauri::async_runtime::spawn_blocking(move || scan_pairs_impl(&request))
         .await
-        .map_err(|error| format!("扫描任务异常结束：{error}"))?
+        .map_err(|error| format!("扫描任务异常结束：{error}"))??;
+
+    let plan_id = next_plan_id();
+    let candidates = summary
+        .items
+        .iter()
+        .filter(|item| item.status == ScanStatus::Delete)
+        .map(|item| {
+            (
+                item.relative_path.clone(),
+                FileSnapshot::new(item.size_bytes, item.modified_ms),
+            )
+        });
+    let plan = DeletionPlan::new(plan_id.clone(), raw_root, candidates);
+    summary.plan_id = plan_id;
+    *state
+        .current
+        .lock()
+        .map_err(|_| "无法保存清理计划状态".to_string())? = Some(plan);
+    Ok(summary)
 }
 
 #[tauri::command]
 async fn move_to_trash(
     app: tauri::AppHandle,
+    state: tauri::State<'_, DeletionPlanStore>,
     request: DeleteRequest,
 ) -> Result<DeleteSummary, String> {
+    if request.items.is_empty() {
+        return Err("清理计划中没有文件".to_string());
+    }
+    let raw_root = canonical_directory(&request.raw_root, "RAW 源目录")?;
+    let plan = {
+        let mut current = state
+            .current
+            .lock()
+            .map_err(|_| "无法读取清理计划状态".to_string())?;
+        let plan = current
+            .as_ref()
+            .ok_or_else(|| "清理计划不存在，请重新扫描".to_string())?;
+        if !plan.matches(&request.plan_id, &raw_root) {
+            return Err("清理计划已失效或 RAW 源目录不匹配，请重新扫描".to_string());
+        }
+        current
+            .take()
+            .ok_or_else(|| "清理计划不存在，请重新扫描".to_string())?
+    };
     let log_dir = app.path().app_log_dir().ok();
-    tauri::async_runtime::spawn_blocking(move || delete_impl(&request, log_dir.as_deref()))
+    tauri::async_runtime::spawn_blocking(move || delete_impl(&request, log_dir.as_deref(), &plan))
         .await
         .map_err(|error| format!("清理任务异常结束：{error}"))?
 }
@@ -488,6 +569,7 @@ async fn move_to_trash(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(DeletionPlanStore::default())
         .invoke_handler(tauri::generate_handler![scan_pairs, move_to_trash])
         .run(tauri::generate_context!())
         .expect("failed to run FramePair");
@@ -550,6 +632,34 @@ mod tests {
         fs::create_dir_all(&nested).expect("directories");
         let error = scan_pairs_impl(&request(&root, &nested)).expect_err("overlap should fail");
         assert!(error.contains("不能相同或互相嵌套"));
+    }
+
+    #[test]
+    fn exposes_each_sidecar_once_for_repeated_missing_match_keys() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let reference_root = temp.path().join("JPG");
+        let raw_root = temp.path().join("RAW");
+        fs::create_dir_all(&reference_root).expect("reference directory");
+        fs::create_dir_all(&raw_root).expect("raw directory");
+
+        fs::write(raw_root.join("DSC_0001.NEF"), b"nef").expect("nef");
+        fs::write(raw_root.join("DSC_0001.RAW"), b"raw").expect("raw");
+        fs::write(raw_root.join("DSC_0001.xmp"), b"xmp").expect("xmp");
+
+        let mut scan_request = request(&reference_root, &raw_root);
+        scan_request.raw_extensions.push("raw".to_string());
+        let summary = scan_pairs_impl(&scan_request).expect("scan");
+
+        assert_eq!(summary.missing_raws, 2);
+        assert_eq!(summary.sidecars, 1);
+        assert_eq!(
+            summary
+                .items
+                .iter()
+                .filter(|item| item.kind == FileKind::Sidecar)
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -25,7 +25,13 @@ import type {
   ScanSummary,
   WorkPhase,
 } from "./types";
-import { errorMessage, formatBytes, formatDate } from "./utils";
+import {
+  errorMessage,
+  formatBytes,
+  formatDate,
+  noticeAfterRescanFailure,
+  reclaimableBytes,
+} from "./utils";
 
 const STORAGE_KEY = "framepair.settings.v1";
 
@@ -34,6 +40,11 @@ interface StoredSettings {
   rawRoot: string;
   includeSidecars: boolean;
   caseSensitive: boolean;
+}
+
+interface ScanRunResult {
+  ok: boolean;
+  error?: string;
 }
 
 function loadSettings(): StoredSettings {
@@ -91,6 +102,10 @@ function App() {
     [deleteItems, selectedIds],
   );
   const selectedBytes = selectedItems.reduce((sum, item) => sum + item.sizeBytes, 0);
+  const potentialReclaimableBytes = useMemo(
+    () => reclaimableBytes(scan?.items ?? [], includeSidecars),
+    [includeSidecars, scan],
+  );
   const selectedRow = scan?.items.find((item) => item.id === selectedRowId) ?? null;
 
   const visibleItems = useMemo(() => {
@@ -146,10 +161,11 @@ function App() {
     }
   }
 
-  async function runScan(options: { silent?: boolean } = {}) {
+  async function runScan(options: { silent?: boolean } = {}): Promise<ScanRunResult> {
     if (!referenceRoot || !rawRoot) {
-      setNotice({ tone: "warning", title: "目录尚未选择" });
-      return false;
+      const error = "目录尚未选择";
+      if (!options.silent) setNotice({ tone: "warning", title: error });
+      return { ok: false, error };
     }
     setPhase("scanning");
     if (!options.silent) setNotice(null);
@@ -164,6 +180,7 @@ function App() {
           caseSensitive,
         },
       });
+      const estimatedBytes = reclaimableBytes(result.items, includeSidecars);
       setScan(result);
       setSelectedIds(
         new Set(
@@ -184,17 +201,20 @@ function App() {
             ? {
                 tone: "warning",
                 title: `发现 ${result.missingRaws} 个未配对 RAW`,
-                detail: `预计可释放 ${formatBytes(result.reclaimableBytes)}`,
+                detail: `预计可释放 ${formatBytes(estimatedBytes)}`,
               }
             : { tone: "success", title: "所有 RAW 均有对应参考文件" },
         );
       }
-      return true;
+      return { ok: true };
     } catch (error) {
+      const message = errorMessage(error);
       setScan(null);
       setSelectedIds(new Set());
-      setNotice({ tone: "error", title: "扫描失败", detail: errorMessage(error) });
-      return false;
+      if (!options.silent) {
+        setNotice({ tone: "error", title: "扫描失败", detail: message });
+      }
+      return { ok: false, error: message };
     } finally {
       setPhase("idle");
     }
@@ -252,11 +272,16 @@ function App() {
 
   async function executeDelete() {
     confirmDialog.current?.close();
+    if (!scan) {
+      setNotice({ tone: "warning", title: "扫描结果已失效，请重新扫描" });
+      return;
+    }
     setPhase("deleting");
     setNotice(null);
     try {
       const result = await invoke<DeleteSummary>("move_to_trash", {
         request: {
+          planId: scan.planId,
           rawRoot,
           items: selectedItems.map((item) => ({
             relativePath: item.relativePath,
@@ -266,7 +291,7 @@ function App() {
         },
       });
       const firstFailure = result.results.find((item) => !item.success);
-      setNotice(
+      const deletionNotice: Notice =
         result.failed > 0
           ? {
               tone: "error",
@@ -279,9 +304,17 @@ function App() {
               tone: "success",
               title: `${result.succeeded} 个文件已移入回收站/废纸篓`,
               detail: result.logWarning ?? undefined,
-            },
-      );
-      await runScan({ silent: true });
+            };
+      setNotice(deletionNotice);
+      const rescan = await runScan({ silent: true });
+      if (!rescan.ok) {
+        setNotice(
+          noticeAfterRescanFailure(
+            deletionNotice,
+            rescan.error ?? "未知错误",
+          ),
+        );
+      }
     } catch (error) {
       setNotice({ tone: "error", title: "清理失败", detail: errorMessage(error) });
     } finally {
@@ -360,7 +393,7 @@ function App() {
           <div className="summary-ok"><span>已配对</span><strong>{scan.matchedRaws}</strong></div>
           <div className="summary-warning"><span>待清理 RAW</span><strong>{scan.missingRaws}</strong></div>
           <div><span>伴随 XMP</span><strong>{scan.sidecars}</strong></div>
-          <div><span>预计释放</span><strong>{formatBytes(scan.reclaimableBytes)}</strong></div>
+          <div><span>预计释放</span><strong>{formatBytes(potentialReclaimableBytes)}</strong></div>
         </section>
       )}
 

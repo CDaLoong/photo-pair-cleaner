@@ -1,3 +1,32 @@
+import type { FileKind, Notice, ScanStatus } from "./types";
+
+interface ReclaimableItem {
+  status: ScanStatus;
+  kind: FileKind;
+  sizeBytes: number;
+}
+
+export function reclaimableBytes(
+  items: ReclaimableItem[],
+  includeSidecars: boolean,
+): number {
+  return items
+    .filter(
+      (item) =>
+        item.status === "delete" && (item.kind === "raw" || includeSidecars),
+    )
+    .reduce((sum, item) => sum + item.sizeBytes, 0);
+}
+
+export function noticeAfterRescanFailure(notice: Notice, error: string): Notice {
+  return {
+    ...notice,
+    detail: [notice.detail, `清理已执行，但自动重新扫描失败：${error}`]
+      .filter(Boolean)
+      .join("；"),
+  };
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -25,4 +54,3 @@ export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return "发生未知错误";
 }
-

@@ -10,6 +10,7 @@ FramePair 是一个 Windows 与 macOS 桌面工具。它以人工筛选后保留
 - 支持搜索、状态过滤、逐项选择和 XMP 处理开关。
 - 默认不区分文件名大小写，可切换为严格匹配。
 - 清理前重新校验路径、扩展名、文件大小和修改时间。
+- 删除请求必须匹配 Rust 后端保存的当前扫描计划，重新扫描后旧计划立即失效。
 - 只移入系统回收站/废纸篓，不提供永久删除入口。
 - 每次操作写入应用日志目录下的 `operations.jsonl`。
 
@@ -30,9 +31,10 @@ npm ci
 npm run tauri -- dev
 ```
 
-仅运行前端生产构建和 Rust 核心测试：
+运行前端测试、生产构建和 Rust 核心测试：
 
 ```bash
+npm run test:frontend
 npm run build
 npm run test:core
 ```
@@ -93,3 +95,8 @@ src-tauri/icons/             Windows/macOS 安装图标
 
 当前版本聚焦 Nikon `.NEF`、`.JPG/.JPEG` 和 `.xmp`。扩展到 Canon、Sony、Fujifilm 等格式时，应同时调整扫描白名单、删除白名单、界面规则和测试，不能只放宽前端输入。
 
+## 许可
+
+FramePair 采用 [PolyForm Noncommercial License 1.0.0](LICENSE.md)。个人学习、研究、实验和其他非商业用途可以在协议范围内使用、修改与分发；商业使用需要另行取得作者的书面授权。
+
+本项目属于源码可用软件，不是 OSI 定义下的开源软件。项目所使用的第三方依赖继续适用各自的许可证，本协议不会改变这些第三方许可证。

@@ -2,12 +2,14 @@
   "name": "photo-pair-cleaner",
   "private": true,
   "version": "0.1.0",
+  "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "test:frontend": "node --test tests/frontend-utils.test.mjs",
     "test:core": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {

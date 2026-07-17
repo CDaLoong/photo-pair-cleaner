@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Safely pair JPG selections with RAW files"
 authors = ["FramePair contributors"]
 edition = "2024"
+license-file = "../LICENSE.md"
 
 [lib]
 name = "photo_pair_cleaner_lib"
@@ -23,4 +24,3 @@ walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"
-
