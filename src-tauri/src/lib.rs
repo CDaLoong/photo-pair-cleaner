@@ -1247,6 +1247,28 @@ async fn restore_rating_move(
 }
 
 #[tauri::command]
+async fn restore_rating_quarantine(
+    app: tauri::AppHandle,
+    request: file_organizer::OrganizerRecoveryRequest,
+) -> Result<file_organizer::OrganizerRecoverySummary, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分整理历史目录：{error}"))?;
+    let created_at_ms = now_ms();
+    tauri::async_runtime::spawn_blocking(move || {
+        file_organizer::restore_quarantine_operation(
+            &app_data_dir,
+            &request.operation_id,
+            &request.group_ids,
+            created_at_ms,
+        )
+    })
+    .await
+    .map_err(|error| format!("恢复评分隔离任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 async fn undo_rating_copy(
     app: tauri::AppHandle,
     request: file_organizer::OrganizerRecoveryRequest,
@@ -1365,6 +1387,7 @@ pub fn run() {
             execute_operation_plan,
             list_rating_operation_history,
             restore_rating_move,
+            restore_rating_quarantine,
             undo_rating_copy,
             load_photo_thumbnail,
             list_external_editors,

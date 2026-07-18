@@ -21,12 +21,22 @@ test("phase four registers rating organizer execution and recovery without clean
     "execute_operation_plan",
     "list_rating_operation_history",
     "restore_rating_move",
+    "restore_rating_quarantine",
     "undo_rating_copy",
   ]) {
     assert.match(source, new RegExp(`async fn ${command}\\b`));
     assert.match(source, new RegExp(`\\n\\s*${command},?`));
   }
   assert.doesNotMatch(source, /async fn execute_rating_cleanup\b/);
+});
+
+test("phase five keeps cleanup inside the authorized organizer command", () => {
+  const plan = fs.readFileSync(new URL("../src-tauri/src/operation_plan.rs", import.meta.url), "utf8");
+  const organizer = fs.readFileSync(new URL("../src-tauri/src/file_organizer.rs", import.meta.url), "utf8");
+  assert.match(plan, /cleanup_destination: Option<CleanupExecutionDestination>/);
+  assert.match(organizer, /CleanupExecutionDestination::Quarantine/);
+  assert.match(organizer, /CleanupExecutionDestination::Trash/);
+  assert.doesNotMatch(organizer, /pub\(crate\) fn execute_rating_cleanup/);
 });
 
 test("new rating rules use the agreed move, group, and path defaults", () => {

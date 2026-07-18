@@ -191,27 +191,27 @@ git commit -m "feat: execute rating cleanup safely"
 - Test: `src-tauri/src/lib.rs`
 - Test: `tests/frontend-utils.test.mjs`
 
-- [ ] **Step 1: Write failing command-registration tests**
+- [x] **Step 1: Write failing command-registration tests**
 
 Require `execute_operation_plan` to pass the authorized cleanup destination into the organizer, register `restore_rating_quarantine`, retain `open_system_trash`, and assert there is still no path-based `execute_rating_cleanup` command.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `npm run test:frontend`
 
 Expected: FAIL because quarantine restore is not registered and the phase-five boundary assertion is absent.
 
-- [ ] **Step 3: Implement the command boundary**
+- [x] **Step 3: Implement the command boundary**
 
 Add `restore_rating_quarantine` with the same app-data-only `OrganizerRecoveryRequest` used by move restore and copy undo. Keep the unified execution command; its request contains only plan ID, canonical root, selected group IDs, and the destination enum.
 
-- [ ] **Step 4: Run command and backend tests**
+- [x] **Step 4: Run command and backend tests**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml --offline`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src-tauri/src/lib.rs tests/frontend-utils.test.mjs
