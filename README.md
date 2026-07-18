@@ -12,8 +12,10 @@ FramePair 是一个 Windows 与 macOS 本地摄影工作台。它可以把同一
 - JPG/JPEG 缩略图由 Rust 在后台按 EXIF 方向生成并缓存；目录索引完成后以受控并发预加载并解码全部单张预览，切换照片时复用共享内存 URL，不把原始大图直接传入 WebView。
 - RAW-only 照片会进入索引并显示明确占位；当前版本尚未解析 RAW 内嵌预览。
 - 可以在单张预览中设置 0-5 星评分，数字键 `0-5` 可快速评分；网格和胶片栏显示评分徽标，并可按最低星级筛选。
+- 可以从当前照片或“配对清理 > 评分同步”批量生成只读同步计划，把 FramePair 工作评分同步到 RAW XMP；可选择手动同步或评分保存后的自动同步。
+- JPG 内嵌评分写入属于默认关闭的高级目标，启用后仍需二次确认；RAW 原文件永不修改，评分同步不会移动、复制、清理或重命名照片。
 - 照片、单张预览和胶片栏提供中文右键菜单，可直接评分、切换预览、定位文件或交给外部编辑器。
-- FramePair 评分保存在应用数据目录，不写入原始照片或现有 XMP；评分按规范化照片根目录隔离，应用重启后仍保留。
+- FramePair 评分先保存在应用数据目录，并按规范化照片根目录隔离；只有启用评分同步后，才会在只读计划和安全复验通过时更新所选 XMP/JPG 元数据目标。
 - 自动发现标准安装位置中的 Adobe Photoshop 和 Lightroom Classic，也可交给系统默认应用；JPG+RAW 配对照片优先把 RAW 交给外部编辑器。
 - 照片浏览与配对清理分别提供 5 步蒙版引导，并可从模块右上角随时重新查看。
 - 支持点击或拖拽选择 JPG 参考目录、XMP 评分目录和 RAW 源目录。
@@ -45,7 +47,7 @@ FramePair 是一个 Windows 与 macOS 本地摄影工作台。它可以把同一
 
 FramePair 读取 XMP 中的标准 `Rating`，最低保留星级可设为 1-5。使用 Lightroom Classic 或 Bridge 时，需要先将元数据写入磁盘上的 XMP；FramePair 不读取或修改 `.lrcat`。XMP 评分目录可以与 RAW 根目录相同。
 
-照片浏览模块内设置的 FramePair 评分与这里的“XMP 星级参考源”相互独立。前者用于本机浏览筛选且不修改照片，后者用于读取 Lightroom/Bridge 已经写入磁盘的评分。
+照片浏览模块内设置的 FramePair 评分是工作评分；这里的“XMP 星级参考源”仍只读取 Lightroom/Bridge 已写入磁盘的评分。需要写回时，必须单独使用评分同步并选择允许的目标与冲突策略。
 
 ## 开发环境
 
@@ -119,6 +121,8 @@ Apple Silicon 与 Intel 可以继续分别发布，也可以在 macOS 构建机�
 9. 恢复前重新校验隔离路径、文件大小和修改时间，原位置存在文件时拒绝覆盖。
 10. 反向 JPG 审计不会生成清理授权，无法通过执行接口删除 JPG。
 11. XMP 文件超过 4 MiB、XML 损坏或评分非法时整次扫描失败。
+12. 手动评分同步只能执行后端生成的一次性只读计划；目标新增、变化、越界、变成符号链接或出现多个可写 XMP 时拒绝写入。
+13. 自动同步只在 FramePair 评分保存成功后更新启用的评分元数据；失败进入待处理状态，不回滚评分，也不执行照片整理或清理。
 
 ## 项目结构
 
@@ -126,12 +130,15 @@ Apple Silicon 与 Intel 可以继续分别发布，也可以在 macOS 构建机�
 src/app/                     全局应用外壳与模块导航
 src/features/cleanup/        配对清理模块、引导、复核与确认界面
 src/features/preview/        照片索引界面、网格/单张浏览与缩略图组件
+src/features/rating-sync/    当前照片与批量评分同步、设置和只读计划界面
 src/App.tsx                  模块组合入口
 src/styles.css               共享设计变量与模块响应式样式
 src-tauri/src/lib.rs         扫描编排、Tauri 命令与操作计划
 src-tauri/src/formats.rs     可信格式白名单和 XMP 配对键
 src-tauri/src/preview.rs     逻辑照片索引、路径校验与 JPEG 缩略图缓存
 src-tauri/src/ratings.rs     应用本地评分数据库、路径校验与原子写入
+src-tauri/src/rating_metadata.rs XMP/JPEG 评分读取与保留式更新
+src-tauri/src/rating_sync.rs 一次性同步计划、冲突策略、安全执行、设置与待处理状态
 src-tauri/src/editors.rs     Photoshop/Lightroom 发现与受限照片交接
 src-tauri/src/reference.rs   目录、清单与 XMP 星级参考源
 src-tauri/src/quarantine.rs  隔离、历史清单与冲突安全恢复
@@ -141,7 +148,7 @@ src-tauri/icons/             Windows/macOS 安装图标
 .github/workflows/release.yml 跨平台构建矩阵
 ```
 
-当前照片浏览阶段不包含 RAW 解码、AI 筛片、评分写回 XMP 或 Lightroom 目录数据库解析。Lightroom Classic 外部交接会启动应用并传入照片，但不会定位或修改既有 `.lrcat` 目录记录。
+当前版本不包含 RAW 解码、AI 筛片、按评分移动/复制/清理照片或 Lightroom 目录数据库解析。Lightroom Classic 外部交接会启动应用并传入照片，但不会定位或修改既有 `.lrcat` 目录记录。
 
 ## 许可
 
