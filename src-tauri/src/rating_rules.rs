@@ -1,8 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
+use tempfile::NamedTempFile;
 
 const MAX_RULES: usize = 100;
 const MAX_RULE_NAME_CHARS: usize = 80;
+const RULE_DATABASE_VERSION: u8 = 1;
+const MAX_RULE_DATABASE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -57,6 +63,19 @@ pub(crate) struct RatingRule {
     pub(crate) action: RuleAction,
     pub(crate) destination: Option<String>,
     pub(crate) preserve_relative_path: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RatingRuleState {
+    pub(crate) rules: Vec<RatingRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RatingRuleDatabase {
+    version: u8,
+    rules: Vec<RatingRule>,
 }
 
 fn validate_rating(rating: u8) -> Result<(), String> {
@@ -133,4 +152,130 @@ pub(crate) fn validate_rule_set(rules: &[RatingRule]) -> Result<Vec<RatingRule>,
         validate_rule(rule).map_err(|error| format!("规则“{}”：{error}", rule.name.trim()))?;
     }
     Ok(rules.to_vec())
+}
+
+fn read_database(path: &Path) -> Result<RatingRuleDatabase, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RatingRuleDatabase {
+                version: RULE_DATABASE_VERSION,
+                rules: Vec::new(),
+            });
+        }
+        Err(error) => return Err(format!("无法读取评分规则文件信息：{error}")),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("评分规则不是可信普通文件".to_string());
+    }
+    if metadata.len() > MAX_RULE_DATABASE_BYTES {
+        return Err("评分规则超过 4 MiB 上限".to_string());
+    }
+    let bytes = fs::read(path).map_err(|error| format!("无法读取评分规则：{error}"))?;
+    let database: RatingRuleDatabase =
+        serde_json::from_slice(&bytes).map_err(|error| format!("评分规则已损坏：{error}"))?;
+    if database.version != RULE_DATABASE_VERSION {
+        return Err(format!("不支持评分规则版本 {}", database.version));
+    }
+    validate_rule_set(&database.rules)?;
+    Ok(database)
+}
+
+fn write_database(path: &Path, database: &RatingRuleDatabase, export: bool) -> Result<(), String> {
+    let bytes =
+        serde_json::to_vec_pretty(database).map_err(|error| format!("无法序列化评分规则：{error}"))?;
+    if bytes.len() as u64 > MAX_RULE_DATABASE_BYTES {
+        return Err("评分规则超过 4 MiB 上限".to_string());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法确定评分规则目录".to_string())?;
+    if export {
+        let metadata = fs::symlink_metadata(parent)
+            .map_err(|error| format!("评分规则导出目录不可访问：{error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("评分规则导出目录不是可信文件夹".to_string());
+        }
+    } else {
+        fs::create_dir_all(parent).map_err(|error| format!("无法创建评分规则目录：{error}"))?;
+    }
+    let target_exists = match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(if export {
+                    "导出目标不是可信普通文件".to_string()
+                } else {
+                    "评分规则不是可信普通文件".to_string()
+                });
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("无法读取评分规则目标信息：{error}")),
+    };
+    let mut temporary = NamedTempFile::new_in(parent)
+        .map_err(|error| format!("无法创建评分规则临时文件：{error}"))?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|_| temporary.as_file_mut().sync_all())
+        .map_err(|error| format!("无法写入评分规则临时文件：{error}"))?;
+    if target_exists {
+        temporary
+            .persist(path)
+            .map_err(|error| format!("无法替换评分规则：{}", error.error))?;
+    } else {
+        temporary
+            .persist_noclobber(path)
+            .map_err(|error| format!("无法保存评分规则：{}", error.error))?;
+    }
+    #[cfg(unix)]
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("评分规则已写入，但目录同步失败：{error}"))?;
+    Ok(())
+}
+
+pub(crate) fn load_rules(path: &Path) -> Result<RatingRuleState, String> {
+    Ok(RatingRuleState {
+        rules: read_database(path)?.rules,
+    })
+}
+
+pub(crate) fn save_rules(path: &Path, rules: &[RatingRule]) -> Result<RatingRuleState, String> {
+    let rules = validate_rule_set(rules)?;
+    read_database(path)?;
+    let database = RatingRuleDatabase {
+        version: RULE_DATABASE_VERSION,
+        rules: rules.clone(),
+    };
+    write_database(path, &database, false)?;
+    Ok(RatingRuleState { rules })
+}
+
+pub(crate) fn import_rules(path: &Path) -> Result<RatingRuleState, String> {
+    let extension = path
+        .extension()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if extension != "json" {
+        return Err("导入文件必须使用 .json 扩展名".to_string());
+    }
+    load_rules(path)
+}
+
+pub(crate) fn export_rules(path: &Path, rules: &[RatingRule]) -> Result<String, String> {
+    let extension = path
+        .extension()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if extension != "json" {
+        return Err("导出文件必须使用 .json 扩展名".to_string());
+    }
+    let rules = validate_rule_set(rules)?;
+    let database = RatingRuleDatabase {
+        version: RULE_DATABASE_VERSION,
+        rules,
+    };
+    write_database(path, &database, true)?;
+    Ok(path.to_string_lossy().into_owned())
 }

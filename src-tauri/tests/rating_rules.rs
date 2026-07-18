@@ -2,8 +2,10 @@
 mod rating_rules;
 
 use rating_rules::{
-    RatingCondition, RatingRule, RuleAction, RuleMemberKind, validate_rule_set,
+    RatingCondition, RatingRule, RuleAction, RuleMemberKind, export_rules, import_rules,
+    load_rules, save_rules, validate_rule_set,
 };
+use std::fs;
 
 fn rule(id: &str, action: RuleAction) -> RatingRule {
     RatingRule {
@@ -147,4 +149,119 @@ fn rule_sets_have_a_bounded_size() {
     assert!(validate_rule_set(&rules)
         .unwrap_err()
         .contains("最多只能创建 100 条规则"));
+}
+
+#[test]
+fn absent_rule_database_loads_an_empty_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = load_rules(&temp.path().join("rating-rules.json")).unwrap();
+    assert!(state.rules.is_empty());
+}
+
+#[test]
+fn versioned_rules_round_trip_in_user_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("rating-rules.json");
+    let input = vec![
+        rule("low", RuleAction::Cleanup),
+        move_rule("high", "/archive"),
+    ];
+    let saved = save_rules(&database, &input).unwrap();
+    assert_eq!(saved.rules, input);
+    assert_eq!(load_rules(&database).unwrap().rules, input);
+
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(database).unwrap()).unwrap();
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["rules"][0]["id"], "low");
+}
+
+#[test]
+fn damaged_existing_database_is_never_silently_overwritten() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("rating-rules.json");
+    fs::write(&database, b"not-json").unwrap();
+    let before = fs::read(&database).unwrap();
+
+    assert!(save_rules(&database, &[rule("safe", RuleAction::Keep)])
+        .unwrap_err()
+        .contains("评分规则已损坏"));
+    assert_eq!(fs::read(database).unwrap(), before);
+}
+
+#[test]
+fn unsupported_unknown_and_oversized_imports_are_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let unsupported = temp.path().join("unsupported.json");
+    fs::write(&unsupported, br#"{"version":2,"rules":[]}"#).unwrap();
+    assert!(import_rules(&unsupported)
+        .unwrap_err()
+        .contains("不支持评分规则版本 2"));
+
+    let unknown = temp.path().join("unknown.json");
+    fs::write(&unknown, br#"{"version":1,"rules":[],"extra":true}"#).unwrap();
+    assert!(import_rules(&unknown).unwrap_err().contains("评分规则已损坏"));
+
+    let oversized = temp.path().join("oversized.json");
+    let file = fs::File::create(&oversized).unwrap();
+    file.set_len(4 * 1024 * 1024 + 1).unwrap();
+    assert!(import_rules(&oversized)
+        .unwrap_err()
+        .contains("评分规则超过 4 MiB 上限"));
+}
+
+#[test]
+fn imported_rules_are_validated_without_changing_the_app_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("rating-rules.json");
+    save_rules(&database, &[rule("saved", RuleAction::Keep)]).unwrap();
+    let import_path = temp.path().join("import.json");
+    fs::write(
+        &import_path,
+        br#"{"version":1,"rules":[{"id":"bad","name":"Bad","enabled":true,"condition":{"type":"equal","rating":8},"memberScope":["jpeg"],"action":"keep","destination":null,"preserveRelativePath":true}]}"#,
+    )
+    .unwrap();
+
+    assert!(import_rules(&import_path)
+        .unwrap_err()
+        .contains("评分必须在 0 到 5 星之间"));
+    assert_eq!(load_rules(&database).unwrap().rules[0].id, "saved");
+}
+
+#[test]
+fn export_requires_json_and_round_trips_the_same_envelope() {
+    let temp = tempfile::tempdir().unwrap();
+    let invalid = temp.path().join("rules.txt");
+    assert!(export_rules(&invalid, &[rule("one", RuleAction::Keep)])
+        .unwrap_err()
+        .contains("导出文件必须使用 .json 扩展名"));
+
+    let destination = temp.path().join("rules.json");
+    let exported = export_rules(&destination, &[rule("one", RuleAction::Keep)]).unwrap();
+    assert_eq!(exported, destination.to_string_lossy());
+    assert_eq!(import_rules(&destination).unwrap().rules[0].id, "one");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_databases_and_exports_are_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("target.json");
+    fs::write(&target, br#"{"version":1,"rules":[]}"#).unwrap();
+    let link = temp.path().join("link.json");
+    symlink(&target, &link).unwrap();
+
+    assert!(load_rules(&link)
+        .unwrap_err()
+        .contains("评分规则不是可信普通文件"));
+    assert!(export_rules(&link, &[rule("one", RuleAction::Keep)])
+        .unwrap_err()
+        .contains("导出目标不是可信普通文件"));
+
+    let broken = temp.path().join("broken.json");
+    symlink(temp.path().join("missing.json"), &broken).unwrap();
+    assert!(load_rules(&broken)
+        .unwrap_err()
+        .contains("评分规则不是可信普通文件"));
 }
