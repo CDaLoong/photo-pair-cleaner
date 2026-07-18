@@ -37,6 +37,13 @@ struct StagedCopy {
     sha256: String,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ExecutionOptions {
+    force_copy_delete: bool,
+    fail_rename_at: Option<usize>,
+    fail_delete_at: Option<usize>,
+}
+
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -323,6 +330,442 @@ fn rollback_copies(records: &[OperationMemberRecord]) -> Vec<String> {
     failures
 }
 
+fn source_matches_record(record: &OperationMemberRecord) -> bool {
+    let path = Path::new(&record.source_path);
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    !metadata.file_type().is_symlink()
+        && metadata.is_file()
+        && metadata.len() == record.expected_size_bytes
+        && modified_ms(&metadata) == record.expected_modified_ms
+}
+
+fn rollback_renamed_moves(records: &[OperationMemberRecord]) -> Vec<String> {
+    let mut failures = Vec::new();
+    for record in records.iter().rev() {
+        let target = Path::new(&record.target_path);
+        let source = Path::new(&record.source_path);
+        let Some(snapshot) = &record.target_snapshot else {
+            continue;
+        };
+        if source.exists() {
+            failures.push(format!("{}：原位置已被占用", record.source_path));
+        } else if !unchanged(target, snapshot) {
+            failures.push(format!("{}：目标已变化", record.target_path));
+        } else if let Err(error) = fs::rename(target, source) {
+            failures.push(format!("{}：{error}", record.target_path));
+        }
+    }
+    failures
+}
+
+#[cfg(unix)]
+fn paths_share_device(source: &Path, target_parent: &Path) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let source_metadata =
+        fs::metadata(source).map_err(|error| format!("无法读取移动源设备信息：{error}"))?;
+    let target_metadata = fs::metadata(target_parent)
+        .map_err(|error| format!("无法读取移动目标设备信息：{error}"))?;
+    Ok(source_metadata.dev() == target_metadata.dev())
+}
+
+#[cfg(not(unix))]
+fn paths_share_device(_source: &Path, _target_parent: &Path) -> Result<bool, String> {
+    Ok(false)
+}
+
+fn record_for_committed_member(
+    member: &ValidatedMember,
+    snapshot: FileFingerprint,
+    message: &str,
+) -> OperationMemberRecord {
+    OperationMemberRecord {
+        kind: member.kind,
+        source_path: display_path(&member.source),
+        target_path: display_path(&member.target),
+        expected_size_bytes: member.expected_size_bytes,
+        expected_modified_ms: member.expected_modified_ms,
+        target_snapshot: Some(snapshot),
+        message: message.to_string(),
+    }
+}
+
+fn move_result_group(
+    item: &OperationPlanItem,
+    status: OrganizerGroupStatus,
+    message: String,
+    members: Vec<OperationMemberRecord>,
+) -> OperationGroupRecord {
+    OperationGroupRecord {
+        group_id: item.group_id.clone(),
+        relative_stem: item.relative_stem.clone(),
+        action: OrganizerAction::Move,
+        status,
+        message,
+        members,
+    }
+}
+
+fn execute_rename_move(
+    item: &OperationPlanItem,
+    validated: Vec<ValidatedMember>,
+    options: ExecutionOptions,
+) -> OperationGroupRecord {
+    let mut records = Vec::with_capacity(validated.len());
+    for (index, member) in validated.into_iter().enumerate() {
+        if options.fail_rename_at == Some(index) {
+            let rollback_failures = rollback_renamed_moves(&records);
+            return if rollback_failures.is_empty() {
+                failed_group(
+                    item,
+                    OrganizerAction::Move,
+                    "移动重命名失败，已完整回滚".to_string(),
+                )
+            } else {
+                move_result_group(
+                    item,
+                    OrganizerGroupStatus::Partial,
+                    format!(
+                        "移动重命名失败且回滚不完整：{}",
+                        rollback_failures.join("；")
+                    ),
+                    records,
+                )
+            };
+        }
+        if let Err(error) = match fs::symlink_metadata(&member.target) {
+            Ok(_) => Err(format!("目标路径已存在：{}", display_path(&member.target))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("无法检查目标路径：{error}")),
+        } {
+            let rollback_failures = rollback_renamed_moves(&records);
+            return if rollback_failures.is_empty() {
+                failed_group(item, OrganizerAction::Move, error)
+            } else {
+                move_result_group(
+                    item,
+                    OrganizerGroupStatus::Partial,
+                    format!("{error}；回滚不完整：{}", rollback_failures.join("；")),
+                    records,
+                )
+            };
+        }
+        let source_metadata = match fs::symlink_metadata(&member.source) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let rollback_failures = rollback_renamed_moves(&records);
+                return if rollback_failures.is_empty() {
+                    failed_group(
+                        item,
+                        OrganizerAction::Move,
+                        format!("移动源文件不可访问：{error}"),
+                    )
+                } else {
+                    move_result_group(
+                        item,
+                        OrganizerGroupStatus::Partial,
+                        format!(
+                            "移动源文件不可访问且回滚不完整：{}",
+                            rollback_failures.join("；")
+                        ),
+                        records,
+                    )
+                };
+            }
+        };
+        if source_metadata.file_type().is_symlink()
+            || !source_metadata.is_file()
+            || source_metadata.len() != member.expected_size_bytes
+            || modified_ms(&source_metadata) != member.expected_modified_ms
+        {
+            let rollback_failures = rollback_renamed_moves(&records);
+            return if rollback_failures.is_empty() {
+                failed_group(
+                    item,
+                    OrganizerAction::Move,
+                    "移动源文件发生变化，已回滚".to_string(),
+                )
+            } else {
+                move_result_group(
+                    item,
+                    OrganizerGroupStatus::Partial,
+                    format!(
+                        "移动源文件发生变化且回滚不完整：{}",
+                        rollback_failures.join("；")
+                    ),
+                    records,
+                )
+            };
+        }
+        if let Err(error) = fs::rename(&member.source, &member.target) {
+            let rollback_failures = rollback_renamed_moves(&records);
+            return if rollback_failures.is_empty() {
+                failed_group(
+                    item,
+                    OrganizerAction::Move,
+                    format!("移动文件失败：{error}；已回滚"),
+                )
+            } else {
+                move_result_group(
+                    item,
+                    OrganizerGroupStatus::Partial,
+                    format!(
+                        "移动文件失败：{error}；回滚不完整：{}",
+                        rollback_failures.join("；")
+                    ),
+                    records,
+                )
+            };
+        }
+        match fingerprint(&member.target) {
+            Ok(snapshot) => {
+                records.push(record_for_committed_member(&member, snapshot, "已原子移动"))
+            }
+            Err(error) => {
+                let _ = fs::rename(&member.target, &member.source);
+                let rollback_failures = rollback_renamed_moves(&records);
+                return if rollback_failures.is_empty() {
+                    failed_group(item, OrganizerAction::Move, error)
+                } else {
+                    move_result_group(
+                        item,
+                        OrganizerGroupStatus::Partial,
+                        format!("{error}；回滚不完整：{}", rollback_failures.join("；")),
+                        records,
+                    )
+                };
+            }
+        }
+    }
+    move_result_group(
+        item,
+        OrganizerGroupStatus::Success,
+        format!("已原子移动 {} 个文件", records.len()),
+        records,
+    )
+}
+
+fn commit_staged_move(
+    item: &OperationPlanItem,
+    destination: &Path,
+    staged: Vec<StagedCopy>,
+) -> Result<Vec<OperationMemberRecord>, OperationGroupRecord> {
+    let mut records = Vec::with_capacity(staged.len());
+    for staged_member in staged {
+        let StagedCopy {
+            member,
+            temporary,
+            sha256,
+        } = staged_member;
+        if let Err(error) = validate_existing_target_ancestry(destination, &member.target) {
+            let rollback_failures = rollback_copies(&records);
+            return Err(if rollback_failures.is_empty() {
+                failed_group(item, OrganizerAction::Move, error)
+            } else {
+                move_result_group(
+                    item,
+                    OrganizerGroupStatus::Partial,
+                    format!(
+                        "提交移动目标失败且回滚不完整：{}",
+                        rollback_failures.join("；")
+                    ),
+                    records,
+                )
+            });
+        }
+        let file = match temporary.persist_noclobber(&member.target) {
+            Ok(file) => file,
+            Err(error) => {
+                let rollback_failures = rollback_copies(&records);
+                return Err(if rollback_failures.is_empty() {
+                    failed_group(
+                        item,
+                        OrganizerAction::Move,
+                        format!("提交移动目标失败：{}", error.error),
+                    )
+                } else {
+                    move_result_group(
+                        item,
+                        OrganizerGroupStatus::Partial,
+                        format!(
+                            "提交移动目标失败且回滚不完整：{}",
+                            rollback_failures.join("；")
+                        ),
+                        records,
+                    )
+                });
+            }
+        };
+        if let Err(error) = file.sync_all() {
+            let _ = fs::remove_file(&member.target);
+            let rollback_failures = rollback_copies(&records);
+            return Err(if rollback_failures.is_empty() {
+                failed_group(
+                    item,
+                    OrganizerAction::Move,
+                    format!("同步移动目标失败：{error}"),
+                )
+            } else {
+                move_result_group(
+                    item,
+                    OrganizerGroupStatus::Partial,
+                    format!(
+                        "同步移动目标失败且回滚不完整：{}",
+                        rollback_failures.join("；")
+                    ),
+                    records,
+                )
+            });
+        }
+        let snapshot = match fingerprint(&member.target) {
+            Ok(snapshot) if snapshot.sha256 == sha256 => snapshot,
+            Ok(_) => {
+                let _ = fs::remove_file(&member.target);
+                let rollback_failures = rollback_copies(&records);
+                return Err(if rollback_failures.is_empty() {
+                    failed_group(
+                        item,
+                        OrganizerAction::Move,
+                        "移动目标内容校验失败".to_string(),
+                    )
+                } else {
+                    move_result_group(
+                        item,
+                        OrganizerGroupStatus::Partial,
+                        format!(
+                            "移动目标校验失败且回滚不完整：{}",
+                            rollback_failures.join("；")
+                        ),
+                        records,
+                    )
+                });
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&member.target);
+                let rollback_failures = rollback_copies(&records);
+                return Err(if rollback_failures.is_empty() {
+                    failed_group(item, OrganizerAction::Move, error)
+                } else {
+                    move_result_group(
+                        item,
+                        OrganizerGroupStatus::Partial,
+                        format!("目标复核失败且回滚不完整：{}", rollback_failures.join("；")),
+                        records,
+                    )
+                });
+            }
+        };
+        records.push(record_for_committed_member(
+            &member,
+            snapshot,
+            "目标已复制并校验，等待删除源文件",
+        ));
+    }
+    Ok(records)
+}
+
+fn execute_copy_delete_move(
+    item: &OperationPlanItem,
+    destination: &Path,
+    validated: Vec<ValidatedMember>,
+    options: ExecutionOptions,
+) -> OperationGroupRecord {
+    let mut staged = Vec::with_capacity(validated.len());
+    for member in validated {
+        match stream_copy_to_temporary(member, destination) {
+            Ok(member) => staged.push(member),
+            Err(error) => return failed_group(item, OrganizerAction::Move, error),
+        }
+    }
+    let mut records = match commit_staged_move(item, destination, staged) {
+        Ok(records) => records,
+        Err(group) => return group,
+    };
+    for index in 0..records.len() {
+        let record = &records[index];
+        let source = Path::new(&record.source_path);
+        let source_valid = source_matches_record(record)
+            && record.target_snapshot.as_ref().is_some_and(|target| {
+                fingerprint(source).is_ok_and(|source| {
+                    source.size_bytes == target.size_bytes && source.sha256 == target.sha256
+                })
+            });
+        let delete_result = if options.fail_delete_at == Some(index) {
+            Err(std::io::Error::other("测试注入的源文件删除失败"))
+        } else if !source_valid {
+            Err(std::io::Error::other("源文件在删除前发生变化"))
+        } else {
+            fs::remove_file(source)
+        };
+        if let Err(error) = delete_result {
+            for member in &mut records {
+                member.message = if Path::new(&member.source_path).exists() {
+                    "目标已校验，源文件仍保留".to_string()
+                } else {
+                    "目标已校验，源文件已删除".to_string()
+                };
+            }
+            return move_result_group(
+                item,
+                OrganizerGroupStatus::Partial,
+                format!("所有目标均已校验，但删除源文件未全部完成：{error}"),
+                records,
+            );
+        }
+        records[index].message = "已跨盘移动并校验".to_string();
+    }
+    move_result_group(
+        item,
+        OrganizerGroupStatus::Success,
+        format!("已跨盘移动并校验 {} 个文件", records.len()),
+        records,
+    )
+}
+
+fn execute_move_group(
+    root: &Path,
+    plan: &AuthorizedOperationPlan,
+    item: &OperationPlanItem,
+    options: ExecutionOptions,
+) -> OperationGroupRecord {
+    let rule = match matching_rule(plan, item) {
+        Ok(rule) => rule,
+        Err(error) => return failed_group(item, OrganizerAction::Move, error),
+    };
+    let destination = match rule
+        .destination
+        .as_deref()
+        .ok_or_else(|| "移动规则缺少目标目录".to_string())
+        .and_then(|path| canonical_directory(Path::new(path), "评分整理目标目录"))
+    {
+        Ok(destination) => destination,
+        Err(error) => return failed_group(item, OrganizerAction::Move, error),
+    };
+    let validated = match validate_group(root, plan, item) {
+        Ok(validated) => validated,
+        Err(error) => return failed_group(item, OrganizerAction::Move, error),
+    };
+    for member in &validated {
+        if let Err(error) = ensure_target_parent(&destination, &member.target) {
+            return failed_group(item, OrganizerAction::Move, error);
+        }
+    }
+    let same_volume = !options.force_copy_delete
+        && validated.iter().all(|member| {
+            member
+                .target
+                .parent()
+                .is_some_and(|parent| paths_share_device(&member.source, parent).unwrap_or(false))
+        });
+    if same_volume {
+        execute_rename_move(item, validated, options)
+    } else {
+        execute_copy_delete_move(item, &destination, validated, options)
+    }
+}
+
 fn failed_group(
     item: &OperationPlanItem,
     action: OrganizerAction,
@@ -465,16 +908,28 @@ pub(crate) fn execute_authorized_plan(
     created_at_ms: u64,
     plan: AuthorizedOperationPlan,
 ) -> Result<OrganizerExecutionSummary, String> {
+    execute_authorized_plan_with_options(
+        app_data_dir,
+        operation_id,
+        created_at_ms,
+        plan,
+        ExecutionOptions::default(),
+    )
+}
+
+fn execute_authorized_plan_with_options(
+    app_data_dir: &Path,
+    operation_id: String,
+    created_at_ms: u64,
+    plan: AuthorizedOperationPlan,
+    options: ExecutionOptions,
+) -> Result<OrganizerExecutionSummary, String> {
     let root = canonical_directory(Path::new(&plan.summary.root), "评分整理照片目录")?;
     let mut groups = Vec::with_capacity(plan.items.len());
     for item in &plan.items {
         groups.push(match item.terminal_action {
             Some(RuleAction::Copy) => execute_copy_group(&root, &plan, item),
-            Some(RuleAction::Move) => failed_group(
-                item,
-                OrganizerAction::Move,
-                "移动执行将在下一实现步骤开放".to_string(),
-            ),
+            Some(RuleAction::Move) => execute_move_group(&root, &plan, item, options),
             _ => failed_group(
                 item,
                 OrganizerAction::Copy,
@@ -569,6 +1024,19 @@ mod tests {
         }
     }
 
+    fn move_rule(destination: &Path) -> RatingRule {
+        RatingRule {
+            id: "move-rule".to_string(),
+            name: "移动三星".to_string(),
+            enabled: true,
+            condition: RatingCondition::Equal { rating: 3 },
+            member_scope: vec![RuleMemberKind::Jpeg],
+            action: RuleAction::Move,
+            destination: Some(destination.to_string_lossy().into_owned()),
+            preserve_relative_path: true,
+        }
+    }
+
     fn copy_item(
         root: &Path,
         destination: &Path,
@@ -639,6 +1107,32 @@ mod tests {
             rules: vec![copy_rule(destination)],
             sync: OperationSyncPreference::default(),
         }
+    }
+
+    fn move_item(
+        root: &Path,
+        destination: &Path,
+        group_id: &str,
+        relative_path: &str,
+    ) -> OperationPlanItem {
+        let mut item = copy_item(root, destination, group_id, relative_path);
+        item.matched_rule_ids = vec!["move-rule".to_string()];
+        item.matched_rule_names = vec!["移动三星".to_string()];
+        item.terminal_action = Some(RuleAction::Move);
+        item
+    }
+
+    fn move_plan(
+        root: &Path,
+        destination: &Path,
+        items: Vec<OperationPlanItem>,
+    ) -> AuthorizedOperationPlan {
+        let mut plan = plan(root, destination, items);
+        plan.summary.move_groups = plan.summary.copy_groups;
+        plan.summary.copy_groups = 0;
+        plan.summary.copy_bytes = 0;
+        plan.rules = vec![move_rule(destination)];
+        plan
     }
 
     #[test]
@@ -747,5 +1241,125 @@ mod tests {
             b"do not replace"
         );
         assert!(!destination.join("linked.jpg").exists());
+    }
+
+    #[test]
+    fn move_execution_renames_same_volume_group() {
+        let source = tempdir().expect("source");
+        let target = tempdir().expect("target");
+        let app_data = tempdir().expect("app data");
+        fs::write(source.path().join("photo.jpg"), b"move me").expect("source file");
+        let root = fs::canonicalize(source.path()).expect("source root");
+        let destination = fs::canonicalize(target.path()).expect("target root");
+        let item = move_item(&root, &destination, "move", "photo.jpg");
+
+        let summary = execute_authorized_plan(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            move_plan(&root, &destination, vec![item]),
+        )
+        .expect("execute move");
+
+        assert_eq!(summary.succeeded, 1);
+        assert!(!root.join("photo.jpg").exists());
+        assert_eq!(fs::read(destination.join("photo.jpg")).unwrap(), b"move me");
+    }
+
+    #[test]
+    fn move_execution_rolls_back_prior_renames_when_group_fails() {
+        let source = tempdir().expect("source");
+        let target = tempdir().expect("target");
+        let app_data = tempdir().expect("app data");
+        fs::write(source.path().join("one.jpg"), b"one").expect("first source");
+        fs::write(source.path().join("two.jpg"), b"two").expect("second source");
+        let root = fs::canonicalize(source.path()).expect("source root");
+        let destination = fs::canonicalize(target.path()).expect("target root");
+        let mut item = move_item(&root, &destination, "pair", "one.jpg");
+        item.members
+            .extend(move_item(&root, &destination, "pair", "two.jpg").members);
+
+        let summary = execute_authorized_plan_with_options(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            move_plan(&root, &destination, vec![item]),
+            ExecutionOptions {
+                fail_rename_at: Some(1),
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("execute failed move");
+
+        assert_eq!(summary.failed, 1);
+        assert_eq!(fs::read(root.join("one.jpg")).unwrap(), b"one");
+        assert_eq!(fs::read(root.join("two.jpg")).unwrap(), b"two");
+        assert!(!destination.join("one.jpg").exists());
+        assert!(!destination.join("two.jpg").exists());
+    }
+
+    #[test]
+    fn cross_volume_move_commits_all_targets_before_deleting_sources() {
+        let source = tempdir().expect("source");
+        let target = tempdir().expect("target");
+        let app_data = tempdir().expect("app data");
+        fs::write(source.path().join("one.jpg"), b"one").expect("first source");
+        fs::write(source.path().join("two.jpg"), b"two").expect("second source");
+        let root = fs::canonicalize(source.path()).expect("source root");
+        let destination = fs::canonicalize(target.path()).expect("target root");
+        let mut item = move_item(&root, &destination, "pair", "one.jpg");
+        item.members
+            .extend(move_item(&root, &destination, "pair", "two.jpg").members);
+
+        let summary = execute_authorized_plan_with_options(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            move_plan(&root, &destination, vec![item]),
+            ExecutionOptions {
+                force_copy_delete: true,
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("execute copy delete move");
+
+        assert_eq!(summary.succeeded, 1);
+        assert!(!root.join("one.jpg").exists());
+        assert!(!root.join("two.jpg").exists());
+        assert_eq!(fs::read(destination.join("one.jpg")).unwrap(), b"one");
+        assert_eq!(fs::read(destination.join("two.jpg")).unwrap(), b"two");
+    }
+
+    #[test]
+    fn cross_volume_source_delete_failure_is_recorded_as_partial() {
+        let source = tempdir().expect("source");
+        let target = tempdir().expect("target");
+        let app_data = tempdir().expect("app data");
+        fs::write(source.path().join("one.jpg"), b"one").expect("first source");
+        fs::write(source.path().join("two.jpg"), b"two").expect("second source");
+        let root = fs::canonicalize(source.path()).expect("source root");
+        let destination = fs::canonicalize(target.path()).expect("target root");
+        let mut item = move_item(&root, &destination, "pair", "one.jpg");
+        item.members
+            .extend(move_item(&root, &destination, "pair", "two.jpg").members);
+
+        let summary = execute_authorized_plan_with_options(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            move_plan(&root, &destination, vec![item]),
+            ExecutionOptions {
+                force_copy_delete: true,
+                fail_delete_at: Some(1),
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("execute partial move");
+
+        assert_eq!(summary.partial, 1);
+        assert!(!root.join("one.jpg").exists());
+        assert!(root.join("two.jpg").exists());
+        assert!(destination.join("one.jpg").exists());
+        assert!(destination.join("two.jpg").exists());
     }
 }
