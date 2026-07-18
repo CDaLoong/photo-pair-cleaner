@@ -14,6 +14,9 @@ FramePair 是一个 Windows 与 macOS 本地摄影工作台。它可以把同一
 - 可以在单张预览中设置 0-5 星评分，数字键 `0-5` 可快速评分；网格和胶片栏显示评分徽标，并可按最低星级筛选。
 - 可以从当前照片或“配对清理 > 评分同步”批量生成只读同步计划，把 FramePair 工作评分同步到 RAW XMP；可选择手动同步或评分保存后的自动同步。
 - JPG 内嵌评分写入属于默认关闭的高级目标，启用后仍需二次确认；RAW 原文件永不修改，评分同步不会移动、复制、清理或重命名照片。
+- “配对清理 > 评分整理”支持未评分、等于、上下限和闭区间条件，可为 JPG/RAW/XMP 组合配置保留、复制、移动或待清理规则；新增规则默认完整照片组、移动并保留相对目录结构。
+- 提供精选归档、低分清理、保留全部备份和完全自定义模板；规则保存在应用数据目录，也可导入或导出版本化 JSON。
+- 评分整理当前只生成可筛选、可展开的只读模拟计划，展示成员快照、目标路径、预计空间和冲突原因；不会实际移动、复制或清理照片。
 - 照片、单张预览和胶片栏提供中文右键菜单，可直接评分、切换预览、定位文件或交给外部编辑器。
 - FramePair 评分先保存在应用数据目录，并按规范化照片根目录隔离；只有启用评分同步后，才会在只读计划和安全复验通过时更新所选 XMP/JPG 元数据目标。
 - 自动发现标准安装位置中的 Adobe Photoshop 和 Lightroom Classic，也可交给系统默认应用；JPG+RAW 配对照片优先把 RAW 交给外部编辑器。
@@ -123,6 +126,7 @@ Apple Silicon 与 Intel 可以继续分别发布，也可以在 macOS 构建机�
 11. XMP 文件超过 4 MiB、XML 损坏或评分非法时整次扫描失败。
 12. 手动评分同步只能执行后端生成的一次性只读计划；目标新增、变化、越界、变成符号链接或出现多个可写 XMP 时拒绝写入。
 13. 自动同步只在 FramePair 评分保存成功后更新启用的评分元数据；失败进入待处理状态，不回滚评分，也不执行照片整理或清理。
+14. 评分整理拒绝源/目标目录相同或互相嵌套、符号链接目标、已占用目标、平铺重名和多规则命中；阶段三不暴露文件操作执行命令。
 
 ## 项目结构
 
@@ -131,6 +135,7 @@ src/app/                     全局应用外壳与模块导航
 src/features/cleanup/        配对清理模块、引导、复核与确认界面
 src/features/preview/        照片索引界面、网格/单张浏览与缩略图组件
 src/features/rating-sync/    当前照片与批量评分同步、设置和只读计划界面
+src/features/rating-rules/   评分规则、模板、只读文件操作计划与复核界面
 src/App.tsx                  模块组合入口
 src/styles.css               共享设计变量与模块响应式样式
 src-tauri/src/lib.rs         扫描编排、Tauri 命令与操作计划
@@ -139,6 +144,8 @@ src-tauri/src/preview.rs     逻辑照片索引、路径校验与 JPEG 缩略图
 src-tauri/src/ratings.rs     应用本地评分数据库、路径校验与原子写入
 src-tauri/src/rating_metadata.rs XMP/JPEG 评分读取与保留式更新
 src-tauri/src/rating_sync.rs 一次性同步计划、冲突策略、安全执行、设置与待处理状态
+src-tauri/src/rating_rules.rs 规则条件、校验、持久化及 JSON 导入导出
+src-tauri/src/operation_plan.rs 规则匹配、目标映射、快照和只读冲突计划
 src-tauri/src/editors.rs     Photoshop/Lightroom 发现与受限照片交接
 src-tauri/src/reference.rs   目录、清单与 XMP 星级参考源
 src-tauri/src/quarantine.rs  隔离、历史清单与冲突安全恢复
@@ -148,7 +155,7 @@ src-tauri/icons/             Windows/macOS 安装图标
 .github/workflows/release.yml 跨平台构建矩阵
 ```
 
-当前版本不包含 RAW 解码、AI 筛片、按评分移动/复制/清理照片或 Lightroom 目录数据库解析。Lightroom Classic 外部交接会启动应用并传入照片，但不会定位或修改既有 `.lrcat` 目录记录。
+当前版本不包含 RAW 解码、AI 筛片、评分整理计划的文件执行或 Lightroom 目录数据库解析。Lightroom Classic 外部交接会启动应用并传入照片，但不会定位或修改既有 `.lrcat` 目录记录。
 
 ## 许可
 
