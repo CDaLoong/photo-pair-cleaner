@@ -17,6 +17,8 @@ const MAX_HISTORY_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) enum OrganizerAction {
     Copy,
     Move,
+    Quarantine,
+    Trash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +102,7 @@ impl OperationManifest {
 pub(crate) enum RecoveryKind {
     RestoreMove,
     UndoCopy,
+    RestoreQuarantine,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,10 +244,12 @@ fn read_recoveries(directory: &Path) -> Result<Vec<RecoveryRecord>, String> {
         .collect()
 }
 
-fn expected_recovery_kind(action: OrganizerAction) -> RecoveryKind {
+fn expected_recovery_kind(action: OrganizerAction) -> Option<RecoveryKind> {
     match action {
-        OrganizerAction::Copy => RecoveryKind::UndoCopy,
-        OrganizerAction::Move => RecoveryKind::RestoreMove,
+        OrganizerAction::Copy => Some(RecoveryKind::UndoCopy),
+        OrganizerAction::Move => Some(RecoveryKind::RestoreMove),
+        OrganizerAction::Quarantine => Some(RecoveryKind::RestoreQuarantine),
+        OrganizerAction::Trash => None,
     }
 }
 
@@ -261,7 +266,9 @@ fn validate_recoveries(
             .iter()
             .find(|group| group.group_id == recovery.group_id)
             .ok_or_else(|| "恢复记录指向未知照片组".to_string())?;
-        if recovery.kind != expected_recovery_kind(group.action) {
+        let expected = expected_recovery_kind(group.action)
+            .ok_or_else(|| "系统回收站操作不支持应用内恢复".to_string())?;
+        if recovery.kind != expected {
             return Err("恢复记录类型与原操作不一致".to_string());
         }
     }
@@ -367,7 +374,8 @@ pub(crate) fn load_operation(
             matches!(
                 group.status,
                 OrganizerGroupStatus::Success | OrganizerGroupStatus::Partial
-            ) && !recovered.contains(group.group_id.as_str())
+            ) && expected_recovery_kind(group.action).is_some()
+                && !recovered.contains(group.group_id.as_str())
         })
         .count();
     Ok(OperationHistoryEntry {
@@ -531,5 +539,72 @@ mod tests {
         symlink(outside.path(), history_root.join("operation-1")).expect("symlink");
 
         assert!(list_operations(data.path()).is_err());
+    }
+
+    #[test]
+    fn cleanup_history_recovers_quarantine_but_never_system_trash() {
+        let data = tempdir().expect("app data");
+        let cleanup = OperationManifest::new(
+            "cleanup-1".to_string(),
+            "plan-1".to_string(),
+            "/source".to_string(),
+            100,
+            vec![rule()],
+            OperationSyncPreference::default(),
+            vec![
+                group("quarantine-group", OrganizerAction::Quarantine),
+                group("trash-group", OrganizerAction::Trash),
+            ],
+        );
+        persist_manifest(data.path(), &cleanup).expect("persist cleanup history");
+
+        let history = list_operations(data.path()).expect("list cleanup history");
+        assert_eq!(history[0].recoverable_groups, 1);
+        append_recovery(
+            data.path(),
+            &RecoveryRecord {
+                operation_id: "cleanup-1".to_string(),
+                group_id: "quarantine-group".to_string(),
+                kind: RecoveryKind::RestoreQuarantine,
+                created_at_ms: 200,
+                status: OrganizerGroupStatus::Success,
+                message: "已恢复隔离".to_string(),
+                members: Vec::new(),
+            },
+        )
+        .expect("append quarantine recovery");
+        assert_eq!(
+            list_operations(data.path()).expect("updated cleanup history")[0]
+                .recoverable_groups,
+            0
+        );
+
+        assert!(
+            append_recovery(
+                data.path(),
+                &RecoveryRecord {
+                    operation_id: "cleanup-1".to_string(),
+                    group_id: "trash-group".to_string(),
+                    kind: RecoveryKind::RestoreQuarantine,
+                    created_at_ms: 300,
+                    status: OrganizerGroupStatus::Failed,
+                    message: "系统回收站不可在应用内恢复".to_string(),
+                    members: Vec::new(),
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn existing_copy_and_move_action_names_remain_stable() {
+        assert_eq!(
+            serde_json::to_string(&OrganizerAction::Copy).expect("serialize copy"),
+            "\"copy\""
+        );
+        assert_eq!(
+            serde_json::to_string(&OrganizerAction::Move).expect("serialize move"),
+            "\"move\""
+        );
     }
 }

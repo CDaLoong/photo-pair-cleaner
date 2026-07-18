@@ -67,7 +67,7 @@ git commit -m "feat: authorize rating cleanup plans"
 - Modify: `src-tauri/src/operation_history.rs`
 - Test: `src-tauri/src/operation_history.rs`
 
-- [ ] **Step 1: Write failing history tests**
+- [x] **Step 1: Write failing history tests**
 
 Cover `OrganizerAction::Quarantine`, `OrganizerAction::Trash`, and `RecoveryKind::RestoreQuarantine`. Assert quarantine groups count as recoverable, trash groups never do, a trash recovery record is rejected, and older copy/move manifests still deserialize.
 
@@ -86,23 +86,23 @@ pub(crate) enum RecoveryKind {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml operation_history --offline`
 
 Expected: FAIL because cleanup actions and quarantine recovery do not exist.
 
-- [ ] **Step 3: Implement action-aware recovery validation**
+- [x] **Step 3: Implement action-aware recovery validation**
 
 Change `expected_recovery_kind` to return `Option<RecoveryKind>`: copy maps to undo, move maps to restore move, quarantine maps to restore quarantine, and trash maps to `None`. Count only groups with a recovery kind and a successful/partial result as recoverable.
 
-- [ ] **Step 4: Run history tests and verify GREEN**
+- [x] **Step 4: Run history tests and verify GREEN**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml operation_history --offline`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src-tauri/src/operation_history.rs

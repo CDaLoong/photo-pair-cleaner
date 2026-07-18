@@ -1132,6 +1132,7 @@ fn execute_authorized_plan_with_options(
                 OrganizerAction::Move => {
                     rollback_moves_without_history(&root, &manifest.rules, &group.members)
                 }
+                OrganizerAction::Quarantine | OrganizerAction::Trash => Vec::new(),
             })
             .collect::<Vec<_>>();
         return Err(if rollback_failures.is_empty() {
@@ -1394,6 +1395,7 @@ fn recover_operation(
         let expected_action = match kind {
             RecoveryKind::RestoreMove => OrganizerAction::Move,
             RecoveryKind::UndoCopy => OrganizerAction::Copy,
+            RecoveryKind::RestoreQuarantine => OrganizerAction::Quarantine,
         };
         if group.action != expected_action {
             return Err(format!("照片组“{}”的原操作类型不匹配", group.relative_stem));
@@ -1412,7 +1414,10 @@ fn recover_operation(
             .iter()
             .filter(|member| member.target_snapshot.is_some())
             .collect::<Vec<_>>();
-        let restore_preflight = if kind == RecoveryKind::RestoreMove {
+        let restore_preflight = if matches!(
+            kind,
+            RecoveryKind::RestoreMove | RecoveryKind::RestoreQuarantine
+        ) {
             recoverable_members.iter().find_map(|member| {
                 preflight_restore_member(&root, &history.manifest.rules, member).err()
             })
@@ -1437,6 +1442,9 @@ fn recover_operation(
                         restore_member(&root, &history.manifest.rules, member)
                     }
                     RecoveryKind::UndoCopy => undo_copy_member(&history.manifest.rules, member),
+                    RecoveryKind::RestoreQuarantine => {
+                        restore_member(&root, &history.manifest.rules, member)
+                    }
                 })
                 .collect::<Vec<_>>()
         };
