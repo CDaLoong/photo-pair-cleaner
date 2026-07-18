@@ -14,6 +14,8 @@ mod rating_sync;
 mod ratings;
 mod reference;
 mod safety;
+#[allow(dead_code)]
+mod watermark_model;
 
 use chrono::Utc;
 use safety::{CleanupPlan, FileSnapshot, unique_keys};

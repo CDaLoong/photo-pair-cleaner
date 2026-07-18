@@ -2174,6 +2174,7 @@ dependencies = [
 name = "photo-pair-cleaner"
 version = "0.7.1"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "image",
  "quick-xml 0.38.4",

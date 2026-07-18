@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:frontend": "node --test tests/frontend-utils.test.mjs",
+    "test:frontend": "node --test tests/*.test.mjs",
     "test:core": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
