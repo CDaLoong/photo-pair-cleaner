@@ -4,7 +4,8 @@ use crate::operation_history::{
     append_recovery, load_operation, persist_manifest,
 };
 use crate::operation_plan::{
-    AuthorizedOperationPlan, OperationPlanItem, PlannedMember, PlannedSyncAction, SyncTiming,
+    AuthorizedOperationPlan, CleanupExecutionDestination, OperationPlanItem, PlannedMember,
+    PlannedSyncAction, SyncTiming,
 };
 use crate::rating_rules::{RatingRule, RuleAction, RuleMemberKind};
 use crate::rating_sync::{self, RatingSyncTarget};
@@ -213,6 +214,52 @@ fn validate_group(
     Ok(members)
 }
 
+fn validate_cleanup_group(
+    root: &Path,
+    operation_root: &Path,
+    plan: &AuthorizedOperationPlan,
+    item: &OperationPlanItem,
+) -> Result<Vec<ValidatedMember>, String> {
+    let rule = matching_rule(plan, item)?;
+    if rule.action != RuleAction::Cleanup || rule.destination.is_some() {
+        return Err("待清理照片组的规则或目标目录无效".to_string());
+    }
+    let mut members = Vec::with_capacity(item.members.len());
+    for member in &item.members {
+        let relative = safe_relative_path(&member.source_relative_path)?;
+        let source = root.join(relative);
+        let metadata = fs::symlink_metadata(&source)
+            .map_err(|error| format!("待清理文件不可访问 {}：{error}", display_path(&source)))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("待清理路径不是可信普通文件：{}", display_path(&source)));
+        }
+        let canonical_source = fs::canonicalize(&source)
+            .map_err(|error| format!("无法校验待清理文件 {}：{error}", display_path(&source)))?;
+        if canonical_source != source || !canonical_source.starts_with(root) {
+            return Err("待清理文件解析后超出了照片根目录".to_string());
+        }
+        if metadata.len() != member.size_bytes || modified_ms(&metadata) != member.modified_ms {
+            return Err(format!(
+                "待清理文件在生成计划后发生变化：{}",
+                member.source_relative_path
+            ));
+        }
+        let target = operation_root.join(relative);
+        validate_existing_target_ancestry(operation_root, &target)?;
+        members.push(ValidatedMember {
+            kind: member.kind,
+            source,
+            target,
+            expected_size_bytes: member.size_bytes,
+            expected_modified_ms: member.modified_ms,
+        });
+    }
+    if members.is_empty() {
+        return Err("待清理照片组没有可执行文件".to_string());
+    }
+    Ok(members)
+}
+
 fn ensure_target_parent(destination: &Path, target: &Path) -> Result<(), String> {
     let parent = target
         .parent()
@@ -386,7 +433,7 @@ fn rollback_moves_without_history(
             }
             continue;
         }
-        let result = restore_member(root, rules, member);
+        let result = restore_member(root, rules, "", OrganizerAction::Move, member);
         if !result.success {
             failures.push(format!("{}：{}", result.target_path, result.message));
         }
@@ -462,10 +509,20 @@ fn move_result_group(
     message: String,
     members: Vec<OperationMemberRecord>,
 ) -> OperationGroupRecord {
+    relocation_result_group(item, OrganizerAction::Move, status, message, members)
+}
+
+fn relocation_result_group(
+    item: &OperationPlanItem,
+    action: OrganizerAction,
+    status: OrganizerGroupStatus,
+    message: String,
+    members: Vec<OperationMemberRecord>,
+) -> OperationGroupRecord {
     OperationGroupRecord {
         group_id: item.group_id.clone(),
         relative_stem: item.relative_stem.clone(),
-        action: OrganizerAction::Move,
+        action,
         status,
         message,
         members,
@@ -476,20 +533,18 @@ fn execute_rename_move(
     item: &OperationPlanItem,
     validated: Vec<ValidatedMember>,
     options: ExecutionOptions,
+    action: OrganizerAction,
 ) -> OperationGroupRecord {
     let mut records = Vec::with_capacity(validated.len());
     for (index, member) in validated.into_iter().enumerate() {
         if options.fail_rename_at == Some(index) {
             let rollback_failures = rollback_renamed_moves(&records);
             return if rollback_failures.is_empty() {
-                failed_group(
-                    item,
-                    OrganizerAction::Move,
-                    "移动重命名失败，已完整回滚".to_string(),
-                )
+                failed_group(item, action, "移动重命名失败，已完整回滚".to_string())
             } else {
-                move_result_group(
+                relocation_result_group(
                     item,
+                    action,
                     OrganizerGroupStatus::Partial,
                     format!(
                         "移动重命名失败且回滚不完整：{}",
@@ -506,10 +561,11 @@ fn execute_rename_move(
         } {
             let rollback_failures = rollback_renamed_moves(&records);
             return if rollback_failures.is_empty() {
-                failed_group(item, OrganizerAction::Move, error)
+                failed_group(item, action, error)
             } else {
-                move_result_group(
+                relocation_result_group(
                     item,
+                    action,
                     OrganizerGroupStatus::Partial,
                     format!("{error}；回滚不完整：{}", rollback_failures.join("；")),
                     records,
@@ -521,14 +577,11 @@ fn execute_rename_move(
             Err(error) => {
                 let rollback_failures = rollback_renamed_moves(&records);
                 return if rollback_failures.is_empty() {
-                    failed_group(
-                        item,
-                        OrganizerAction::Move,
-                        format!("移动源文件不可访问：{error}"),
-                    )
+                    failed_group(item, action, format!("移动源文件不可访问：{error}"))
                 } else {
-                    move_result_group(
+                    relocation_result_group(
                         item,
+                        action,
                         OrganizerGroupStatus::Partial,
                         format!(
                             "移动源文件不可访问且回滚不完整：{}",
@@ -546,14 +599,11 @@ fn execute_rename_move(
         {
             let rollback_failures = rollback_renamed_moves(&records);
             return if rollback_failures.is_empty() {
-                failed_group(
-                    item,
-                    OrganizerAction::Move,
-                    "移动源文件发生变化，已回滚".to_string(),
-                )
+                failed_group(item, action, "移动源文件发生变化，已回滚".to_string())
             } else {
-                move_result_group(
+                relocation_result_group(
                     item,
+                    action,
                     OrganizerGroupStatus::Partial,
                     format!(
                         "移动源文件发生变化且回滚不完整：{}",
@@ -566,14 +616,11 @@ fn execute_rename_move(
         if let Err(error) = fs::rename(&member.source, &member.target) {
             let rollback_failures = rollback_renamed_moves(&records);
             return if rollback_failures.is_empty() {
-                failed_group(
-                    item,
-                    OrganizerAction::Move,
-                    format!("移动文件失败：{error}；已回滚"),
-                )
+                failed_group(item, action, format!("移动文件失败：{error}；已回滚"))
             } else {
-                move_result_group(
+                relocation_result_group(
                     item,
+                    action,
                     OrganizerGroupStatus::Partial,
                     format!(
                         "移动文件失败：{error}；回滚不完整：{}",
@@ -591,10 +638,11 @@ fn execute_rename_move(
                 let _ = fs::rename(&member.target, &member.source);
                 let rollback_failures = rollback_renamed_moves(&records);
                 return if rollback_failures.is_empty() {
-                    failed_group(item, OrganizerAction::Move, error)
+                    failed_group(item, action, error)
                 } else {
-                    move_result_group(
+                    relocation_result_group(
                         item,
+                        action,
                         OrganizerGroupStatus::Partial,
                         format!("{error}；回滚不完整：{}", rollback_failures.join("；")),
                         records,
@@ -603,8 +651,9 @@ fn execute_rename_move(
             }
         }
     }
-    move_result_group(
+    relocation_result_group(
         item,
+        action,
         OrganizerGroupStatus::Success,
         format!("已原子移动 {} 个文件", records.len()),
         records,
@@ -827,10 +876,64 @@ fn execute_move_group(
                 .is_some_and(|parent| paths_share_device(&member.source, parent).unwrap_or(false))
         });
     if same_volume {
-        execute_rename_move(item, validated, options)
+        execute_rename_move(item, validated, options, OrganizerAction::Move)
     } else {
         execute_copy_delete_move(item, &destination, validated, options)
     }
+}
+
+fn execute_quarantine_group(
+    root: &Path,
+    operation_id: &str,
+    plan: &AuthorizedOperationPlan,
+    item: &OperationPlanItem,
+    options: ExecutionOptions,
+) -> OperationGroupRecord {
+    let operation_root = match crate::quarantine::operation_root(root, operation_id) {
+        Ok(path) => path,
+        Err(error) => return failed_group(item, OrganizerAction::Quarantine, error),
+    };
+    let validated = match validate_cleanup_group(root, &operation_root, plan, item) {
+        Ok(validated) => validated,
+        Err(error) => return failed_group(item, OrganizerAction::Quarantine, error),
+    };
+    if let Err(error) = fs::create_dir_all(&operation_root) {
+        return failed_group(
+            item,
+            OrganizerAction::Quarantine,
+            format!("无法创建评分隔离操作目录：{error}"),
+        );
+    }
+    let canonical_operation_root = match canonical_directory(&operation_root, "评分隔离操作目录") {
+        Ok(path) if path == operation_root => path,
+        Ok(_) => {
+            return failed_group(
+                item,
+                OrganizerAction::Quarantine,
+                "评分隔离操作目录解析后发生变化".to_string(),
+            );
+        }
+        Err(error) => return failed_group(item, OrganizerAction::Quarantine, error),
+    };
+    for member in &validated {
+        if let Err(error) = ensure_target_parent(&canonical_operation_root, &member.target) {
+            return failed_group(item, OrganizerAction::Quarantine, error);
+        }
+    }
+    let same_volume = validated.iter().all(|member| {
+        member
+            .target
+            .parent()
+            .is_some_and(|parent| paths_share_device(&member.source, parent).unwrap_or(false))
+    });
+    if !same_volume {
+        return failed_group(
+            item,
+            OrganizerAction::Quarantine,
+            "FramePair 隔离区必须与照片根目录位于同一文件系统".to_string(),
+        );
+    }
+    execute_rename_move(item, validated, options, OrganizerAction::Quarantine)
 }
 
 fn validate_sync_actions(item: &OperationPlanItem) -> Result<(), String> {
@@ -1093,10 +1196,20 @@ fn execute_authorized_plan_with_options(
         let mut group = match item.terminal_action {
             Some(RuleAction::Copy) => execute_copy_group(&root, &plan, item),
             Some(RuleAction::Move) => execute_move_group(&root, &plan, item, options),
+            Some(RuleAction::Cleanup)
+                if plan.cleanup_destination == Some(CleanupExecutionDestination::Quarantine) =>
+            {
+                execute_quarantine_group(&root, &operation_id, &plan, item, options)
+            }
+            Some(RuleAction::Cleanup) => failed_group(
+                item,
+                OrganizerAction::Trash,
+                "系统回收站清理将在下一任务实现".to_string(),
+            ),
             _ => failed_group(
                 item,
                 OrganizerAction::Copy,
-                "当前仅允许执行复制或移动".to_string(),
+                "当前仅允许执行复制、移动或清理".to_string(),
             ),
         };
         if matches!(
@@ -1132,7 +1245,8 @@ fn execute_authorized_plan_with_options(
                 OrganizerAction::Move => {
                     rollback_moves_without_history(&root, &manifest.rules, &group.members)
                 }
-                OrganizerAction::Quarantine | OrganizerAction::Trash => Vec::new(),
+                OrganizerAction::Quarantine => rollback_renamed_moves(&group.members),
+                OrganizerAction::Trash => Vec::new(),
             })
             .collect::<Vec<_>>();
         return Err(if rollback_failures.is_empty() {
@@ -1217,6 +1331,42 @@ fn trusted_history_target(rules: &[RatingRule], raw: &str) -> Result<PathBuf, St
     Ok(path)
 }
 
+fn trusted_quarantine_target(
+    root: &Path,
+    operation_id: &str,
+    raw: &str,
+) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err("历史记录中的隔离路径无效".to_string());
+    }
+    let operation_root = crate::quarantine::operation_root(root, operation_id)?;
+    if path == operation_root || !path.starts_with(&operation_root) {
+        return Err("历史记录中的隔离路径超出了本次操作目录".to_string());
+    }
+    Ok(path)
+}
+
+fn trusted_recovery_target(
+    root: &Path,
+    rules: &[RatingRule],
+    operation_id: &str,
+    action: OrganizerAction,
+    raw: &str,
+) -> Result<PathBuf, String> {
+    match action {
+        OrganizerAction::Move => trusted_history_target(rules, raw),
+        OrganizerAction::Quarantine => trusted_quarantine_target(root, operation_id, raw),
+        OrganizerAction::Copy | OrganizerAction::Trash => {
+            Err("当前操作类型没有可恢复移动目标".to_string())
+        }
+    }
+}
+
 fn ensure_recovery_parent(root: &Path, destination: &Path) -> Result<(), String> {
     let parent = destination
         .parent()
@@ -1288,10 +1438,18 @@ fn copy_verified_noclobber(
 fn restore_member(
     root: &Path,
     rules: &[RatingRule],
+    operation_id: &str,
+    action: OrganizerAction,
     member: &OperationMemberRecord,
 ) -> RecoveryMemberResult {
     let source_result = trusted_history_source(root, &member.source_path);
-    let target_result = trusted_history_target(rules, &member.target_path);
+    let target_result = trusted_recovery_target(
+        root,
+        rules,
+        operation_id,
+        action,
+        &member.target_path,
+    );
     let result = source_result.and_then(|source| {
         let target = target_result?;
         let snapshot = member
@@ -1326,10 +1484,18 @@ fn restore_member(
 fn preflight_restore_member(
     root: &Path,
     rules: &[RatingRule],
+    operation_id: &str,
+    action: OrganizerAction,
     member: &OperationMemberRecord,
 ) -> Result<(), String> {
     let source = trusted_history_source(root, &member.source_path)?;
-    let target = trusted_history_target(rules, &member.target_path)?;
+    let target = trusted_recovery_target(
+        root,
+        rules,
+        operation_id,
+        action,
+        &member.target_path,
+    )?;
     let snapshot = member
         .target_snapshot
         .as_ref()
@@ -1419,7 +1585,14 @@ fn recover_operation(
             RecoveryKind::RestoreMove | RecoveryKind::RestoreQuarantine
         ) {
             recoverable_members.iter().find_map(|member| {
-                preflight_restore_member(&root, &history.manifest.rules, member).err()
+                preflight_restore_member(
+                    &root,
+                    &history.manifest.rules,
+                    operation_id,
+                    expected_action,
+                    member,
+                )
+                .err()
             })
         } else {
             None
@@ -1439,11 +1612,23 @@ fn recover_operation(
                 .iter()
                 .map(|member| match kind {
                     RecoveryKind::RestoreMove => {
-                        restore_member(&root, &history.manifest.rules, member)
+                        restore_member(
+                            &root,
+                            &history.manifest.rules,
+                            operation_id,
+                            expected_action,
+                            member,
+                        )
                     }
                     RecoveryKind::UndoCopy => undo_copy_member(&history.manifest.rules, member),
                     RecoveryKind::RestoreQuarantine => {
-                        restore_member(&root, &history.manifest.rules, member)
+                        restore_member(
+                            &root,
+                            &history.manifest.rules,
+                            operation_id,
+                            expected_action,
+                            member,
+                        )
                     }
                 })
                 .collect::<Vec<_>>()
@@ -1495,6 +1680,21 @@ pub(crate) fn restore_move_operation(
     )
 }
 
+pub(crate) fn restore_quarantine_operation(
+    app_data_dir: &Path,
+    operation_id: &str,
+    group_ids: &[String],
+    created_at_ms: u64,
+) -> Result<OrganizerRecoverySummary, String> {
+    recover_operation(
+        app_data_dir,
+        operation_id,
+        group_ids,
+        created_at_ms,
+        RecoveryKind::RestoreQuarantine,
+    )
+}
+
 pub(crate) fn undo_copy_operation(
     app_data_dir: &Path,
     operation_id: &str,
@@ -1515,8 +1715,9 @@ mod tests {
     use super::*;
     use crate::operation_history::OrganizerGroupStatus;
     use crate::operation_plan::{
-        AuthorizedOperationPlan, OperationPlanItem, OperationPlanStatus, OperationPlanSummary,
-        OperationSyncPreference, PlannedMember, PlannedSyncAction, SyncTiming,
+        AuthorizedOperationPlan, CleanupExecutionDestination, OperationPlanItem,
+        OperationPlanStatus, OperationPlanSummary, OperationSyncPreference, PlannedMember,
+        PlannedSyncAction, SyncTiming,
     };
     use crate::rating_rules::{RatingCondition, RatingRule, RuleAction, RuleMemberKind};
     use crate::rating_sync::{RatingSyncTarget, RatingSyncTargets};
@@ -1658,6 +1859,234 @@ mod tests {
         plan.summary.copy_bytes = 0;
         plan.rules = vec![move_rule(destination)];
         plan
+    }
+
+    fn cleanup_rule() -> RatingRule {
+        RatingRule {
+            id: "cleanup-rule".to_string(),
+            name: "低分清理".to_string(),
+            enabled: true,
+            condition: RatingCondition::AtMost { rating: 2 },
+            member_scope: vec![
+                RuleMemberKind::Jpeg,
+                RuleMemberKind::Raw,
+                RuleMemberKind::Xmp,
+            ],
+            action: RuleAction::Cleanup,
+            destination: None,
+            preserve_relative_path: true,
+        }
+    }
+
+    fn cleanup_plan(
+        root: &Path,
+        group_id: &str,
+        members: &[(&str, RuleMemberKind)],
+    ) -> AuthorizedOperationPlan {
+        let planned_members = members
+            .iter()
+            .map(|(relative, kind)| {
+                let source = root.join(relative);
+                let metadata = fs::metadata(&source).expect("cleanup source metadata");
+                PlannedMember {
+                    kind: *kind,
+                    source_relative_path: (*relative).to_string(),
+                    target_path: None,
+                    size_bytes: metadata.len(),
+                    modified_ms: modified_ms(&source),
+                }
+            })
+            .collect::<Vec<_>>();
+        let bytes = planned_members.iter().map(|member| member.size_bytes).sum();
+        let item = OperationPlanItem {
+            group_id: group_id.to_string(),
+            relative_stem: "album/photo".to_string(),
+            rating: Some(1),
+            frame_pair: 1,
+            jpeg_metadata: None,
+            raw_xmp: None,
+            matched_rule_ids: vec!["cleanup-rule".to_string()],
+            matched_rule_names: vec!["低分清理".to_string()],
+            terminal_action: Some(RuleAction::Cleanup),
+            status: OperationPlanStatus::Ready,
+            members: planned_members,
+            missing_kinds: Vec::new(),
+            sync_actions: Vec::new(),
+            issues: Vec::new(),
+        };
+        AuthorizedOperationPlan {
+            summary: OperationPlanSummary {
+                plan_id: "cleanup-plan".to_string(),
+                root: root.to_string_lossy().into_owned(),
+                total_items: 1,
+                ready: 1,
+                kept: 0,
+                skipped: 0,
+                conflicts: 0,
+                move_groups: 0,
+                copy_groups: 0,
+                cleanup_groups: 1,
+                sync_groups: 0,
+                jpeg_files: members
+                    .iter()
+                    .filter(|(_, kind)| *kind == RuleMemberKind::Jpeg)
+                    .count(),
+                raw_files: members
+                    .iter()
+                    .filter(|(_, kind)| *kind == RuleMemberKind::Raw)
+                    .count(),
+                xmp_files: members
+                    .iter()
+                    .filter(|(_, kind)| *kind == RuleMemberKind::Xmp)
+                    .count(),
+                copy_bytes: 0,
+                cleanup_bytes: bytes,
+                items: vec![item.clone()],
+            },
+            items: vec![item],
+            rules: vec![cleanup_rule()],
+            sync: OperationSyncPreference::default(),
+            cleanup_destination: Some(CleanupExecutionDestination::Quarantine),
+        }
+    }
+
+    fn create_cleanup_group(root: &Path) -> Vec<(&'static str, RuleMemberKind)> {
+        let members = vec![
+            ("album/photo.jpg", RuleMemberKind::Jpeg),
+            ("album/photo.nef", RuleMemberKind::Raw),
+            ("album/photo.xmp", RuleMemberKind::Xmp),
+        ];
+        fs::create_dir_all(root.join("album")).expect("cleanup album");
+        for (relative, _) in &members {
+            fs::write(root.join(relative), relative.as_bytes()).expect("cleanup member");
+        }
+        members
+    }
+
+    #[test]
+    fn quarantine_cleanup_moves_and_restores_a_complete_photo_group() {
+        let source = tempdir().expect("source");
+        let app_data = tempdir().expect("app data");
+        let members = create_cleanup_group(source.path());
+
+        let summary = execute_authorized_plan(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            cleanup_plan(source.path(), "cleanup", &members),
+        )
+        .expect("execute quarantine cleanup");
+
+        assert_eq!(summary.succeeded, 1);
+        assert_eq!(summary.groups[0].action, OrganizerAction::Quarantine);
+        for (relative, _) in &members {
+            assert!(!source.path().join(relative).exists());
+            assert!(
+                source
+                    .path()
+                    .join(crate::quarantine::QUARANTINE_DIR)
+                    .join("operation-1")
+                    .join(relative)
+                    .exists()
+            );
+        }
+
+        let restored = restore_quarantine_operation(
+            app_data.path(),
+            "operation-1",
+            &["cleanup".to_string()],
+            200,
+        )
+        .expect("restore quarantine cleanup");
+        assert_eq!(restored.succeeded, 1);
+        for (relative, _) in &members {
+            assert!(source.path().join(relative).exists());
+        }
+    }
+
+    #[test]
+    fn quarantine_cleanup_preflight_blocks_drift_and_occupied_targets() {
+        let source = tempdir().expect("source");
+        let app_data = tempdir().expect("app data");
+        let members = create_cleanup_group(source.path());
+        let plan = cleanup_plan(source.path(), "cleanup", &members);
+        fs::write(source.path().join("album/photo.nef"), b"changed after plan")
+            .expect("change source");
+
+        let summary = execute_authorized_plan(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            plan,
+        )
+        .expect("execute drifted cleanup");
+        assert_eq!(summary.failed, 1);
+        assert!(members.iter().all(|(relative, _)| source.path().join(relative).exists()));
+
+        let second = tempdir().expect("second source");
+        let second_data = tempdir().expect("second app data");
+        let members = create_cleanup_group(second.path());
+        let occupied = second
+            .path()
+            .join(crate::quarantine::QUARANTINE_DIR)
+            .join("operation-2")
+            .join("album/photo.jpg");
+        fs::create_dir_all(occupied.parent().expect("occupied parent")).expect("target parent");
+        fs::write(&occupied, b"occupied").expect("occupied target");
+        let summary = execute_authorized_plan(
+            second_data.path(),
+            "operation-2".to_string(),
+            100,
+            cleanup_plan(second.path(), "cleanup", &members),
+        )
+        .expect("execute occupied cleanup");
+        assert_eq!(summary.failed, 1);
+        assert!(members.iter().all(|(relative, _)| second.path().join(relative).exists()));
+    }
+
+    #[test]
+    fn quarantine_cleanup_rolls_back_group_and_history_failures() {
+        let source = tempdir().expect("source");
+        let app_data = tempdir().expect("app data");
+        let members = create_cleanup_group(source.path());
+        let summary = execute_authorized_plan_with_options(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            cleanup_plan(source.path(), "cleanup", &members),
+            ExecutionOptions {
+                fail_rename_at: Some(1),
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("execute injected failure");
+        assert_eq!(summary.failed, 1);
+        assert!(members.iter().all(|(relative, _)| source.path().join(relative).exists()));
+
+        let second = tempdir().expect("second source");
+        let second_data = tempdir().expect("second app data");
+        let second_members = create_cleanup_group(second.path());
+        fs::create_dir_all(
+            second_data
+                .path()
+                .join(crate::operation_history::HISTORY_DIR)
+                .join("operation-2"),
+        )
+        .expect("occupy history operation");
+        assert!(
+            execute_authorized_plan(
+                second_data.path(),
+                "operation-2".to_string(),
+                100,
+                cleanup_plan(second.path(), "cleanup", &second_members),
+            )
+            .is_err()
+        );
+        assert!(
+            second_members
+                .iter()
+                .all(|(relative, _)| second.path().join(relative).exists())
+        );
     }
 
     #[test]

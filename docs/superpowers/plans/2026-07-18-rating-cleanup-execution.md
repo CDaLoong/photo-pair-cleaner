@@ -116,31 +116,31 @@ git commit -m "feat: record rating cleanup history"
 - Modify: `src-tauri/src/quarantine.rs`
 - Test: `src-tauri/src/file_organizer.rs`
 
-- [ ] **Step 1: Write failing quarantine transaction tests**
+- [x] **Step 1: Write failing quarantine transaction tests**
 
 Test a complete JPG/RAW/XMP group moving to `.framepair-quarantine/<operation-id>/<relative-path>`, source drift blocking the whole group, an occupied quarantine target blocking the whole group, rollback after a later rename failure, and history persistence failure restoring unchanged files to their original paths.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml file_organizer::tests::quarantine --offline`
 
 Expected: FAIL because organizer cleanup execution does not exist.
 
-- [ ] **Step 3: Implement trusted quarantine target derivation**
+- [x] **Step 3: Implement trusted quarantine target derivation**
 
 Expose a crate-private helper in `quarantine.rs` that validates the generated operation ID and returns the trusted operation root without accepting a frontend path. In `file_organizer.rs`, derive each target from the stored `source_relative_path`, validate every source snapshot before moving any group member, create trusted parents inside the operation root, and reuse the rename rollback machinery with `OrganizerAction::Quarantine`.
 
-- [ ] **Step 4: Implement quarantine rollback and restore trust**
+- [x] **Step 4: Implement quarantine rollback and restore trust**
 
 On manifest failure, restore unchanged quarantine targets to missing source paths. For history recovery, trust quarantine targets only when they are inside `root/.framepair-quarantine/<manifest.operation_id>/`; require every member to pass source-vacancy and fingerprint checks before restoring the group.
 
-- [ ] **Step 5: Run focused tests and verify GREEN**
+- [x] **Step 5: Run focused tests and verify GREEN**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml file_organizer --offline`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src-tauri/src/file_organizer.rs src-tauri/src/quarantine.rs
