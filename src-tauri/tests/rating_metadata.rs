@@ -108,3 +108,72 @@ fn rejects_symlinked_sidecars() {
 
     assert!(rating_metadata::read_sidecar_rating(&link).is_err());
 }
+
+#[test]
+fn rewrites_element_rating_without_losing_other_xmp_metadata() {
+    let input = br#"<?xpacket begin='x'?><x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmp:Label='Green'><xmp:CreatorTool>FramePair test</xmp:CreatorTool><xmp:Rating>2</xmp:Rating></rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end='w'?>"#;
+
+    let output = rating_metadata::rewrite_xmp_rating(Some(input), 5).expect("rewritten xmp");
+    let text = String::from_utf8(output.clone()).expect("utf8 xmp");
+
+    assert_eq!(
+        rating_metadata::xmp_rating(&output).expect("rating"),
+        Some(5)
+    );
+    assert!(text.contains("FramePair test"));
+    assert!(text.contains("Green"));
+    assert!(!text.contains(">2<"));
+}
+
+#[test]
+fn rewrites_attribute_rating_and_inserts_a_missing_rating() {
+    let attribute =
+        br#"<rdf:Description xmlns:rdf='rdf' xmlns:xmp='xmp' xmp:Label='Blue' xmp:Rating='2'/>"#;
+    let missing = br#"<rdf:Description xmlns:rdf='rdf' xmlns:xmp='xmp' xmp:Label='Blue'/>"#;
+
+    let updated =
+        rating_metadata::rewrite_xmp_rating(Some(attribute), 3).expect("updated attribute rating");
+    let inserted =
+        rating_metadata::rewrite_xmp_rating(Some(missing), 4).expect("inserted attribute rating");
+
+    assert_eq!(
+        rating_metadata::xmp_rating(&updated).expect("updated rating"),
+        Some(3)
+    );
+    assert_eq!(
+        rating_metadata::xmp_rating(&inserted).expect("inserted rating"),
+        Some(4)
+    );
+    assert!(String::from_utf8_lossy(&updated).contains("Blue"));
+    assert!(String::from_utf8_lossy(&inserted).contains("Blue"));
+}
+
+#[test]
+fn creates_a_standard_xmp_packet_and_supports_zero_rating() {
+    let created = rating_metadata::rewrite_xmp_rating(None, 5).expect("new xmp");
+    let cleared = rating_metadata::rewrite_xmp_rating(Some(&created), 0).expect("zero rating");
+    let text = String::from_utf8(created).expect("utf8 xmp");
+
+    assert!(text.contains("adobe:ns:meta/"));
+    assert!(text.contains("http://www.w3.org/1999/02/22-rdf-syntax-ns#"));
+    assert!(text.contains("http://ns.adobe.com/xap/1.0/"));
+    assert_eq!(
+        rating_metadata::xmp_rating(&cleared).expect("cleared rating"),
+        Some(0)
+    );
+}
+
+#[test]
+fn rejects_unsafe_xmp_rewrite_inputs() {
+    let duplicate =
+        br#"<rdf:Description xmp:Rating='2'><xmp:Rating>3</xmp:Rating></rdf:Description>"#;
+    let rejected = br#"<rdf:Description><xmp:Rating>-1</xmp:Rating></rdf:Description>"#;
+    let no_description = br#"<x:xmpmeta/>"#;
+    let oversized = vec![b'x'; 4 * 1024 * 1024 + 1];
+
+    assert!(rating_metadata::rewrite_xmp_rating(Some(duplicate), 4).is_err());
+    assert!(rating_metadata::rewrite_xmp_rating(Some(rejected), 4).is_err());
+    assert!(rating_metadata::rewrite_xmp_rating(Some(no_description), 4).is_err());
+    assert!(rating_metadata::rewrite_xmp_rating(Some(&oversized), 4).is_err());
+    assert!(rating_metadata::rewrite_xmp_rating(None, 6).is_err());
+}
