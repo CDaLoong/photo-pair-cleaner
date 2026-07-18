@@ -3,6 +3,7 @@ export type RatingConflictPolicy = "skip" | "framePair" | "external" | "highest"
 export type RatingSyncTarget = "rawXmp" | "jpegMetadata";
 export type RatingSyncStatus = "ready" | "unchanged" | "conflict";
 export type AutoSyncStatus = "disabled" | "unchanged" | "synced" | "pending";
+export type CleanupTaskType = "pairCleanup" | "ratingSync";
 
 export interface RatingSyncTargets {
   rawXmp: boolean;

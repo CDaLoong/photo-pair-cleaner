@@ -14,6 +14,13 @@ import { CleanupGuideDialog } from "./CleanupGuideDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ResultsWorkspace } from "./ResultsWorkspace";
 import { SetupView } from "./SetupView";
+import { TaskTypeSelector } from "./TaskTypeSelector";
+import {
+  RatingSyncWorkspace,
+  type RatingSyncWorkspaceState,
+} from "../rating-sync/RatingSyncWorkspace";
+import { defaultCleanupTaskType } from "../rating-sync/ratingSyncUtils";
+import type { CleanupTaskType } from "../rating-sync/types";
 import type {
   CleanupDestination,
   CleanupSummary,
@@ -41,6 +48,12 @@ import {
 
 const STORAGE_KEY = "framepair.settings.v2";
 const GUIDE_STORAGE_KEY = "framepair.guide.completed.v1";
+const INITIAL_SYNC_WORKSPACE_STATE: RatingSyncWorkspaceState = {
+  busy: false,
+  executing: false,
+  hasPlan: false,
+  detail: "等待选择照片目录",
+};
 
 interface StoredSettings {
   referenceRoot: string;
@@ -128,9 +141,12 @@ export function CleanupModule({ active }: CleanupModuleProps) {
   const [quarantineOperations, setQuarantineOperations] = useState<QuarantineOperation[]>([]);
   const [confirmAcknowledged, setConfirmAcknowledged] = useState(false);
   const [guideOpen, setGuideOpen] = useState(shouldOpenGuide);
+  const [taskType, setTaskType] = useState<CleanupTaskType>(defaultCleanupTaskType);
+  const [syncWorkspaceState, setSyncWorkspaceState] = useState(INITIAL_SYNC_WORKSPACE_STATE);
   const confirmDialog = useRef<HTMLDialogElement>(null);
 
   const busy = phase !== "idle";
+  const activeBusy = taskType === "pairCleanup" ? busy : syncWorkspaceState.busy || syncWorkspaceState.executing;
   const blocked = scanHasBlockingIssues(scan);
   const deleteItems = useMemo(
     () => cleanableItems(scan?.items ?? [], includeSidecars, scan?.mode ?? scanMode),
@@ -597,17 +613,19 @@ export function CleanupModule({ active }: CleanupModuleProps) {
     }
   }
 
-  const currentStep = phase === "executing" ? 3 : scan ? 2 : 1;
+  const currentStep = taskType === "pairCleanup"
+    ? phase === "executing" ? 3 : scan ? 2 : 1
+    : syncWorkspaceState.executing ? 3 : syncWorkspaceState.hasPlan ? 2 : 1;
 
   return (
-    <section className="cleanup-module" aria-label="配对清理">
+    <section className="cleanup-module" aria-label="照片处理工作台">
       <header className="app-header">
         <div className="module-heading">
           <ListChecks aria-hidden="true" size={20} />
-          <div><strong>配对清理</strong><span>按筛选结果安全处理 RAW</span></div>
+          <div><strong>配对清理</strong><span>{taskType === "pairCleanup" ? "检查配对并安全处理 RAW" : "同步照片组评分元数据"}</span></div>
         </div>
-        <ol className="workflow-progress" aria-label="清理流程" data-tour="workflow-progress">
-          {["选择目录", "复核结果", "安全执行"].map((label, index) => {
+        <ol className="workflow-progress" aria-label="照片处理流程" data-tour="workflow-progress">
+          {["配置任务", "复核计划", "安全执行"].map((label, index) => {
             const step = index + 1;
             return (
               <li key={label} className={step === currentStep ? "is-current" : step < currentStep ? "is-complete" : ""} aria-current={step === currentStep ? "step" : undefined}>
@@ -617,21 +635,25 @@ export function CleanupModule({ active }: CleanupModuleProps) {
           })}
         </ol>
         <div className="header-utilities">
-          <button className="guide-trigger" type="button" onClick={() => setGuideOpen(true)} disabled={busy}>
+          <button className="guide-trigger" type="button" onClick={() => setGuideOpen(true)} disabled={activeBusy}>
             <CircleHelp aria-hidden="true" size={16} />使用引导
           </button>
           <div className="header-state" aria-live="polite">
-            {phase === "scanning" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在只读扫描</>}
-            {phase === "executing" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在安全移动文件</>}
-            {phase === "idle" && scan && <>扫描于 {formatDate(scan.scannedAtMs)}</>}
-            {phase === "idle" && !scan && <>等待选择目录</>}
+            {taskType === "pairCleanup" ? <>
+              {phase === "scanning" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在只读扫描</>}
+              {phase === "executing" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在安全移动文件</>}
+              {phase === "idle" && scan && <>扫描于 {formatDate(scan.scannedAtMs)}</>}
+              {phase === "idle" && !scan && <>等待选择目录</>}
+            </> : <>{activeBusy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : null}{syncWorkspaceState.detail}</>}
           </div>
         </div>
       </header>
 
-      {busy && <div className="activity-line" aria-hidden="true"><span /></div>}
+      {activeBusy && <div className="activity-line" aria-hidden="true"><span /></div>}
 
-      {notice && (
+      <TaskTypeSelector value={taskType} busy={activeBusy} onChange={setTaskType} />
+
+      {taskType === "pairCleanup" && notice && (
         <div className={`notice notice-${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>
           {notice.tone === "success" ? <CheckCircle2 aria-hidden="true" size={18} /> : <AlertTriangle aria-hidden="true" size={18} />}
           <div><strong>{notice.title}</strong>{notice.detail && <span>{notice.detail}</span>}</div>
@@ -639,7 +661,12 @@ export function CleanupModule({ active }: CleanupModuleProps) {
         </div>
       )}
 
-      {scan && !guideOpen ? (
+      {taskType === "ratingSync" ? (
+        <RatingSyncWorkspace
+          active={active && taskType === "ratingSync" && !guideOpen}
+          onStateChange={setSyncWorkspaceState}
+        />
+      ) : scan && !guideOpen ? (
         <ResultsWorkspace
           scan={scan}
           referenceRoot={activeReferencePath}
@@ -713,7 +740,7 @@ export function CleanupModule({ active }: CleanupModuleProps) {
         />
       )}
 
-      <ConfirmDialog
+      {taskType === "pairCleanup" ? <ConfirmDialog
         dialogRef={confirmDialog}
         selectedItems={selectedItems}
         selectedBytes={selectedBytes}
@@ -725,9 +752,9 @@ export function CleanupModule({ active }: CleanupModuleProps) {
         onAcknowledgedChange={setConfirmAcknowledged}
         onCancel={closeConfirmDialog}
         onConfirm={() => void executeCleanup()}
-      />
+      /> : null}
 
-      <CleanupGuideDialog open={active && guideOpen} onDismiss={dismissGuide} />
+      <CleanupGuideDialog taskType={taskType} open={active && guideOpen} onDismiss={dismissGuide} />
     </section>
   );
 }

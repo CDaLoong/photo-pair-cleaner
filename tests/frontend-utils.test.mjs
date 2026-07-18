@@ -416,6 +416,31 @@ test("rating sync plan status labels are concise and actionable", () => {
   assert.equal(ratingSyncUtils.syncStatusLabel("conflict"), "存在冲突");
 });
 
+test("cleanup module defaults to pair cleanup and rating ranges stay bounded", () => {
+  assert.equal(ratingSyncUtils.defaultCleanupTaskType(), "pairCleanup");
+  assert.deepEqual(ratingSyncUtils.validateRatingRange(0, 5), { valid: true });
+  assert.deepEqual(ratingSyncUtils.validateRatingRange(5, 2), {
+    valid: false,
+    message: "最低评分不能高于最高评分",
+  });
+  assert.deepEqual(ratingSyncUtils.validateRatingRange(-1, 5), {
+    valid: false,
+    message: "评分范围必须在 0 到 5 星之间",
+  });
+});
+
+test("batch sync selects only executable plan items", () => {
+  assert.deepEqual(
+    ratingSyncUtils.readySyncAssetIds([
+      { assetId: "a", status: "ready" },
+      { assetId: "b", status: "unchanged" },
+      { assetId: "c", status: "conflict" },
+      { assetId: "d", status: "ready" },
+    ]),
+    ["a", "d"],
+  );
+});
+
 test("preview sorting and keyboard selection are stable", () => {
   const sorted = previewUtils.sortPreviewAssets(previewAssets, "name");
   assert.deepEqual(sorted.map((item) => item.id), ["day/a", "day/b", "other/c"]);

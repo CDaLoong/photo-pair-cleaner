@@ -4,6 +4,11 @@ import type {
   RatingSyncStatus,
   RatingSyncTargets,
 } from "./types";
+import type { CleanupTaskType } from "./types";
+
+export function defaultCleanupTaskType(): CleanupTaskType {
+  return "pairCleanup";
+}
 
 export function syncModeNotice(mode: RatingSyncMode): string {
   return mode === "automatic"
@@ -50,4 +55,28 @@ export function syncStatusLabel(status: RatingSyncStatus): string {
   if (status === "ready") return "待同步";
   if (status === "unchanged") return "已一致";
   return "存在冲突";
+}
+
+export function validateRatingRange(
+  minimumRating: number,
+  maximumRating: number,
+): { valid: true } | { valid: false; message: string } {
+  if (
+    !Number.isInteger(minimumRating)
+    || !Number.isInteger(maximumRating)
+    || minimumRating < 0
+    || maximumRating > 5
+  ) {
+    return { valid: false, message: "评分范围必须在 0 到 5 星之间" };
+  }
+  if (minimumRating > maximumRating) {
+    return { valid: false, message: "最低评分不能高于最高评分" };
+  }
+  return { valid: true };
+}
+
+export function readySyncAssetIds(
+  items: Array<Pick<{ assetId: string; status: RatingSyncStatus }, "assetId" | "status">>,
+): string[] {
+  return items.flatMap((item) => item.status === "ready" ? [item.assetId] : []);
 }
