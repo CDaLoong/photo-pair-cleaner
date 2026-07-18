@@ -8,6 +8,7 @@ use std::io::Read;
 use std::path::Path;
 
 const MAX_XMP_BYTES: u64 = 4 * 1024 * 1024;
+const JPEG_XMP_PREFIX: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 
 fn parse_rating(value: &str) -> Result<i8, String> {
     let rating = value
@@ -305,6 +306,104 @@ pub(crate) fn rewrite_xmp_rating(input: Option<&[u8]>, rating: u8) -> Result<Vec
     }
     if xmp_rating(&output)? != Some(rating as i8) {
         return Err("更新后的 XMP 评分校验失败".to_string());
+    }
+    Ok(output)
+}
+
+fn jpeg_xmp_segment(input: &[u8]) -> Result<Option<(usize, usize, &[u8])>, String> {
+    if input.len() < 4 || input[..2] != [0xff, 0xd8] {
+        return Err("JPG 缺少有效的 SOI 文件头".to_string());
+    }
+    let mut offset = 2_usize;
+    let mut found = None;
+    let mut reached_image_data = false;
+
+    while offset < input.len() {
+        if input[offset] != 0xff {
+            return Err("JPG 元数据段缺少标记前缀".to_string());
+        }
+        while offset < input.len() && input[offset] == 0xff {
+            offset += 1;
+        }
+        if offset >= input.len() {
+            return Err("JPG 标记未完整结束".to_string());
+        }
+        let marker = input[offset];
+        let marker_start = offset - 1;
+        offset += 1;
+        match marker {
+            0xda | 0xd9 => {
+                reached_image_data = true;
+                break;
+            }
+            0x01 | 0xd0..=0xd7 => continue,
+            0x00 | 0xd8 => return Err("JPG 元数据段包含无效标记".to_string()),
+            _ => {}
+        }
+
+        if offset + 2 > input.len() {
+            return Err("JPG 元数据段缺少长度".to_string());
+        }
+        let segment_length = u16::from_be_bytes([input[offset], input[offset + 1]]) as usize;
+        if segment_length < 2 {
+            return Err("JPG 元数据段长度无效".to_string());
+        }
+        let segment_end = offset
+            .checked_add(segment_length)
+            .filter(|end| *end <= input.len())
+            .ok_or_else(|| "JPG 元数据段超出了文件边界".to_string())?;
+        let payload = &input[offset + 2..segment_end];
+        if marker == 0xe1 && payload.starts_with(JPEG_XMP_PREFIX) {
+            if found.is_some() {
+                return Err("JPG 包含多个标准 XMP APP1 段".to_string());
+            }
+            found = Some((marker_start, segment_end, &payload[JPEG_XMP_PREFIX.len()..]));
+        }
+        offset = segment_end;
+    }
+
+    if !reached_image_data {
+        return Err("JPG 缺少 SOS 或 EOI 结束标记".to_string());
+    }
+    Ok(found)
+}
+
+fn jpeg_xmp_app1(xml: &[u8]) -> Result<Vec<u8>, String> {
+    let payload_length = JPEG_XMP_PREFIX
+        .len()
+        .checked_add(xml.len())
+        .ok_or_else(|| "JPG XMP 大小溢出".to_string())?;
+    if payload_length > u16::MAX as usize - 2 {
+        return Err("更新后的 JPG XMP 超过 APP1 段大小限制".to_string());
+    }
+    let length = (payload_length as u16 + 2).to_be_bytes();
+    let mut segment = Vec::with_capacity(payload_length + 4);
+    segment.extend_from_slice(&[0xff, 0xe1, length[0], length[1]]);
+    segment.extend_from_slice(JPEG_XMP_PREFIX);
+    segment.extend_from_slice(xml);
+    Ok(segment)
+}
+
+#[allow(dead_code)]
+pub(crate) fn rewrite_jpeg_rating(input: &[u8], rating: u8) -> Result<Vec<u8>, String> {
+    let existing = jpeg_xmp_segment(input)?;
+    let xml = rewrite_xmp_rating(existing.map(|(_, _, xml)| xml), rating)?;
+    let segment = jpeg_xmp_app1(&xml)?;
+    let mut output = Vec::with_capacity(input.len().saturating_add(segment.len()));
+    if let Some((start, end, _)) = existing {
+        output.extend_from_slice(&input[..start]);
+        output.extend_from_slice(&segment);
+        output.extend_from_slice(&input[end..]);
+    } else {
+        output.extend_from_slice(&input[..2]);
+        output.extend_from_slice(&segment);
+        output.extend_from_slice(&input[2..]);
+    }
+
+    let (_, _, output_xml) =
+        jpeg_xmp_segment(&output)?.ok_or_else(|| "更新后的 JPG 缺少 XMP APP1 段".to_string())?;
+    if xmp_rating(output_xml)? != Some(rating as i8) {
+        return Err("更新后的 JPG XMP 评分校验失败".to_string());
     }
     Ok(output)
 }
