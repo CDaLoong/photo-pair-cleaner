@@ -65,6 +65,8 @@ struct ExecutionOptions {
     force_copy_delete: bool,
     fail_rename_at: Option<usize>,
     fail_delete_at: Option<usize>,
+    simulate_trash: bool,
+    fail_trash_at: Option<usize>,
 }
 
 fn display_path(path: &Path) -> String {
@@ -214,9 +216,8 @@ fn validate_group(
     Ok(members)
 }
 
-fn validate_cleanup_group(
+fn validate_cleanup_sources(
     root: &Path,
-    operation_root: &Path,
     plan: &AuthorizedOperationPlan,
     item: &OperationPlanItem,
 ) -> Result<Vec<ValidatedMember>, String> {
@@ -244,12 +245,10 @@ fn validate_cleanup_group(
                 member.source_relative_path
             ));
         }
-        let target = operation_root.join(relative);
-        validate_existing_target_ancestry(operation_root, &target)?;
         members.push(ValidatedMember {
             kind: member.kind,
             source,
-            target,
+            target: PathBuf::new(),
             expected_size_bytes: member.size_bytes,
             expected_modified_ms: member.modified_ms,
         });
@@ -258,6 +257,22 @@ fn validate_cleanup_group(
         return Err("待清理照片组没有可执行文件".to_string());
     }
     Ok(members)
+}
+
+fn assign_quarantine_targets(
+    root: &Path,
+    operation_root: &Path,
+    members: &mut [ValidatedMember],
+) -> Result<(), String> {
+    for member in members {
+        let relative = member
+            .source
+            .strip_prefix(root)
+            .map_err(|_| "待隔离文件超出了照片根目录".to_string())?;
+        member.target = operation_root.join(relative);
+        validate_existing_target_ancestry(operation_root, &member.target)?;
+    }
+    Ok(())
 }
 
 fn ensure_target_parent(destination: &Path, target: &Path) -> Result<(), String> {
@@ -893,10 +908,20 @@ fn execute_quarantine_group(
         Ok(path) => path,
         Err(error) => return failed_group(item, OrganizerAction::Quarantine, error),
     };
-    let validated = match validate_cleanup_group(root, &operation_root, plan, item) {
+    let mut validated = match validate_cleanup_sources(root, plan, item) {
         Ok(validated) => validated,
         Err(error) => return failed_group(item, OrganizerAction::Quarantine, error),
     };
+    if let Err(error) = apply_cleanup_sync(root, item, &mut validated) {
+        return failed_group(
+            item,
+            OrganizerAction::Quarantine,
+            format!("清理前评分同步失败：{error}"),
+        );
+    }
+    if let Err(error) = assign_quarantine_targets(root, &operation_root, &mut validated) {
+        return failed_group(item, OrganizerAction::Quarantine, error);
+    }
     if let Err(error) = fs::create_dir_all(&operation_root) {
         return failed_group(
             item,
@@ -936,6 +961,88 @@ fn execute_quarantine_group(
     execute_rename_move(item, validated, options, OrganizerAction::Quarantine)
 }
 
+fn trash_record(member: &ValidatedMember, message: String) -> OperationMemberRecord {
+    OperationMemberRecord {
+        kind: member.kind,
+        source_path: display_path(&member.source),
+        target_path: String::new(),
+        expected_size_bytes: member.expected_size_bytes,
+        expected_modified_ms: member.expected_modified_ms,
+        target_snapshot: None,
+        message,
+    }
+}
+
+fn execute_trash_group(
+    root: &Path,
+    plan: &AuthorizedOperationPlan,
+    item: &OperationPlanItem,
+    options: ExecutionOptions,
+) -> OperationGroupRecord {
+    let mut validated = match validate_cleanup_sources(root, plan, item) {
+        Ok(validated) => validated,
+        Err(error) => return failed_group(item, OrganizerAction::Trash, error),
+    };
+    if let Err(error) = apply_cleanup_sync(root, item, &mut validated) {
+        return failed_group(
+            item,
+            OrganizerAction::Trash,
+            format!("清理前评分同步失败：{error}"),
+        );
+    }
+    let mut records = Vec::with_capacity(validated.len());
+    for (index, member) in validated.iter().enumerate() {
+        let result = if options.fail_trash_at == Some(index) {
+            Err("测试注入的系统回收站失败".to_string())
+        } else if options.simulate_trash {
+            fs::remove_file(&member.source)
+                .map_err(|error| format!("模拟系统回收站失败：{error}"))
+        } else {
+            trash::delete(&member.source)
+                .map_err(|error| format!("移入系统回收站/废纸篓失败：{error}"))
+        };
+        match result {
+            Ok(()) => records.push(trash_record(
+                member,
+                "已移入系统回收站/废纸篓，FramePair 不提供应用内恢复".to_string(),
+            )),
+            Err(error) => {
+                records.push(trash_record(member, error.clone()));
+                records.extend(validated.iter().skip(index + 1).map(|remaining| {
+                    trash_record(remaining, "因同组前序文件失败而停止清理".to_string())
+                }));
+                let succeeded = records
+                    .iter()
+                    .take(index)
+                    .filter(|record| !Path::new(&record.source_path).exists())
+                    .count();
+                return relocation_result_group(
+                    item,
+                    OrganizerAction::Trash,
+                    if succeeded == 0 {
+                        OrganizerGroupStatus::Failed
+                    } else {
+                        OrganizerGroupStatus::Partial
+                    },
+                    format!(
+                        "{} / {} 个文件已进入系统回收站；{error}",
+                        succeeded,
+                        validated.len()
+                    ),
+                    records,
+                );
+            }
+        }
+    }
+    relocation_result_group(
+        item,
+        OrganizerAction::Trash,
+        OrganizerGroupStatus::Success,
+        format!("已将 {} 个文件移入系统回收站/废纸篓", records.len()),
+        records,
+    )
+}
+
 fn validate_sync_actions(item: &OperationPlanItem) -> Result<(), String> {
     if item
         .sync_actions
@@ -945,6 +1052,85 @@ fn validate_sync_actions(item: &OperationPlanItem) -> Result<(), String> {
         return Err(
             "评分整理执行仅支持写入复制或移动后的目标文件；请把另一格式加入处理范围".to_string(),
         );
+    }
+    Ok(())
+}
+
+fn validate_cleanup_sync_target(
+    root: &Path,
+    sync: &PlannedSyncAction,
+) -> Result<(PathBuf, bool), String> {
+    if sync.timing != SyncTiming::BeforeCleanup {
+        return Err("待清理评分同步必须在清理前执行".to_string());
+    }
+    let target = PathBuf::from(&sync.target_path);
+    if !target.is_absolute()
+        || target == root
+        || !target.starts_with(root)
+        || target
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err("待清理评分同步目标超出了照片根目录".to_string());
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| "无法确定待清理评分同步目录".to_string())?;
+    let canonical_parent = canonical_directory(parent, "待清理评分同步目录")?;
+    if !canonical_parent.starts_with(root) {
+        return Err("待清理评分同步目录解析后超出了照片根目录".to_string());
+    }
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err("待清理评分同步目标不是可信普通文件".to_string())
+        }
+        Ok(_) => {
+            let canonical = fs::canonicalize(&target)
+                .map_err(|error| format!("无法校验待清理评分同步目标：{error}"))?;
+            if canonical != target {
+                return Err("待清理评分同步目标解析后发生变化".to_string());
+            }
+            Ok((target, true))
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && sync.target == RatingSyncTarget::RawXmp =>
+        {
+            Ok((target, false))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err("待清理 JPG 评分同步目标不存在".to_string())
+        }
+        Err(error) => Err(format!("无法检查待清理评分同步目标：{error}")),
+    }
+}
+
+fn apply_cleanup_sync(
+    root: &Path,
+    item: &OperationPlanItem,
+    members: &mut Vec<ValidatedMember>,
+) -> Result<(), String> {
+    let targets = item
+        .sync_actions
+        .iter()
+        .map(|sync| validate_cleanup_sync_target(root, sync))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (sync, (target, existed)) in item.sync_actions.iter().zip(targets) {
+        rating_sync::write_rating_to_validated_path(&target, sync.target, sync.target_rating)?;
+        let metadata = fs::symlink_metadata(&target)
+            .map_err(|error| format!("无法复核清理前评分同步目标：{error}"))?;
+        if let Some(member) = members.iter_mut().find(|member| member.source == target) {
+            member.expected_size_bytes = metadata.len();
+            member.expected_modified_ms = modified_ms(&metadata);
+        } else if !existed && sync.target == RatingSyncTarget::RawXmp {
+            members.push(ValidatedMember {
+                kind: RuleMemberKind::Xmp,
+                source: target,
+                target: PathBuf::new(),
+                expected_size_bytes: metadata.len(),
+                expected_modified_ms: modified_ms(&metadata),
+            });
+        }
     }
     Ok(())
 }
@@ -1201,18 +1387,22 @@ fn execute_authorized_plan_with_options(
             {
                 execute_quarantine_group(&root, &operation_id, &plan, item, options)
             }
-            Some(RuleAction::Cleanup) => failed_group(
-                item,
-                OrganizerAction::Trash,
-                "系统回收站清理将在下一任务实现".to_string(),
-            ),
+            Some(RuleAction::Cleanup)
+                if plan.cleanup_destination == Some(CleanupExecutionDestination::Trash) =>
+            {
+                execute_trash_group(&root, &plan, item, options)
+            }
+            Some(RuleAction::Cleanup) => {
+                failed_group(item, OrganizerAction::Trash, "待清理目标缺失".to_string())
+            }
             _ => failed_group(
                 item,
                 OrganizerAction::Copy,
                 "当前仅允许执行复制、移动或清理".to_string(),
             ),
         };
-        if matches!(
+        if matches!(group.action, OrganizerAction::Copy | OrganizerAction::Move)
+            && matches!(
             group.status,
             OrganizerGroupStatus::Success | OrganizerGroupStatus::Partial
         ) && let Err(error) = apply_destination_sync(&plan, item, &mut group)
@@ -1950,6 +2140,16 @@ mod tests {
         }
     }
 
+    fn trash_plan(
+        root: &Path,
+        group_id: &str,
+        members: &[(&str, RuleMemberKind)],
+    ) -> AuthorizedOperationPlan {
+        let mut plan = cleanup_plan(root, group_id, members);
+        plan.cleanup_destination = Some(CleanupExecutionDestination::Trash);
+        plan
+    }
+
     fn create_cleanup_group(root: &Path) -> Vec<(&'static str, RuleMemberKind)> {
         let members = vec![
             ("album/photo.jpg", RuleMemberKind::Jpeg),
@@ -1977,7 +2177,7 @@ mod tests {
         )
         .expect("execute quarantine cleanup");
 
-        assert_eq!(summary.succeeded, 1);
+        assert_eq!(summary.succeeded, 1, "{:?}", summary.groups);
         assert_eq!(summary.groups[0].action, OrganizerAction::Quarantine);
         for (relative, _) in &members {
             assert!(!source.path().join(relative).exists());
@@ -2087,6 +2287,173 @@ mod tests {
                 .iter()
                 .all(|(relative, _)| second.path().join(relative).exists())
         );
+    }
+
+    #[test]
+    fn cleanup_trash_preflights_the_group_and_records_nonrecoverable_results() {
+        let source = tempdir().expect("source");
+        let app_data = tempdir().expect("app data");
+        let members = create_cleanup_group(source.path());
+        let summary = execute_authorized_plan_with_options(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            trash_plan(source.path(), "cleanup", &members),
+            ExecutionOptions {
+                simulate_trash: true,
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("execute simulated trash cleanup");
+        assert_eq!(summary.succeeded, 1);
+        assert_eq!(summary.groups[0].action, OrganizerAction::Trash);
+        assert!(summary.groups[0]
+            .members
+            .iter()
+            .all(|member| member.target_snapshot.is_none()));
+        assert!(members.iter().all(|(relative, _)| !source.path().join(relative).exists()));
+        assert_eq!(
+            crate::operation_history::list_operations(app_data.path())
+                .expect("trash history")[0]
+                .recoverable_groups,
+            0
+        );
+
+        let drifted = tempdir().expect("drifted source");
+        let drifted_data = tempdir().expect("drifted app data");
+        let drifted_members = create_cleanup_group(drifted.path());
+        let drifted_plan = trash_plan(drifted.path(), "cleanup", &drifted_members);
+        fs::write(drifted.path().join("album/photo.xmp"), b"changed")
+            .expect("change later member");
+        let summary = execute_authorized_plan_with_options(
+            drifted_data.path(),
+            "operation-2".to_string(),
+            100,
+            drifted_plan,
+            ExecutionOptions {
+                simulate_trash: true,
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("execute drifted trash cleanup");
+        assert_eq!(summary.failed, 1);
+        assert!(
+            drifted_members
+                .iter()
+                .all(|(relative, _)| drifted.path().join(relative).exists())
+        );
+    }
+
+    #[test]
+    fn cleanup_trash_stops_after_a_partial_system_failure() {
+        let source = tempdir().expect("source");
+        let app_data = tempdir().expect("app data");
+        let members = create_cleanup_group(source.path());
+        let summary = execute_authorized_plan_with_options(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            trash_plan(source.path(), "cleanup", &members),
+            ExecutionOptions {
+                simulate_trash: true,
+                fail_trash_at: Some(1),
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("execute partial trash cleanup");
+        assert_eq!(summary.partial, 1);
+        assert!(!source.path().join(members[0].0).exists());
+        assert!(source.path().join(members[1].0).exists());
+        assert!(source.path().join(members[2].0).exists());
+    }
+
+    #[test]
+    fn cleanup_before_sync_moves_a_new_xmp_into_quarantine() {
+        let source = tempdir().expect("source");
+        let app_data = tempdir().expect("app data");
+        fs::create_dir_all(source.path().join("album")).expect("album");
+        fs::write(source.path().join("album/photo.nef"), b"raw").expect("raw");
+        let members = vec![("album/photo.nef", RuleMemberKind::Raw)];
+        let mut plan = cleanup_plan(source.path(), "cleanup", &members);
+        plan.sync = OperationSyncPreference {
+            enabled: true,
+            targets: RatingSyncTargets {
+                raw_xmp: true,
+                jpeg_metadata: false,
+            },
+            jpeg_write_confirmed: false,
+            sync_cleanup_before: true,
+        };
+        plan.items[0].sync_actions = vec![PlannedSyncAction {
+            target: RatingSyncTarget::RawXmp,
+            target_path: fs::canonicalize(source.path())
+                .expect("canonical source")
+                .join("album/photo.xmp")
+                .to_string_lossy()
+                .into_owned(),
+            target_rating: 4,
+            timing: SyncTiming::BeforeCleanup,
+        }];
+
+        let summary = execute_authorized_plan(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            plan,
+        )
+        .expect("execute cleanup sync");
+        assert_eq!(summary.succeeded, 1, "{:?}", summary.groups);
+        let quarantined_xmp = source
+            .path()
+            .join(crate::quarantine::QUARANTINE_DIR)
+            .join("operation-1/album/photo.xmp");
+        assert_eq!(
+            crate::rating_metadata::xmp_rating(
+                &fs::read(&quarantined_xmp).expect("quarantined xmp")
+            )
+            .expect("read xmp rating"),
+            Some(4)
+        );
+        assert_eq!(summary.groups[0].members.len(), 2);
+    }
+
+    #[test]
+    fn cleanup_sync_failure_prevents_the_terminal_action() {
+        let source = tempdir().expect("source");
+        let app_data = tempdir().expect("app data");
+        fs::create_dir_all(source.path().join("album")).expect("album");
+        fs::write(source.path().join("album/photo.jpg"), b"not a jpeg").expect("jpeg");
+        let members = vec![("album/photo.jpg", RuleMemberKind::Jpeg)];
+        let mut plan = cleanup_plan(source.path(), "cleanup", &members);
+        plan.sync = OperationSyncPreference {
+            enabled: true,
+            targets: RatingSyncTargets {
+                raw_xmp: false,
+                jpeg_metadata: true,
+            },
+            jpeg_write_confirmed: true,
+            sync_cleanup_before: true,
+        };
+        plan.items[0].sync_actions = vec![PlannedSyncAction {
+            target: RatingSyncTarget::JpegMetadata,
+            target_path: fs::canonicalize(source.path())
+                .expect("canonical source")
+                .join("album/photo.jpg")
+                .to_string_lossy()
+                .into_owned(),
+            target_rating: 1,
+            timing: SyncTiming::BeforeCleanup,
+        }];
+
+        let summary = execute_authorized_plan(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            plan,
+        )
+        .expect("execute failed sync cleanup");
+        assert_eq!(summary.failed, 1);
+        assert!(source.path().join("album/photo.jpg").exists());
     }
 
     #[test]

@@ -153,31 +153,31 @@ git commit -m "feat: quarantine rating cleanup groups"
 - Modify: `src-tauri/src/file_organizer.rs`
 - Test: `src-tauri/src/file_organizer.rs`
 
-- [ ] **Step 1: Write failing trash and sync tests**
+- [x] **Step 1: Write failing trash and sync tests**
 
 Assert all group members are preflighted before the first trash call, successful members are recorded without a recovery snapshot, a later trash failure reports `partial`, cleanup-before XMP/JPG sync runs only when the plan contains `BeforeCleanup` actions, sync failure prevents that group from entering quarantine/trash, and a newly created cleanup XMP is included in the terminal cleanup result. Extend the existing private `ExecutionOptions` with a test-only trash-delete mode and failure index so tests remove only disposable fixture files instead of sending them to the machine's real trash.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml file_organizer::tests::cleanup --offline`
 
 Expected: FAIL because trash cleanup and source sync are unsupported.
 
-- [ ] **Step 3: Implement cleanup-before sync**
+- [x] **Step 3: Implement cleanup-before sync**
 
 Validate every sync target against the canonical photo root and require `SyncTiming::BeforeCleanup`. Write metadata through `rating_sync::write_rating_to_validated_path`; refresh any affected planned member snapshot before cleanup and add a newly created XMP to the validated group so it cannot be orphaned by the same cleanup transaction.
 
-- [ ] **Step 4: Implement system trash receipts**
+- [x] **Step 4: Implement system trash receipts**
 
 After whole-group preflight and optional sync, call `trash::delete` per validated member. Record `OrganizerAction::Trash`, absolute source paths, success/failure messages, no target path, and no target fingerprint. Return `success` only when every member entered the system trash; otherwise return `partial` without pretending FramePair can restore it.
 
-- [ ] **Step 5: Run organizer tests and verify GREEN**
+- [x] **Step 5: Run organizer tests and verify GREEN**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml file_organizer --offline`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src-tauri/src/file_organizer.rs
