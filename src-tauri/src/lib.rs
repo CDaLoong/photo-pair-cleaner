@@ -1,5 +1,6 @@
 mod editors;
 mod formats;
+mod operation_history;
 #[allow(dead_code)]
 mod operation_plan;
 mod photo_groups;
