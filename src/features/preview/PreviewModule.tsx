@@ -28,7 +28,12 @@ import {
   useState,
 } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
-import { errorMessage, formatBytes, formatDate } from "../../utils";
+import {
+  errorMessage,
+  formatBytes,
+  formatDate,
+  storedBooleanPreference,
+} from "../../utils";
 import { PhotoContextMenu } from "./PhotoContextMenu";
 import { PhotoDirectoryTree } from "./PhotoDirectoryTree";
 import { PhotoThumbnail } from "./PhotoThumbnail";
@@ -69,6 +74,7 @@ import type {
 
 const PREVIEW_ROOT_STORAGE_KEY = "framepair.preview.root.v1";
 const PREVIEW_GUIDE_STORAGE_KEY = "framepair.preview.guide.v1";
+const FOLDER_SIDEBAR_STORAGE_KEY = "framepair.preview.folder-sidebar-collapsed.v1";
 const LOUPE_PREVIEW_EDGE = 1800;
 const PRELOAD_CONCURRENCY = 3;
 const EMPTY_PRELOAD_PROGRESS: PreloadProgress = { total: 0, completed: 0, failed: 0 };
@@ -117,6 +123,13 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const [editorBusy, setEditorBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ assetId: string; left: number; top: number } | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [folderSidebarCollapsed, setFolderSidebarCollapsed] = useState(() => {
+    try {
+      return storedBooleanPreference(localStorage.getItem(FOLDER_SIDEBAR_STORAGE_KEY));
+    } catch {
+      return false;
+    }
+  });
   const [preloadProgress, setPreloadProgress] = useState<PreloadProgress>(EMPTY_PRELOAD_PROGRESS);
   const attemptedStoredRoot = useRef(false);
   const busyRef = useRef(busy);
@@ -392,8 +405,18 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     if (!firstAsset) return;
     setSelectedId(firstAsset.id);
     setView("loupe");
+    changeFolderSidebarCollapsed(false);
     setContextMenu(null);
     setGuideOpen(true);
+  }
+
+  function changeFolderSidebarCollapsed(collapsed: boolean) {
+    setFolderSidebarCollapsed(collapsed);
+    try {
+      localStorage.setItem(FOLDER_SIDEBAR_STORAGE_KEY, String(collapsed));
+    } catch {
+      // The current session remains usable if layout preferences cannot be stored.
+    }
   }
 
   function dismissPreviewGuide() {
@@ -553,8 +576,16 @@ export function PreviewModule({ active }: PreviewModuleProps) {
             </div>
           </div>
 
-          <div className="preview-browser">
-            <PhotoDirectoryTree key={`${index.root}:${index.indexedAtMs}`} nodes={directoryTree} totalCount={ratedAssets.length} selectedPath={selectedDirectory} onSelect={selectDirectory} />
+          <div className={folderSidebarCollapsed ? "preview-browser is-folder-sidebar-collapsed" : "preview-browser"}>
+            <PhotoDirectoryTree
+              key={`${index.root}:${index.indexedAtMs}`}
+              nodes={directoryTree}
+              totalCount={ratedAssets.length}
+              selectedPath={selectedDirectory}
+              collapsed={folderSidebarCollapsed}
+              onSelect={selectDirectory}
+              onCollapsedChange={changeFolderSidebarCollapsed}
+            />
             {view === "grid" ? (
             <main className="photo-grid-scroll" data-preview-tour="grid">
               <div

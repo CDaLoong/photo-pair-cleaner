@@ -7,6 +7,13 @@ import {
 import * as previewUtils from "../src/features/preview/previewUtils.ts";
 import * as utils from "../src/utils.ts";
 
+test("sidebar preferences collapse only when storage explicitly says true", () => {
+  assert.equal(utils.storedBooleanPreference("true"), true);
+  assert.equal(utils.storedBooleanPreference("false"), false);
+  assert.equal(utils.storedBooleanPreference(null), false);
+  assert.equal(utils.storedBooleanPreference("invalid"), false);
+});
+
 const candidates = [
   {
     id: "raw:1",

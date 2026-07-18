@@ -10,6 +10,10 @@ import type {
   ScanSummary,
 } from "./types";
 
+export function storedBooleanPreference(value: string | null): boolean {
+  return value === "true";
+}
+
 export function canAuditReferenceSource(source: ReferenceSourceType): boolean {
   return source === "directory";
 }
