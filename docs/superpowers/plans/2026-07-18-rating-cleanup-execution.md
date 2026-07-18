@@ -329,7 +329,7 @@ Expected: all checks PASS.
 
 Start the current Tauri app and verify cleanup selection, default quarantine, trash warning, confirmation gating, history controls, narrow/wide layouts, and preview refresh. Use disposable fixtures for real quarantine/restore and system trash only when native desktop interaction is available; if macOS is locked, record the native limitation instead of claiming it passed.
 
-- [ ] **Step 4: Commit, push, and watch CI**
+- [x] **Step 4: Commit, push, and watch CI**
 
 ```bash
 git add README.md docs/superpowers/specs/2026-07-18-rating-driven-photo-workflow-design.md docs/superpowers/plans/2026-07-18-rating-cleanup-execution.md
@@ -338,4 +338,4 @@ git push origin main
 gh run watch --exit-status
 ```
 
-**Verification note (2026-07-18):** Rust formatting, Clippy with warnings denied, all 163 backend tests, all 44 frontend tests, and the production build passed. The rating cleanup workspace was opened in the browser runtime and checked at 1440x900 and 960x720 without horizontal overflow; phase-five copy and default-quarantine guidance were visible and the key commands remained in view. The latest Vite server and Tauri desktop process were started successfully. macOS remained screen-locked, so native confirmation-dialog interaction and real system-trash QA are recorded as blocked rather than claimed as passed; disposable backend tests covered quarantine execution/restore and simulated trash success/partial failure without touching the machine's real trash.
+**Verification note (2026-07-18):** Rust formatting, Clippy with warnings denied, all 163 backend tests, all 44 frontend tests, and the production build passed. The rating cleanup workspace was opened in the browser runtime and checked at 1440x900 and 960x720 without horizontal overflow; phase-five copy and default-quarantine guidance were visible and the key commands remained in view. The latest Vite server and Tauri desktop process were started successfully. macOS remained screen-locked, so native confirmation-dialog interaction and real system-trash QA are recorded as blocked rather than claimed as passed; disposable backend tests covered quarantine execution/restore and simulated trash success/partial failure without touching the machine's real trash. GitHub Actions CI run `29640212429` completed successfully on the pushed `main` branch.
