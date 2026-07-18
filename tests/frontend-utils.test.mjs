@@ -106,9 +106,9 @@ test("operation plan filters and Chinese labels remain stable", () => {
   assert.equal(ratingRuleUtils.ruleActionLabel("move"), "移动");
   assert.equal(ratingRuleUtils.operationStatusLabel("conflict"), "存在冲突");
   assert.equal(ratingRuleUtils.isExecutablePlanItem(items[0]), true);
-  assert.equal(ratingRuleUtils.isExecutablePlanItem(items[1]), false);
+  assert.equal(ratingRuleUtils.isExecutablePlanItem(items[1]), true);
   assert.equal(ratingRuleUtils.isExecutablePlanItem(items[2]), false);
-  assert.deepEqual(ratingRuleUtils.defaultExecutableGroupIds(items), ["a"]);
+  assert.deepEqual(ratingRuleUtils.defaultExecutableGroupIds(items), ["a", "b"]);
   assert.equal(ratingRuleUtils.organizerGroupStatusLabel("partial"), "部分完成");
 });
 
@@ -135,11 +135,19 @@ test("operation selection summary counts only selected executable groups", () =>
   ];
   assert.deepEqual(
     ratingRuleUtils.operationSelectionSummary(items, new Set(["copy", "cleanup"])),
-    { groups: 1, copyGroups: 1, moveGroups: 0, files: 2, bytes: 15 },
+    {
+      groups: 2,
+      copyGroups: 1,
+      moveGroups: 0,
+      cleanupGroups: 1,
+      files: 3,
+      bytes: 114,
+      cleanupBytes: 99,
+    },
   );
 });
 
-test("rating organization UI executes only copy and move plans", () => {
+test("rating organization UI confirms copy move and cleanup plans", () => {
   const selector = fs.readFileSync(new URL("../src/features/cleanup/TaskTypeSelector.tsx", import.meta.url), "utf8");
   const workspacePath = new URL("../src/features/rating-rules/RatingRulesWorkspace.tsx", import.meta.url);
   assert.equal(fs.existsSync(workspacePath), true);
@@ -149,9 +157,14 @@ test("rating organization UI executes only copy and move plans", () => {
   assert.match(workspace, /execute_operation_plan/);
   assert.match(workspace, /list_rating_operation_history/);
   assert.match(review, /执行所选/);
-  assert.match(review, /第五阶段开放/);
+  assert.doesNotMatch(review, /第五阶段开放/);
   assert.match(workspace, /OperationExecuteDialog/);
   assert.match(workspace, /OperationHistoryPanel/);
+  assert.match(workspace, /cleanupDestination/);
+  const dialog = fs.readFileSync(new URL("../src/features/rating-rules/OperationExecuteDialog.tsx", import.meta.url), "utf8");
+  assert.match(dialog, /FramePair 隔离区/);
+  assert.match(dialog, /系统回收站/);
+  assert.match(dialog, /useState<CleanupExecutionDestination>\("quarantine"\)/);
 });
 
 test("sidebar preferences collapse only when storage explicitly says true", () => {

@@ -146,7 +146,7 @@ export function OperationPlanReview({ plan, busy, onRequestExecute }: OperationP
               return (
                 <Fragment key={item.groupId}>
                   <tr className={`is-${item.status}`}>
-                    <td><input type="checkbox" checked={selected.has(item.groupId)} disabled={busy || !executable} onChange={() => toggleSelected(item.groupId)} aria-label={`选择 ${item.relativeStem}`} title={item.terminalAction === "cleanup" ? "待清理将在第五阶段开放" : executable ? "选择执行" : "当前照片组不可执行"} /></td>
+                    <td><input type="checkbox" checked={selected.has(item.groupId)} disabled={busy || !executable} onChange={() => toggleSelected(item.groupId)} aria-label={`选择 ${item.relativeStem}`} title={executable ? "选择执行" : "当前照片组不可执行"} /></td>
                     <td><button className="icon-button" type="button" onClick={() => toggleExpanded(item.groupId)} aria-label={isExpanded ? `收起 ${item.relativeStem}` : `展开 ${item.relativeStem}`} title={isExpanded ? "收起详情" : "展开详情"}>{isExpanded ? <ChevronDown aria-hidden="true" size={15} /> : <ChevronRight aria-hidden="true" size={15} />}</button></td>
                     <td><strong>{item.relativeStem}</strong></td>
                     <td>{ratingText(item.rating)}</td>
@@ -154,7 +154,7 @@ export function OperationPlanReview({ plan, busy, onRequestExecute }: OperationP
                     <td title={item.matchedRuleNames.join("、")}>{item.matchedRuleNames.join("、") || "-"}</td>
                     <td>{item.members.map((member) => memberKindLabel(member.kind)).join(" + ") || "-"}</td>
                     <td>{item.terminalAction ? ruleActionLabel(item.terminalAction) : "-"}</td>
-                    <td><span>{item.terminalAction === "cleanup" && item.status === "ready" ? "第五阶段开放" : operationStatusLabel(item.status)}</span></td>
+                    <td><span>{operationStatusLabel(item.status)}</span></td>
                   </tr>
                   {isExpanded ? <tr className="operation-plan-detail-row"><td colSpan={9}><PlanDetails item={item} /></td></tr> : null}
                 </Fragment>
@@ -166,7 +166,7 @@ export function OperationPlanReview({ plan, busy, onRequestExecute }: OperationP
       </div>
 
       <footer>
-        <div><ShieldCheck aria-hidden="true" size={16} /><span>已选 {selectionSummary.groups} 组 · {selectionSummary.files} 个文件 · {formatBytes(selectionSummary.bytes)}。不会覆盖已有文件，待清理不会执行。</span></div>
+        <div><ShieldCheck aria-hidden="true" size={16} /><span>已选 {selectionSummary.groups} 组 · {selectionSummary.files} 个文件 · {formatBytes(selectionSummary.bytes)}{selectionSummary.cleanupGroups > 0 ? ` · 待清理 ${selectionSummary.cleanupGroups} 组（${formatBytes(selectionSummary.cleanupBytes)}）` : ""}。执行前还需确认清理去向。</span></div>
         <button className="primary-command" type="button" disabled={busy || selectionSummary.groups === 0} onClick={() => onRequestExecute(executableIds.filter((groupId) => selected.has(groupId)))}><Play aria-hidden="true" size={15} />执行所选</button>
       </footer>
     </section>

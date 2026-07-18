@@ -4622,6 +4622,23 @@ dd {
   border-bottom: 1px solid var(--line);
 }
 
+.organizer-cleanup-destination > strong {
+  display: block;
+  padding: 12px 16px 0;
+  font-size: 12px;
+}
+
+.organizer-cleanup-destination .cleanup-destination {
+  padding-top: 8px;
+}
+
+.cleanup-destination > button.is-danger[aria-pressed="true"] {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger), transparent 84%);
+}
+
 .cleanup-destination > button {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);

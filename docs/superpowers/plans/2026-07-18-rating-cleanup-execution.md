@@ -229,25 +229,25 @@ git commit -m "feat: expose rating cleanup recovery"
 - Modify: `src/styles.css`
 - Test: `tests/frontend-utils.test.mjs`
 
-- [ ] **Step 1: Write failing frontend behavior tests**
+- [x] **Step 1: Write failing frontend behavior tests**
 
 Test that ready cleanup groups are selectable and counted separately, the default cleanup destination is `quarantine`, a selection without cleanup sends `cleanupDestination: null`, a cleanup selection sends the chosen enum, the dialog changes warnings and path preview for quarantine versus trash, and cleanup is no longer labeled as a future phase.
 
-- [ ] **Step 2: Run frontend tests and verify RED**
+- [x] **Step 2: Run frontend tests and verify RED**
 
 Run: `npm run test:frontend`
 
 Expected: FAIL because cleanup is disabled in the review and absent from the selection summary.
 
-- [ ] **Step 3: Implement cleanup-aware review and dialog**
+- [x] **Step 3: Implement cleanup-aware review and dialog**
 
 Extend the selection summary with `cleanupGroups` and `cleanupBytes`. In the dialog, show a two-option segmented control only when cleanup groups are selected, default it to “FramePair 隔离区（可恢复）”, offer “系统回收站（应用内不可恢复）”, preview source paths plus the quarantine pattern, and keep the explicit acknowledgment checkbox.
 
-- [ ] **Step 4: Implement the command payload and messages**
+- [x] **Step 4: Implement the command payload and messages**
 
 Store the dialog choice in workspace state, send it as `cleanupDestination`, clear the one-use plan after any execution attempt, refresh preview/history after success or partial success, and describe quarantine restore versus system trash honestly in the completion notice.
 
-- [ ] **Step 5: Run frontend tests and build**
+- [x] **Step 5: Run frontend tests and build**
 
 Run: `npm run test:frontend`
 
@@ -255,7 +255,7 @@ Run: `npm run build`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/features/rating-rules src/styles.css tests/frontend-utils.test.mjs

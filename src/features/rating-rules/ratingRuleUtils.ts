@@ -149,7 +149,11 @@ export function isExecutablePlanItem<T extends Pick<
   "status" | "terminalAction"
 >>(item: T): boolean {
   return item.status === "ready"
-    && (item.terminalAction === "copy" || item.terminalAction === "move");
+    && (
+      item.terminalAction === "copy"
+      || item.terminalAction === "move"
+      || item.terminalAction === "cleanup"
+    );
 }
 
 export function defaultExecutableGroupIds<T extends Pick<
@@ -170,6 +174,7 @@ export function operationSelectionSummary<T extends Pick<
     groups: executable.length,
     copyGroups: executable.filter((item) => item.terminalAction === "copy").length,
     moveGroups: executable.filter((item) => item.terminalAction === "move").length,
+    cleanupGroups: executable.filter((item) => item.terminalAction === "cleanup").length,
     files: executable.reduce((total, item) => total + item.members.length, 0),
     bytes: executable.reduce(
       (total, item) => total + item.members.reduce(
@@ -178,6 +183,15 @@ export function operationSelectionSummary<T extends Pick<
       ),
       0,
     ),
+    cleanupBytes: executable
+      .filter((item) => item.terminalAction === "cleanup")
+      .reduce(
+        (total, item) => total + item.members.reduce(
+          (memberTotal, member) => memberTotal + member.sizeBytes,
+          0,
+        ),
+        0,
+      ),
   };
 }
 

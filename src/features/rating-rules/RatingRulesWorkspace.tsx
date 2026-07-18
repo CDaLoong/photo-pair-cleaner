@@ -29,6 +29,7 @@ import {
   validateRatingRuleDrafts,
 } from "./ratingRuleUtils";
 import type {
+  CleanupExecutionDestination,
   OperationPlanRequest,
   OperationPlanSummary,
   OperationHistoryEntry,
@@ -340,7 +341,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
     }
   }
 
-  async function executeSelected() {
+  async function executeSelected(cleanupDestination: CleanupExecutionDestination | null) {
     if (!plan || pendingGroupIds.length === 0) return;
     setBusy(true);
     setMessage(null);
@@ -350,6 +351,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
           planId: plan.planId,
           root: plan.root,
           groupIds: pendingGroupIds,
+          cleanupDestination,
         },
       });
       setLastExecution(summary);
@@ -359,7 +361,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
       await refreshHistory();
       setMessage(summary.failed > 0 || summary.partial > 0
         ? { tone: "warning", title: `${summary.succeeded} 组完成，${summary.partial} 组部分完成，${summary.failed} 组失败`, detail: "可在操作历史中查看并恢复仍安全的文件。" }
-        : { tone: "success", title: `${summary.succeeded} 个照片组已完成评分整理`, detail: "复制可撤销，移动可从下方操作历史恢复。" });
+        : { tone: "success", title: `${summary.succeeded} 个照片组已完成评分整理`, detail: cleanupDestination === "trash" ? "待清理文件已进入系统回收站；FramePair 保留操作回执但不提供应用内恢复。" : "复制可撤销，移动和隔离可从下方操作历史恢复。" });
     } catch (executeError) {
       setPlan(null);
       setPendingGroupIds([]);
@@ -409,13 +411,13 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
         groupIds={pendingGroupIds}
         busy={busy}
         onDismiss={() => { if (!busy) setPendingGroupIds([]); }}
-        onConfirm={() => void executeSelected()}
+        onConfirm={(cleanupDestination) => void executeSelected(cleanupDestination)}
       />
       {message ? <div className={`notice notice-${message.tone}`} role={message.tone === "error" ? "alert" : "status"}>{message.tone === "success" ? <CheckCircle2 aria-hidden="true" size={18} /> : <AlertTriangle aria-hidden="true" size={18} />}<div><strong>{message.title}</strong>{message.detail ? <span>{message.detail}</span> : null}</div><button className="notice-close" type="button" onClick={() => setMessage(null)} aria-label="关闭消息" title="关闭消息"><X aria-hidden="true" size={16} /></button></div> : null}
 
       <section className="rating-rules-setup">
         <header className="rating-rules-heading">
-          <div><h1>评分整理与清理规则</h1><p>用评分和格式生成计划，复核后执行复制或移动；清理将在下一阶段开放。</p></div>
+          <div><h1>评分整理与清理规则</h1><p>用评分和格式生成计划，复核后执行复制、移动或安全清理。</p></div>
           <div className="rating-rules-file-actions">
             <button className="icon-button" type="button" disabled={busy} onClick={() => void importRules()} aria-label="导入规则" title="导入规则"><FileDown aria-hidden="true" size={16} /></button>
             <button className="icon-button" type="button" disabled={busy || rules.length === 0} onClick={() => void exportRules()} aria-label="导出规则" title="导出规则"><FileUp aria-hidden="true" size={16} /></button>
@@ -452,17 +454,17 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
         </div>
 
         <section className="rating-rules-sync" data-tour="rating-rules-sync">
-          <header><div><strong>同时执行评分同步</strong><span>仅同步本次复制或移动到目标目录的格式，不修改 RAW 原文件。</span></div><label className="switch"><input type="checkbox" checked={sync.enabled} disabled={busy} onChange={(event) => { setSync({ ...sync, enabled: event.target.checked }); clearPlan(); }} /><span /></label></header>
+          <header><div><strong>同时执行评分同步</strong><span>复制和移动同步目标文件；待清理仅在明确启用后于清理前同步，不修改 RAW 原文件。</span></div><label className="switch"><input type="checkbox" checked={sync.enabled} disabled={busy} onChange={(event) => { setSync({ ...sync, enabled: event.target.checked }); clearPlan(); }} /><span /></label></header>
           {sync.enabled ? <div className="rating-rules-sync-fields">
             <label><span>冲突策略</span><select value={conflictPolicy} disabled={busy} onChange={(event) => { setConflictPolicy(event.target.value as RatingConflictPolicy); clearPlan(); }}><option value="skip">不覆盖并提示</option><option value="framePair">FramePair 评分优先</option><option value="external">外部评分优先</option><option value="highest">取较高评分</option></select></label>
             <label className="rating-rules-sync-check"><input type="checkbox" checked={sync.targets.rawXmp} disabled={busy} onChange={(event) => { setSync({ ...sync, targets: { ...sync.targets, rawXmp: event.target.checked } }); clearPlan(); }} /><span><strong>RAW XMP</strong><small>永不修改 RAW 原文件</small></span></label>
             <label className="rating-rules-sync-check"><input type="checkbox" checked={sync.targets.jpegMetadata} disabled={busy} onChange={(event) => { setSync({ ...sync, targets: { ...sync.targets, jpegMetadata: event.target.checked }, jpegWriteConfirmed: event.target.checked ? sync.jpegWriteConfirmed : false }); clearPlan(); }} /><span><strong>JPG 元数据</strong><small>高级选项，默认关闭</small></span></label>
             {sync.targets.jpegMetadata ? <label className="rating-rules-sync-confirm"><input type="checkbox" checked={sync.jpegWriteConfirmed} disabled={busy} onChange={(event) => { setSync({ ...sync, jpegWriteConfirmed: event.target.checked }); clearPlan(); }} />我确认允许修改 JPG 评分元数据</label> : null}
-            <label className="rating-rules-sync-confirm"><input type="checkbox" checked={sync.syncCleanupBefore} disabled={busy} onChange={(event) => { setSync({ ...sync, syncCleanupBefore: event.target.checked }); clearPlan(); }} />待清理照片包含清理前同步（第五阶段执行）</label>
+            <label className="rating-rules-sync-confirm"><input type="checkbox" checked={sync.syncCleanupBefore} disabled={busy} onChange={(event) => { setSync({ ...sync, syncCleanupBefore: event.target.checked }); clearPlan(); }} />待清理照片在进入隔离区或系统回收站前同步评分</label>
           </div> : null}
         </section>
 
-        <div className="rating-rules-safety"><ShieldCheck aria-hidden="true" size={17} /><span>生成计划保持只读；复制和移动必须在下方逐组复核并再次确认。已有目标不会被覆盖。</span></div>
+        <div className="rating-rules-safety"><ShieldCheck aria-hidden="true" size={17} /><span>生成计划保持只读；复制、移动和待清理必须在下方逐组复核并再次确认。默认清理到可恢复的 FramePair 隔离区。</span></div>
         <div className="rating-rules-command"><button className="primary-command" type="button" disabled={busy || !root || rules.length === 0} onClick={() => void generatePlan()}>{busy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : <ScanSearch aria-hidden="true" size={16} />}生成执行计划</button></div>
       </section>
 
