@@ -34,6 +34,9 @@ import {
   formatDate,
   storedBooleanPreference,
 } from "../../utils";
+import type { Notice } from "../../types";
+import { RatingSyncDialog } from "../rating-sync/RatingSyncDialog";
+import { autoSyncOutcomeNotice } from "../rating-sync/ratingSyncUtils";
 import { PhotoContextMenu } from "./PhotoContextMenu";
 import { PhotoDirectoryTree } from "./PhotoDirectoryTree";
 import { PhotoThumbnail } from "./PhotoThumbnail";
@@ -119,11 +122,14 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const [ratings, setRatings] = useState<Record<string, number>>({});
   const [ratingBusyId, setRatingBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<Notice | null>(null);
   const [externalEditors, setExternalEditors] = useState<ExternalEditor[]>([SYSTEM_EDITOR]);
   const [editorId, setEditorId] = useState("system");
   const [editorBusy, setEditorBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ assetId: string; left: number; top: number } | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+  const [syncAssetId, setSyncAssetId] = useState<string | null>(null);
   const [folderSidebarCollapsed, setFolderSidebarCollapsed] = useState(() => {
     try {
       return storedBooleanPreference(localStorage.getItem(FOLDER_SIDEBAR_STORAGE_KEY));
@@ -178,29 +184,43 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const contextAsset = contextMenu
     ? ratedAssets.find((asset) => asset.id === contextMenu.assetId) ?? null
     : null;
+  const syncAsset = syncAssetId
+    ? ratedAssets.find((asset) => asset.id === syncAssetId) ?? null
+    : null;
   const selectedEditor = externalEditors.find((editor) => editor.id === editorId) ?? SYSTEM_EDITOR;
   const dismissContextMenu = useCallback(() => setContextMenu(null), []);
 
-  async function loadDirectory(path: string) {
+  async function loadDirectory(
+    path: string,
+    options: { preserveContext?: boolean } = {},
+  ) {
     if (!path || busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
       const result = await invoke<PhotoIndex>("index_photo_directory", { root: path });
+      const preserveContext = options.preserveContext
+        && indexedRootRef.current === result.root;
       if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
       indexedRootRef.current = result.root;
       setIndex(result);
       setRatings(Object.fromEntries(result.assets.map((asset) => [asset.id, asset.rating])));
       setRoot(result.root);
-      setSelectedId(result.assets[0]?.id ?? null);
-      setSearch("");
-      setFilter("all");
-      setSelectedDirectory("");
-      setMinimumRating(0);
+      if (preserveContext) {
+        setSelectedId((current) => result.assets.some((asset) => asset.id === current)
+          ? current
+          : result.assets[0]?.id ?? null);
+      } else {
+        setSelectedId(result.assets[0]?.id ?? null);
+        setSearch("");
+        setFilter("all");
+        setSelectedDirectory("");
+        setMinimumRating(0);
+      }
       setContextMenu(null);
       let autoOpenGuide = false;
-      if (result.assets.length > 0 && !attemptedPreviewGuide.current) {
+      if (!preserveContext && result.assets.length > 0 && !attemptedPreviewGuide.current) {
         attemptedPreviewGuide.current = true;
         try {
           autoOpenGuide = shouldOpenPreviewGuide(localStorage.getItem(PREVIEW_GUIDE_STORAGE_KEY));
@@ -208,8 +228,10 @@ export function PreviewModule({ active }: PreviewModuleProps) {
           autoOpenGuide = true;
         }
       }
-      setView(autoOpenGuide ? "loupe" : "grid");
-      setGuideOpen(autoOpenGuide);
+      if (!preserveContext) {
+        setView(autoOpenGuide ? "loupe" : "grid");
+        setGuideOpen(autoOpenGuide);
+      }
       try {
         localStorage.setItem(PREVIEW_ROOT_STORAGE_KEY, result.root);
       } catch {
@@ -428,6 +450,12 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     setGuideOpen(false);
   }
 
+  function openRatingSync(asset: PhotoAsset | null) {
+    setSyncAssetId(asset?.id ?? null);
+    setContextMenu(null);
+    setSyncDialogOpen(true);
+  }
+
   async function rateAsset(asset: PhotoAsset, rating: number) {
     if (!index || ratingBusyId) return;
     const relativePath = asset.rawPaths[0] ?? asset.previewPath ?? asset.jpegPaths[0];
@@ -435,6 +463,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     const previousRating = ratings[asset.id] ?? asset.rating;
     setRatingBusyId(asset.id);
     setActionError(null);
+    setActionNotice(null);
     setRatings((current) => ({ ...current, [asset.id]: rating }));
     try {
       const update = await invoke<RatingUpdate>("set_photo_rating", {
@@ -444,6 +473,10 @@ export function PreviewModule({ active }: PreviewModuleProps) {
       });
       if (update.assetId !== asset.id) throw new Error("评分结果与当前照片不匹配");
       setRatings((current) => ({ ...current, [update.assetId]: update.rating }));
+      setActionNotice(autoSyncOutcomeNotice(update.autoSync));
+      if (update.autoSync.status === "synced" || update.autoSync.status === "unchanged") {
+        await loadDirectory(index.root, { preserveContext: true });
+      }
     } catch (ratingError) {
       setRatings((current) => ({ ...current, [asset.id]: previousRating }));
       setActionError(errorMessage(ratingError));
@@ -493,6 +526,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
           <span>{index?.root || root || "尚未选择照片目录"}</span>
         </div>
         <div className="preview-header-actions">
+          {index ? <button className="secondary-command" type="button" onClick={() => openRatingSync(selectedAsset)} disabled={busy || !selectedAsset} title="设置自动同步或同步当前照片"><RefreshCw aria-hidden="true" size={16} />评分同步</button> : null}
           <button className="guide-trigger" type="button" onClick={openPreviewGuide} disabled={busy || !index?.assets.length} title={index?.assets.length ? "查看照片浏览与评分引导" : "选择目录后可查看引导"}>
             <CircleHelp aria-hidden="true" size={16} />使用引导
           </button>
@@ -520,6 +554,13 @@ export function PreviewModule({ active }: PreviewModuleProps) {
           <Image aria-hidden="true" size={18} />
           <div><strong>操作未完成</strong><span>{actionError}</span></div>
           <button className="notice-close" type="button" onClick={() => setActionError(null)} aria-label="关闭消息" title="关闭消息"><X aria-hidden="true" size={16} /></button>
+        </div>
+      ) : null}
+      {actionNotice ? (
+        <div className={`notice notice-${actionNotice.tone}`} role="status">
+          <RefreshCw aria-hidden="true" size={18} />
+          <div><strong>{actionNotice.title}</strong>{actionNotice.detail ? <span>{actionNotice.detail}</span> : null}</div>
+          <button className="notice-close" type="button" onClick={() => setActionNotice(null)} aria-label="关闭消息" title="关闭消息"><X aria-hidden="true" size={16} /></button>
         </div>
       ) : null}
 
@@ -629,6 +670,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                 </div>
                 <div className="loupe-title"><strong>{selectedAsset.name}</strong><span>{selectedAsset.relativeStem}</span></div>
                 <div className="loupe-actions">
+                  <button className="secondary-command" type="button" onClick={() => openRatingSync(selectedAsset)}><RefreshCw aria-hidden="true" size={16} />同步评分</button>
                   <label className="external-editor-select">
                     <span className="sr-only">外部编辑器</span>
                     <select value={editorId} onChange={(event) => setEditorId(event.target.value)} aria-label="外部编辑器">
@@ -678,6 +720,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                 onShowGrid={() => setView("grid")}
                 onReveal={() => void revealAsset(contextAsset)}
                 onEdit={() => void openInEditor(contextAsset)}
+                onSync={() => openRatingSync(contextAsset)}
                 onDismiss={dismissContextMenu}
               />
             ) : null}
@@ -720,6 +763,15 @@ export function PreviewModule({ active }: PreviewModuleProps) {
         <div className="preview-drop-overlay"><FolderInput aria-hidden="true" size={28} /><strong>松开以切换照片目录</strong></div>
       ) : null}
       <PreviewGuideDialog open={active && guideOpen} onDismiss={dismissPreviewGuide} />
+      <RatingSyncDialog
+        open={active && syncDialogOpen}
+        root={index?.root ?? ""}
+        asset={syncAsset}
+        onDismiss={() => setSyncDialogOpen(false)}
+        onSynced={async () => {
+          if (index) await loadDirectory(index.root, { preserveContext: true });
+        }}
+      />
     </section>
   );
 }

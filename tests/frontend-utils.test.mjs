@@ -5,6 +5,7 @@ import {
   preloadPreviewRequests,
 } from "../src/features/preview/previewCache.ts";
 import * as previewUtils from "../src/features/preview/previewUtils.ts";
+import * as ratingSyncUtils from "../src/features/rating-sync/ratingSyncUtils.ts";
 import * as utils from "../src/utils.ts";
 
 test("sidebar preferences collapse only when storage explicitly says true", () => {
@@ -353,6 +354,66 @@ test("optimistic ratings update scalar and structured FramePair state", () => {
   assert.equal(updated.ratingState.jpegMetadata, 4);
   assert.equal(updated.ratingState.rawXmp, null);
   assert.equal(updated.ratingState.conflict, true);
+});
+
+test("rating sync copy makes the automatic safety boundary explicit", () => {
+  assert.equal(
+    ratingSyncUtils.syncModeNotice("automatic"),
+    "自动同步只更新评分元数据，不会复制、移动或清理照片。",
+  );
+  assert.equal(
+    ratingSyncUtils.syncModeNotice("manual"),
+    "手动同步会先生成只读计划，确认后才更新评分元数据。",
+  );
+});
+
+test("rating sync targets require a destination and explicit JPG confirmation", () => {
+  assert.deepEqual(
+    ratingSyncUtils.validateSyncTargets(
+      { rawXmp: false, jpegMetadata: false },
+      false,
+    ),
+    { valid: false, message: "请至少选择一个评分同步目标" },
+  );
+  assert.deepEqual(
+    ratingSyncUtils.validateSyncTargets(
+      { rawXmp: false, jpegMetadata: true },
+      false,
+    ),
+    { valid: false, message: "请先确认允许 FramePair 修改 JPG 内嵌评分元数据" },
+  );
+  assert.deepEqual(
+    ratingSyncUtils.validateSyncTargets(
+      { rawXmp: true, jpegMetadata: false },
+      false,
+    ),
+    { valid: true },
+  );
+});
+
+test("automatic sync outcomes produce non-blocking Chinese notices", () => {
+  assert.deepEqual(
+    ratingSyncUtils.autoSyncOutcomeNotice({ status: "synced", message: null }),
+    { tone: "success", title: "评分已自动同步" },
+  );
+  assert.deepEqual(
+    ratingSyncUtils.autoSyncOutcomeNotice({ status: "pending", message: "XMP 文件只读" }),
+    {
+      tone: "warning",
+      title: "FramePair 评分已保存，外部同步待处理",
+      detail: "XMP 文件只读",
+    },
+  );
+  assert.equal(
+    ratingSyncUtils.autoSyncOutcomeNotice({ status: "disabled", message: null }),
+    null,
+  );
+});
+
+test("rating sync plan status labels are concise and actionable", () => {
+  assert.equal(ratingSyncUtils.syncStatusLabel("ready"), "待同步");
+  assert.equal(ratingSyncUtils.syncStatusLabel("unchanged"), "已一致");
+  assert.equal(ratingSyncUtils.syncStatusLabel("conflict"), "存在冲突");
 });
 
 test("preview sorting and keyboard selection are stable", () => {

@@ -3,6 +3,7 @@ import {
   FolderOpen,
   Grid3X3,
   Maximize2,
+  RefreshCw,
   Star,
   X,
 } from "lucide-react";
@@ -22,6 +23,7 @@ interface PhotoContextMenuProps {
   onShowGrid: () => void;
   onReveal: () => void;
   onEdit: () => void;
+  onSync: () => void;
   onDismiss: () => void;
 }
 
@@ -37,6 +39,7 @@ export function PhotoContextMenu({
   onShowGrid,
   onReveal,
   onEdit,
+  onSync,
   onDismiss,
 }: PhotoContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -94,6 +97,7 @@ export function PhotoContextMenu({
         <button type="button" role="menuitem" onClick={() => run(onOpenLoupe)}><Maximize2 aria-hidden="true" size={16} /><span>单张预览</span></button>
       ) : <button type="button" role="menuitem" onClick={() => run(onShowGrid)}><Grid3X3 aria-hidden="true" size={16} /><span>返回网格</span></button>}
       <button type="button" role="menuitem" onClick={() => run(onReveal)}><FolderOpen aria-hidden="true" size={16} /><span>在文件管理器中显示</span></button>
+      <button type="button" role="menuitem" onClick={() => run(onSync)}><RefreshCw aria-hidden="true" size={16} /><span>同步评分</span></button>
       <button type="button" role="menuitem" disabled={editorBusy} onClick={() => run(onEdit)}><ExternalLink aria-hidden="true" size={16} /><span>使用 {editorLabel} 打开</span></button>
     </div>
   );

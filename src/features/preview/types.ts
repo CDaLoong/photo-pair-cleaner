@@ -1,3 +1,5 @@
+import type { AutoSyncOutcome } from "../rating-sync/types";
+
 export type PreviewFilter = "all" | "paired" | "jpeg" | "raw";
 export type PreviewSort = "name" | "modified" | "size";
 export type PreviewView = "grid" | "loupe";
@@ -57,6 +59,7 @@ export interface PhotoDirectoryNode {
 export interface RatingUpdate {
   assetId: string;
   rating: number;
+  autoSync: AutoSyncOutcome;
 }
 
 export interface ExternalEditor {
