@@ -20,6 +20,8 @@ mod watermark_commands;
 #[allow(dead_code)]
 mod watermark_geometry;
 #[allow(dead_code)]
+mod watermark_metadata;
+#[allow(dead_code)]
 mod watermark_model;
 #[allow(dead_code)]
 mod watermark_render;
