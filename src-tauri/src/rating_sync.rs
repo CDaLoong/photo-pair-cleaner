@@ -778,6 +778,70 @@ fn execute_write(root: &Path, write: &PlannedRatingWrite) -> Result<(), String> 
     )
 }
 
+pub(crate) fn write_rating_to_validated_path(
+    path: &Path,
+    target: RatingSyncTarget,
+    target_rating: u8,
+) -> Result<(), String> {
+    if target_rating > 5 {
+        return Err("照片评分必须在 0 到 5 星之间".to_string());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法确定评分同步目标目录".to_string())?;
+    let parent_metadata = fs::symlink_metadata(parent)
+        .map_err(|error| format!("评分同步目标目录不可访问：{error}"))?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        return Err("评分同步目标目录不是可信文件夹".to_string());
+    }
+    let extension = path
+        .extension()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let extension_matches = match target {
+        RatingSyncTarget::RawXmp => extension == "xmp",
+        RatingSyncTarget::JpegMetadata => matches!(extension.as_str(), "jpg" | "jpeg"),
+    };
+    if !extension_matches {
+        return Err("评分同步目标扩展名与计划类型不一致".to_string());
+    }
+    let snapshot = match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err("评分同步目标不是可信普通文件".to_string());
+            }
+            TargetSnapshot::Existing {
+                size_bytes: metadata.len(),
+                modified_ms: modified_ms(&metadata),
+            }
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && target == RatingSyncTarget::RawXmp =>
+        {
+            TargetSnapshot::Absent
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("JPG 评分同步目标不存在".to_string());
+        }
+        Err(error) => return Err(format!("无法检查评分同步目标：{error}")),
+    };
+    let write = PlannedRatingWrite {
+        asset_id: "organizer".to_string(),
+        target,
+        relative_path: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        target_rating,
+        snapshot,
+    };
+    revalidate_snapshot(path, &write.snapshot)?;
+    let bytes = transformed_bytes(&write, path)?;
+    persist_transformed(path, &bytes, target, target_rating, &write.snapshot)
+}
+
 pub(crate) fn execute_plan(
     plan: &RatingSyncPlan,
     request: &RatingSyncExecuteRequest,

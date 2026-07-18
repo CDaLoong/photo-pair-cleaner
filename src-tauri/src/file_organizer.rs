@@ -1,11 +1,16 @@
 use crate::operation_history::{
     FileFingerprint, OperationGroupRecord, OperationManifest, OperationMemberRecord,
-    OrganizerAction, OrganizerGroupStatus, persist_manifest,
+    OrganizerAction, OrganizerGroupStatus, RecoveryKind, RecoveryMemberResult, RecoveryRecord,
+    append_recovery, load_operation, persist_manifest,
 };
-use crate::operation_plan::{AuthorizedOperationPlan, OperationPlanItem, PlannedMember};
+use crate::operation_plan::{
+    AuthorizedOperationPlan, OperationPlanItem, PlannedMember, PlannedSyncAction, SyncTiming,
+};
 use crate::rating_rules::{RatingRule, RuleAction, RuleMemberKind};
+use crate::rating_sync::{self, RatingSyncTarget};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -21,6 +26,16 @@ pub(crate) struct OrganizerExecutionSummary {
     pub(crate) partial: usize,
     pub(crate) skipped: usize,
     pub(crate) groups: Vec<OperationGroupRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OrganizerRecoverySummary {
+    pub(crate) operation_id: String,
+    pub(crate) succeeded: usize,
+    pub(crate) failed: usize,
+    pub(crate) partial: usize,
+    pub(crate) results: Vec<RecoveryRecord>,
 }
 
 struct ValidatedMember {
@@ -325,6 +340,48 @@ fn rollback_copies(records: &[OperationMemberRecord]) -> Vec<String> {
             }
         } else if target.exists() {
             failures.push(format!("{}：副本已变化，未自动移除", record.target_path));
+        }
+    }
+    failures
+}
+
+fn rollback_moves_without_history(
+    root: &Path,
+    rules: &[RatingRule],
+    records: &[OperationMemberRecord],
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for member in records.iter().rev() {
+        let source = match trusted_history_source(root, &member.source_path) {
+            Ok(source) => source,
+            Err(error) => {
+                failures.push(error);
+                continue;
+            }
+        };
+        let target = match trusted_history_target(rules, &member.target_path) {
+            Ok(target) => target,
+            Err(error) => {
+                failures.push(error);
+                continue;
+            }
+        };
+        let Some(snapshot) = &member.target_snapshot else {
+            continue;
+        };
+        if source.exists() {
+            if unchanged(&target, snapshot) {
+                if let Err(error) = fs::remove_file(&target) {
+                    failures.push(format!("{}：{error}", member.target_path));
+                }
+            } else if target.exists() {
+                failures.push(format!("{}：目标已变化", member.target_path));
+            }
+            continue;
+        }
+        let result = restore_member(root, rules, member);
+        if !result.success {
+            failures.push(format!("{}：{}", result.target_path, result.message));
         }
     }
     failures
@@ -730,6 +787,9 @@ fn execute_move_group(
     item: &OperationPlanItem,
     options: ExecutionOptions,
 ) -> OperationGroupRecord {
+    if let Err(error) = validate_sync_actions(item) {
+        return failed_group(item, OrganizerAction::Move, error);
+    }
     let rule = match matching_rule(plan, item) {
         Ok(rule) => rule,
         Err(error) => return failed_group(item, OrganizerAction::Move, error),
@@ -766,6 +826,99 @@ fn execute_move_group(
     }
 }
 
+fn validate_sync_actions(item: &OperationPlanItem) -> Result<(), String> {
+    if item
+        .sync_actions
+        .iter()
+        .any(|action| action.timing != SyncTiming::Destination)
+    {
+        return Err(
+            "评分整理执行仅支持写入复制或移动后的目标文件；请把另一格式加入处理范围".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn raw_sidecar_paths(
+    group: &OperationGroupRecord,
+    sync: &PlannedSyncAction,
+) -> Option<(PathBuf, PathBuf)> {
+    let target = PathBuf::from(&sync.target_path);
+    group
+        .members
+        .iter()
+        .filter(|member| member.kind == RuleMemberKind::Raw)
+        .find_map(|member| {
+            let mut expected_target = PathBuf::from(&member.target_path);
+            expected_target.set_extension("xmp");
+            (expected_target == target).then(|| {
+                let mut source = PathBuf::from(&member.source_path);
+                source.set_extension("xmp");
+                (source, target.clone())
+            })
+        })
+}
+
+fn apply_destination_sync(
+    plan: &AuthorizedOperationPlan,
+    item: &OperationPlanItem,
+    group: &mut OperationGroupRecord,
+) -> Result<(), String> {
+    if item.sync_actions.is_empty() {
+        return Ok(());
+    }
+    let rule = matching_rule(plan, item)?;
+    let destination = canonical_directory(
+        Path::new(
+            rule.destination
+                .as_deref()
+                .ok_or_else(|| "评分同步缺少目标目录".to_string())?,
+        ),
+        "评分整理目标目录",
+    )?;
+    for sync in &item.sync_actions {
+        if sync.timing != SyncTiming::Destination {
+            return Err("评分同步目标不是复制或移动后的文件".to_string());
+        }
+        let target = PathBuf::from(&sync.target_path);
+        if !target.is_absolute() || !target.starts_with(&destination) {
+            return Err("评分同步目标超出了规则目标目录".to_string());
+        }
+        if let Some(member) = group
+            .members
+            .iter_mut()
+            .find(|member| Path::new(&member.target_path) == target)
+        {
+            rating_sync::write_rating_to_validated_path(&target, sync.target, sync.target_rating)?;
+            member.target_snapshot = Some(fingerprint(&target)?);
+            member.message = format!("{}；评分已同步为 {} 星", member.message, sync.target_rating);
+            continue;
+        }
+        if sync.target != RatingSyncTarget::RawXmp {
+            return Err("JPG 评分同步目标不在已提交文件中".to_string());
+        }
+        let (source, target) = raw_sidecar_paths(group, sync)
+            .ok_or_else(|| "RAW XMP 同步目标无法对应已提交 RAW".to_string())?;
+        match fs::symlink_metadata(&target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("无法检查 RAW XMP 同步目标：{error}")),
+            Ok(_) => return Err("RAW XMP 同步目标已存在但不在执行清单中".to_string()),
+        }
+        rating_sync::write_rating_to_validated_path(&target, sync.target, sync.target_rating)?;
+        let snapshot = fingerprint(&target)?;
+        group.members.push(OperationMemberRecord {
+            kind: RuleMemberKind::Xmp,
+            source_path: display_path(&source),
+            target_path: display_path(&target),
+            expected_size_bytes: 0,
+            expected_modified_ms: None,
+            target_snapshot: Some(snapshot),
+            message: format!("已在目标位置创建 {} 星 RAW XMP", sync.target_rating),
+        });
+    }
+    Ok(())
+}
+
 fn failed_group(
     item: &OperationPlanItem,
     action: OrganizerAction,
@@ -798,6 +951,9 @@ fn execute_copy_group(
     plan: &AuthorizedOperationPlan,
     item: &OperationPlanItem,
 ) -> OperationGroupRecord {
+    if let Err(error) = validate_sync_actions(item) {
+        return failed_group(item, OrganizerAction::Copy, error);
+    }
     let rule = match matching_rule(plan, item) {
         Ok(rule) => rule,
         Err(error) => return failed_group(item, OrganizerAction::Copy, error),
@@ -927,7 +1083,7 @@ fn execute_authorized_plan_with_options(
     let root = canonical_directory(Path::new(&plan.summary.root), "评分整理照片目录")?;
     let mut groups = Vec::with_capacity(plan.items.len());
     for item in &plan.items {
-        groups.push(match item.terminal_action {
+        let mut group = match item.terminal_action {
             Some(RuleAction::Copy) => execute_copy_group(&root, &plan, item),
             Some(RuleAction::Move) => execute_move_group(&root, &plan, item, options),
             _ => failed_group(
@@ -935,7 +1091,16 @@ fn execute_authorized_plan_with_options(
                 OrganizerAction::Copy,
                 "当前仅允许执行复制或移动".to_string(),
             ),
-        });
+        };
+        if matches!(
+            group.status,
+            OrganizerGroupStatus::Success | OrganizerGroupStatus::Partial
+        ) && let Err(error) = apply_destination_sync(&plan, item, &mut group)
+        {
+            group.status = OrganizerGroupStatus::Partial;
+            group.message = format!("{}；评分同步未完成：{error}", group.message);
+        }
+        groups.push(group);
     }
     let manifest = OperationManifest::new(
         operation_id.clone(),
@@ -950,16 +1115,23 @@ fn execute_authorized_plan_with_options(
         let rollback_failures = groups
             .iter()
             .filter(|group| {
-                group.action == OrganizerAction::Copy
-                    && group.status == OrganizerGroupStatus::Success
+                matches!(
+                    group.status,
+                    OrganizerGroupStatus::Success | OrganizerGroupStatus::Partial
+                )
             })
-            .flat_map(|group| rollback_copies(&group.members))
+            .flat_map(|group| match group.action {
+                OrganizerAction::Copy => rollback_copies(&group.members),
+                OrganizerAction::Move => {
+                    rollback_moves_without_history(&root, &manifest.rules, &group.members)
+                }
+            })
             .collect::<Vec<_>>();
         return Err(if rollback_failures.is_empty() {
             error
         } else {
             format!(
-                "{error}；已复制文件回滚失败：{}",
+                "{error}；文件操作回滚失败：{}",
                 rollback_failures.join("；")
             )
         });
@@ -987,15 +1159,302 @@ fn execute_authorized_plan_with_options(
     })
 }
 
+fn validate_recovery_selection(group_ids: &[String]) -> Result<HashSet<&str>, String> {
+    if group_ids.is_empty() {
+        return Err("请至少选择一个可恢复照片组".to_string());
+    }
+    let mut selected = HashSet::with_capacity(group_ids.len());
+    if group_ids
+        .iter()
+        .any(|group_id| group_id.trim().is_empty() || !selected.insert(group_id.as_str()))
+    {
+        return Err("恢复照片组不能为空或重复".to_string());
+    }
+    Ok(selected)
+}
+
+fn recovery_status(results: &[RecoveryMemberResult]) -> OrganizerGroupStatus {
+    let succeeded = results.iter().filter(|result| result.success).count();
+    if succeeded == results.len() && !results.is_empty() {
+        OrganizerGroupStatus::Success
+    } else if succeeded == 0 {
+        OrganizerGroupStatus::Failed
+    } else {
+        OrganizerGroupStatus::Partial
+    }
+}
+
+fn trusted_history_source(root: &Path, raw: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() || !path.starts_with(root) || path == root {
+        return Err("历史记录中的原始路径超出了照片目录".to_string());
+    }
+    Ok(path)
+}
+
+fn trusted_history_target(rules: &[RatingRule], raw: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err("历史记录中的目标路径不是绝对路径".to_string());
+    }
+    let trusted = rules.iter().any(|rule| {
+        rule.destination
+            .as_deref()
+            .map(Path::new)
+            .is_some_and(|destination| path.starts_with(destination) && path != destination)
+    });
+    if !trusted {
+        return Err("历史记录中的目标路径超出了规则目录".to_string());
+    }
+    Ok(path)
+}
+
+fn ensure_recovery_parent(root: &Path, destination: &Path) -> Result<(), String> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "无法确定恢复目标目录".to_string())?;
+    let relative = parent
+        .strip_prefix(root)
+        .map_err(|_| "恢复目标目录超出了照片目录".to_string())?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err("恢复目标父目录不是可信文件夹".to_string());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(&current)
+                .map_err(|error| format!("无法创建恢复目标目录：{error}"))?,
+            Err(error) => return Err(format!("无法检查恢复目标目录：{error}")),
+        }
+    }
+    Ok(())
+}
+
+fn copy_verified_noclobber(
+    source: &Path,
+    destination: &Path,
+    expected: &FileFingerprint,
+) -> Result<(), String> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "无法确定恢复目标目录".to_string())?;
+    let mut input = File::open(source).map_err(|error| format!("无法打开恢复源文件：{error}"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("无法创建恢复临时文件：{error}"))?;
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .map_err(|error| format!("无法读取恢复源文件：{error}"))?;
+        if read == 0 {
+            break;
+        }
+        temporary
+            .write_all(&buffer[..read])
+            .map_err(|error| format!("无法写入恢复临时文件：{error}"))?;
+        hasher.update(&buffer[..read]);
+        size = size.saturating_add(read as u64);
+    }
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .map_err(|error| format!("无法同步恢复临时文件：{error}"))?;
+    let digest = format!("{:x}", hasher.finalize());
+    if size != expected.size_bytes || digest != expected.sha256 {
+        return Err("恢复源文件内容与历史记录不一致".to_string());
+    }
+    temporary
+        .persist_noclobber(destination)
+        .map_err(|error| format!("恢复目标在写入前发生变化：{}", error.error))?;
+    if fingerprint(destination)?.sha256 != expected.sha256 {
+        let _ = fs::remove_file(destination);
+        return Err("恢复目标内容复验失败".to_string());
+    }
+    Ok(())
+}
+
+fn restore_member(
+    root: &Path,
+    rules: &[RatingRule],
+    member: &OperationMemberRecord,
+) -> RecoveryMemberResult {
+    let source_result = trusted_history_source(root, &member.source_path);
+    let target_result = trusted_history_target(rules, &member.target_path);
+    let result = source_result.and_then(|source| {
+        let target = target_result?;
+        let snapshot = member
+            .target_snapshot
+            .as_ref()
+            .ok_or_else(|| "历史记录缺少目标摘要".to_string())?;
+        if source.exists() {
+            return Err("原位置已有文件，不会覆盖".to_string());
+        }
+        if !unchanged(&target, snapshot) {
+            return Err("移动目标已变化或不存在，不会自动恢复".to_string());
+        }
+        ensure_recovery_parent(root, &source)?;
+        match fs::rename(&target, &source) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                copy_verified_noclobber(&target, &source, snapshot)?;
+                fs::remove_file(&target)
+                    .map_err(|error| format!("已恢复原文件，但无法移除移动目标：{error}"))
+            }
+            Err(error) => Err(format!("恢复移动文件失败：{error}")),
+        }
+    });
+    RecoveryMemberResult {
+        source_path: member.source_path.clone(),
+        target_path: member.target_path.clone(),
+        success: result.is_ok(),
+        message: result.err().unwrap_or_else(|| "已恢复到原位置".to_string()),
+    }
+}
+
+fn undo_copy_member(rules: &[RatingRule], member: &OperationMemberRecord) -> RecoveryMemberResult {
+    let result = trusted_history_target(rules, &member.target_path).and_then(|target| {
+        let snapshot = member
+            .target_snapshot
+            .as_ref()
+            .ok_or_else(|| "历史记录缺少副本摘要".to_string())?;
+        if !unchanged(&target, snapshot) {
+            return Err("复制目标已变化或不存在，不会自动撤销".to_string());
+        }
+        fs::remove_file(&target).map_err(|error| format!("撤销复制失败：{error}"))
+    });
+    RecoveryMemberResult {
+        source_path: member.source_path.clone(),
+        target_path: member.target_path.clone(),
+        success: result.is_ok(),
+        message: result.err().unwrap_or_else(|| "已撤销复制".to_string()),
+    }
+}
+
+fn recover_operation(
+    app_data_dir: &Path,
+    operation_id: &str,
+    group_ids: &[String],
+    created_at_ms: u64,
+    kind: RecoveryKind,
+) -> Result<OrganizerRecoverySummary, String> {
+    let selected = validate_recovery_selection(group_ids)?;
+    let history = load_operation(app_data_dir, operation_id)?;
+    let root = canonical_directory(Path::new(&history.manifest.root), "评分整理照片目录")?;
+    let completed = history
+        .recoveries
+        .iter()
+        .filter(|record| record.status == OrganizerGroupStatus::Success)
+        .map(|record| record.group_id.as_str())
+        .collect::<HashSet<_>>();
+    let mut results = Vec::with_capacity(selected.len());
+    for group_id in group_ids {
+        let group = history
+            .manifest
+            .groups
+            .iter()
+            .find(|group| group.group_id == *group_id)
+            .ok_or_else(|| format!("操作历史中不存在照片组：{group_id}"))?;
+        let expected_action = match kind {
+            RecoveryKind::RestoreMove => OrganizerAction::Move,
+            RecoveryKind::UndoCopy => OrganizerAction::Copy,
+        };
+        if group.action != expected_action {
+            return Err(format!("照片组“{}”的原操作类型不匹配", group.relative_stem));
+        }
+        if !matches!(
+            group.status,
+            OrganizerGroupStatus::Success | OrganizerGroupStatus::Partial
+        ) {
+            return Err(format!("照片组“{}”没有可恢复文件", group.relative_stem));
+        }
+        if completed.contains(group_id.as_str()) {
+            return Err(format!("照片组“{}”已经恢复或撤销", group.relative_stem));
+        }
+        let members = group
+            .members
+            .iter()
+            .filter(|member| member.target_snapshot.is_some())
+            .map(|member| match kind {
+                RecoveryKind::RestoreMove => restore_member(&root, &history.manifest.rules, member),
+                RecoveryKind::UndoCopy => undo_copy_member(&history.manifest.rules, member),
+            })
+            .collect::<Vec<_>>();
+        let status = recovery_status(&members);
+        let succeeded = members.iter().filter(|member| member.success).count();
+        let record = RecoveryRecord {
+            operation_id: operation_id.to_string(),
+            group_id: group_id.clone(),
+            kind,
+            created_at_ms,
+            status,
+            message: format!("{} / {} 个文件处理完成", succeeded, members.len()),
+            members,
+        };
+        append_recovery(app_data_dir, &record)?;
+        results.push(record);
+    }
+    Ok(OrganizerRecoverySummary {
+        operation_id: operation_id.to_string(),
+        succeeded: results
+            .iter()
+            .filter(|record| record.status == OrganizerGroupStatus::Success)
+            .count(),
+        failed: results
+            .iter()
+            .filter(|record| record.status == OrganizerGroupStatus::Failed)
+            .count(),
+        partial: results
+            .iter()
+            .filter(|record| record.status == OrganizerGroupStatus::Partial)
+            .count(),
+        results,
+    })
+}
+
+pub(crate) fn restore_move_operation(
+    app_data_dir: &Path,
+    operation_id: &str,
+    group_ids: &[String],
+    created_at_ms: u64,
+) -> Result<OrganizerRecoverySummary, String> {
+    recover_operation(
+        app_data_dir,
+        operation_id,
+        group_ids,
+        created_at_ms,
+        RecoveryKind::RestoreMove,
+    )
+}
+
+pub(crate) fn undo_copy_operation(
+    app_data_dir: &Path,
+    operation_id: &str,
+    group_ids: &[String],
+    created_at_ms: u64,
+) -> Result<OrganizerRecoverySummary, String> {
+    recover_operation(
+        app_data_dir,
+        operation_id,
+        group_ids,
+        created_at_ms,
+        RecoveryKind::UndoCopy,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::operation_history::OrganizerGroupStatus;
     use crate::operation_plan::{
         AuthorizedOperationPlan, OperationPlanItem, OperationPlanStatus, OperationPlanSummary,
-        OperationSyncPreference, PlannedMember,
+        OperationSyncPreference, PlannedMember, PlannedSyncAction, SyncTiming,
     };
     use crate::rating_rules::{RatingCondition, RatingRule, RuleAction, RuleMemberKind};
+    use crate::rating_sync::{RatingSyncTarget, RatingSyncTargets};
     use std::fs;
     use std::path::Path;
     use std::time::UNIX_EPOCH;
@@ -1360,6 +1819,156 @@ mod tests {
         assert!(!root.join("one.jpg").exists());
         assert!(root.join("two.jpg").exists());
         assert!(destination.join("one.jpg").exists());
+        assert!(destination.join("two.jpg").exists());
+    }
+
+    #[test]
+    fn destination_rating_sync_runs_after_copy_commit() {
+        let source = tempdir().expect("source");
+        let target = tempdir().expect("target");
+        let app_data = tempdir().expect("app data");
+        fs::write(source.path().join("photo.nef"), b"raw bytes").expect("raw source");
+        let root = fs::canonicalize(source.path()).expect("source root");
+        let destination = fs::canonicalize(target.path()).expect("target root");
+        let mut item = copy_item(&root, &destination, "raw", "photo.nef");
+        item.members[0].kind = RuleMemberKind::Raw;
+        item.rating = Some(4);
+        item.sync_actions = vec![PlannedSyncAction {
+            target: RatingSyncTarget::RawXmp,
+            target_path: destination.join("photo.xmp").to_string_lossy().into_owned(),
+            target_rating: 4,
+            timing: SyncTiming::Destination,
+        }];
+        let mut plan = plan(&root, &destination, vec![item]);
+        plan.sync = OperationSyncPreference {
+            enabled: true,
+            targets: RatingSyncTargets {
+                raw_xmp: true,
+                jpeg_metadata: false,
+            },
+            jpeg_write_confirmed: false,
+            sync_cleanup_before: false,
+        };
+
+        let summary =
+            execute_authorized_plan(app_data.path(), "operation-1".to_string(), 100, plan)
+                .expect("copy and sync");
+
+        assert_eq!(summary.succeeded, 1);
+        assert_eq!(
+            crate::rating_metadata::read_sidecar_rating(&destination.join("photo.xmp")).unwrap(),
+            Some(4)
+        );
+        let history =
+            crate::operation_history::load_operation(app_data.path(), "operation-1").unwrap();
+        assert_eq!(history.manifest.groups[0].members.len(), 2);
+    }
+
+    #[test]
+    fn copy_recovery_undoes_only_unchanged_created_files() {
+        let source = tempdir().expect("source");
+        let target = tempdir().expect("target");
+        let app_data = tempdir().expect("app data");
+        fs::write(source.path().join("photo.jpg"), b"copy").expect("source file");
+        let root = fs::canonicalize(source.path()).expect("source root");
+        let destination = fs::canonicalize(target.path()).expect("target root");
+        let item = copy_item(&root, &destination, "copy", "photo.jpg");
+        execute_authorized_plan(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            plan(&root, &destination, vec![item]),
+        )
+        .expect("copy");
+
+        let undone =
+            undo_copy_operation(app_data.path(), "operation-1", &["copy".to_string()], 200)
+                .expect("undo copy");
+
+        assert_eq!(undone.succeeded, 1);
+        assert!(!destination.join("photo.jpg").exists());
+        assert!(root.join("photo.jpg").exists());
+
+        let second_source = tempdir().expect("second source");
+        let second_target = tempdir().expect("second target");
+        fs::write(second_source.path().join("photo.jpg"), b"copy").expect("source file");
+        let second_root = fs::canonicalize(second_source.path()).unwrap();
+        let second_destination = fs::canonicalize(second_target.path()).unwrap();
+        let second_item = copy_item(&second_root, &second_destination, "copy", "photo.jpg");
+        execute_authorized_plan(
+            app_data.path(),
+            "operation-2".to_string(),
+            300,
+            plan(&second_root, &second_destination, vec![second_item]),
+        )
+        .expect("second copy");
+        fs::write(second_destination.join("photo.jpg"), b"user changed copy").expect("change copy");
+        let rejected =
+            undo_copy_operation(app_data.path(), "operation-2", &["copy".to_string()], 400)
+                .expect("rejected undo result");
+        assert_eq!(rejected.failed, 1);
+        assert!(second_destination.join("photo.jpg").exists());
+    }
+
+    #[test]
+    fn move_recovery_restores_missing_originals_without_overwrite() {
+        let source = tempdir().expect("source");
+        let target = tempdir().expect("target");
+        let app_data = tempdir().expect("app data");
+        fs::write(source.path().join("photo.jpg"), b"move").expect("source file");
+        let root = fs::canonicalize(source.path()).expect("source root");
+        let destination = fs::canonicalize(target.path()).expect("target root");
+        let item = move_item(&root, &destination, "move", "photo.jpg");
+        execute_authorized_plan(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            move_plan(&root, &destination, vec![item]),
+        )
+        .expect("move");
+
+        let restored =
+            restore_move_operation(app_data.path(), "operation-1", &["move".to_string()], 200)
+                .expect("restore move");
+
+        assert_eq!(restored.succeeded, 1);
+        assert_eq!(fs::read(root.join("photo.jpg")).unwrap(), b"move");
+        assert!(!destination.join("photo.jpg").exists());
+    }
+
+    #[test]
+    fn partial_move_recovery_restores_only_unoccupied_originals() {
+        let source = tempdir().expect("source");
+        let target = tempdir().expect("target");
+        let app_data = tempdir().expect("app data");
+        fs::write(source.path().join("one.jpg"), b"one").expect("first source");
+        fs::write(source.path().join("two.jpg"), b"two").expect("second source");
+        let root = fs::canonicalize(source.path()).expect("source root");
+        let destination = fs::canonicalize(target.path()).expect("target root");
+        let mut item = move_item(&root, &destination, "pair", "one.jpg");
+        item.members
+            .extend(move_item(&root, &destination, "pair", "two.jpg").members);
+        execute_authorized_plan_with_options(
+            app_data.path(),
+            "operation-1".to_string(),
+            100,
+            move_plan(&root, &destination, vec![item]),
+            ExecutionOptions {
+                force_copy_delete: true,
+                fail_delete_at: Some(1),
+                ..ExecutionOptions::default()
+            },
+        )
+        .expect("partial move");
+
+        let restored =
+            restore_move_operation(app_data.path(), "operation-1", &["pair".to_string()], 200)
+                .expect("partial restore");
+
+        assert_eq!(restored.partial, 1);
+        assert!(root.join("one.jpg").exists());
+        assert!(root.join("two.jpg").exists());
+        assert!(!destination.join("one.jpg").exists());
         assert!(destination.join("two.jpg").exists());
     }
 }

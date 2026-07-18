@@ -472,7 +472,11 @@ fn build_sync_actions(
                 Some("xmp"),
                 preference.sync_cleanup_before,
             ) {
-                if timing == SyncTiming::Destination {
+                if timing == SyncTiming::Source
+                    && matches!(rule.action, RuleAction::Copy | RuleAction::Move)
+                {
+                    issues.push("RAW XMP 评分同步要求把 RAW 或 XMP 加入本次处理范围".to_string());
+                } else if timing == SyncTiming::Destination {
                     let destination = Path::new(rule.destination.as_deref().unwrap_or_default());
                     if let Some(issue) = target_path_issue(destination, &target) {
                         issues.push(issue);
@@ -502,7 +506,11 @@ fn build_sync_actions(
             None,
             preference.sync_cleanup_before,
         ) {
-            if timing == SyncTiming::Destination {
+            if timing == SyncTiming::Source
+                && matches!(rule.action, RuleAction::Copy | RuleAction::Move)
+            {
+                issues.push("JPG 评分同步要求把 JPG 加入本次处理范围".to_string());
+            } else if timing == SyncTiming::Destination {
                 let destination = Path::new(rule.destination.as_deref().unwrap_or_default());
                 if target_path_issue(destination, &target).is_some()
                     && !members
