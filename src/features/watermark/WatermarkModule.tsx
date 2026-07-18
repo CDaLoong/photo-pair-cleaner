@@ -14,6 +14,7 @@ import { WatermarkCanvas } from "./WatermarkCanvas";
 import { WatermarkExportDialog } from "./WatermarkExportDialog";
 import { WatermarkFilmstrip } from "./WatermarkFilmstrip";
 import { WatermarkHeader } from "./WatermarkHeader";
+import { WatermarkGuideDialog } from "./WatermarkGuideDialog";
 import { WatermarkInspector } from "./WatermarkInspector";
 import {
   createWatermarkEditorState,
@@ -59,9 +60,10 @@ import "./watermark.css";
 
 const WATERMARK_PREVIEW_EDGE = 1400;
 const SOURCE_THUMBNAIL_EDGE = 220;
-const SOURCE_PRELOAD_CONCURRENCY = 4;
+const SOURCE_PRELOAD_CONCURRENCY = 3;
 const LEFT_PANEL_STORAGE_KEY = "framepair.watermark.left-panel-collapsed.v1";
 const RIGHT_PANEL_STORAGE_KEY = "framepair.watermark.right-panel-collapsed.v1";
+const WATERMARK_GUIDE_STORAGE_KEY = "framepair.watermark.guide.v1";
 const EMPTY_PRELOAD_PROGRESS: PreloadProgress = { total: 0, completed: 0, failed: 0 };
 
 function storedPanelPreference(key: string): boolean {
@@ -128,6 +130,7 @@ export function WatermarkModule({
   const [outputSettings, setOutputSettings] = useState<WatermarkOutputSettings>(DEFAULT_WATERMARK_OUTPUT);
   const [exportProgress, setExportProgress] = useState(createWatermarkExportProgress);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const busyRef = useRef(false);
   const processedTransferId = useRef<string | null>(null);
   const previousPreviewPhotoId = useRef<string | null>(null);
@@ -139,6 +142,7 @@ export function WatermarkModule({
   const exportTaskIdRef = useRef<string | null>(null);
   const exportChannelRef = useRef<Channel<WatermarkExportEvent> | null>(null);
   const cancelAfterExportStartRef = useRef(false);
+  const attemptedGuideRef = useRef(false);
   if (!previewCacheRef.current) {
     previewCacheRef.current = new WatermarkPreviewCache((url) => URL.revokeObjectURL(url));
   }
@@ -197,7 +201,24 @@ export function WatermarkModule({
       });
       setSnapshot(result);
       setSelectedPhotoId(result.photos[0]?.id ?? null);
-      if (result.photos.length > 0) dispatchEditor({ type: "markSourceChanged" });
+      if (result.photos.length > 0) {
+        dispatchEditor({ type: "markSourceChanged" });
+        if (!attemptedGuideRef.current) {
+          attemptedGuideRef.current = true;
+          let shouldOpenGuide = true;
+          try {
+            shouldOpenGuide = localStorage.getItem(WATERMARK_GUIDE_STORAGE_KEY) !== "true";
+          } catch {
+            // The first-use guide still opens when preferences are unavailable.
+          }
+          if (shouldOpenGuide) {
+            setLeftCollapsed(false);
+            setRightCollapsed(false);
+            onImmersiveChange(false);
+            setGuideOpen(true);
+          }
+        }
+      }
     } catch (prepareError) {
       setError(errorMessage(prepareError));
     } finally {
@@ -326,6 +347,7 @@ export function WatermarkModule({
       setExportOpen(false);
     }
     setExportError(null);
+    setGuideOpen(false);
     setOutputSettings(DEFAULT_WATERMARK_OUTPUT);
     onImmersiveChange(false);
     dispatchEditor({ type: "resetEditor", template: initialTemplate });
@@ -842,6 +864,24 @@ export function WatermarkModule({
     setExportError(null);
   }
 
+  function openWatermarkGuide() {
+    if (!snapshot?.photos.length || exportProgress.phase === "running") return;
+    setExportOpen(false);
+    setLeftCollapsed(false);
+    setRightCollapsed(false);
+    onImmersiveChange(false);
+    setGuideOpen(true);
+  }
+
+  function dismissWatermarkGuide() {
+    try {
+      localStorage.setItem(WATERMARK_GUIDE_STORAGE_KEY, "true");
+    } catch {
+      // The guide remains available from the header when storage is unavailable.
+    }
+    setGuideOpen(false);
+  }
+
   const previewWarnings = useMemo(() => new Set(
     selectedPhotoId && (previewError || preview?.warnings.length) ? [selectedPhotoId] : [],
   ), [preview?.warnings.length, previewError, selectedPhotoId]);
@@ -881,6 +921,7 @@ export function WatermarkModule({
           setExportError(null);
           setExportOpen(true);
         }}
+        onGuide={openWatermarkGuide}
       />
       {busy ? <div className="activity-line" aria-hidden="true"><span /></div> : null}
       {snapshot && snapshot.photos.length > 0 ? (
@@ -889,7 +930,7 @@ export function WatermarkModule({
             <aside className="watermark-left-panel" data-watermark-tour="sources-templates" aria-label="照片与模板">
               <div className="watermark-left-tabs" role="tablist" aria-label="照片和模板">
                 <button type="button" role="tab" aria-selected={leftTab === "photos"} onClick={() => setLeftTab("photos")}><Images aria-hidden="true" size={15} />照片</button>
-                <button type="button" role="tab" aria-selected={leftTab === "templates"} onClick={() => setLeftTab("templates")}><LayoutTemplate aria-hidden="true" size={15} />模板</button>
+                <button type="button" role="tab" data-watermark-tour="templates" aria-selected={leftTab === "templates"} onClick={() => setLeftTab("templates")}><LayoutTemplate aria-hidden="true" size={15} />模板</button>
               </div>
               {leftTab === "photos" ? (
                 <WatermarkSourcePanel
@@ -1008,6 +1049,7 @@ export function WatermarkModule({
           onClose={() => void closeExportDialog()}
         />
       ) : null}
+      <WatermarkGuideDialog open={active && guideOpen} onDismiss={dismissWatermarkGuide} />
     </section>
   );
 }

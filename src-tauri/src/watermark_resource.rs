@@ -9,8 +9,8 @@ const MAX_RESOURCE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) fn import_image_resource(
     path: &Path,
 ) -> Result<crate::watermark_model::EmbeddedTemplateResource, String> {
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("无法读取图片水印：{error}"))?;
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|error| format!("无法读取图片水印：{error}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err("图片水印必须是本地普通文件，不能使用符号链接".into());
     }

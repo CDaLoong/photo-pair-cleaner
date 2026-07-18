@@ -218,3 +218,40 @@ test("watermark export dialog confirms settings streams progress and retries fai
   assert.match(headerSource, /data-watermark-tour="export"/);
   assert.match(headerSource, /导出副本/);
 });
+
+test("watermark guide covers the complete workflow and documentation is release ready", () => {
+  const guideSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkGuideDialog.tsx", import.meta.url),
+    "utf8",
+  );
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  const sharedGuide = fs.readFileSync(
+    new URL("../src/components/GuidedTourDialog.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const selector of ["sources-templates", "templates", "canvas", "filmstrip", "export"]) {
+    assert.match(guideSource, new RegExp(selector));
+  }
+  assert.match(moduleSource, /framepair\.watermark\.guide\.v1/);
+  assert.match(moduleSource, /<WatermarkGuideDialog/);
+  assert.match(moduleSource, /setGuideOpen\(true\)/);
+  assert.match(sharedGuide, /watermark-studio/);
+  assert.match(moduleSource, /SOURCE_PRELOAD_CONCURRENCY = 3/);
+
+  const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  for (const phrase of ["水印导出快速上手", "仅支持 JPG/JPEG", "JPEG/PNG", "元数据", "同名", "模板 JSON", "绝不修改原照片"]) {
+    assert.match(readme, new RegExp(phrase));
+  }
+});
+
+test("watermark release versions stay aligned at 0.8.0", () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const tauri = JSON.parse(fs.readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+  const cargo = fs.readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
+  assert.equal(pkg.version, "0.8.0");
+  assert.equal(tauri.version, "0.8.0");
+  assert.match(cargo, /^version = "0\.8\.0"$/m);
+});
