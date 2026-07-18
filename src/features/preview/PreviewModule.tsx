@@ -61,6 +61,7 @@ import {
   previewAssetPosition,
   shouldOpenPreviewGuide,
   sortPreviewAssets,
+  withFramePairRating,
 } from "./previewUtils";
 import type {
   ExternalEditor,
@@ -142,10 +143,9 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const deferredSearch = useDeferredValue(search);
 
   const ratedAssets = useMemo(
-    () => (index?.assets ?? []).map((asset) => ({
-      ...asset,
-      rating: ratings[asset.id] ?? asset.rating,
-    })),
+    () => (index?.assets ?? []).map((asset) => (
+      withFramePairRating(asset, ratings[asset.id] ?? asset.rating)
+    )),
     [index, ratings],
   );
   const directoryTree = useMemo(

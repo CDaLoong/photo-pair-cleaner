@@ -1,7 +1,7 @@
 use crate::formats;
 use crate::rating_metadata;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -153,6 +153,20 @@ where
     ratings.first().copied()
 }
 
+fn calculate_rating_conflict(state: &RatingState) -> bool {
+    let mut ratings = [state.jpeg_metadata, state.raw_xmp]
+        .into_iter()
+        .flatten()
+        .filter(|rating| (1..=5).contains(rating))
+        .collect::<Vec<_>>();
+    if state.frame_pair > 0 {
+        ratings.push(state.frame_pair as i8);
+    }
+    ratings
+        .first()
+        .is_some_and(|first| ratings.iter().any(|rating| rating != first))
+}
+
 fn populate_external_ratings(root: &Path, builder: &mut PhotoAssetBuilder) {
     builder.jpeg_paths.sort_by_key(|path| path.to_lowercase());
     builder.xmp_paths.sort_by_key(|path| path.to_lowercase());
@@ -177,17 +191,8 @@ fn populate_external_ratings(root: &Path, builder: &mut PhotoAssetBuilder) {
         &mut builder.rating_issues,
     );
 
-    let sources = [
-        builder.rating_state.jpeg_metadata,
-        builder.rating_state.raw_xmp,
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    builder.rating_state.conflict = !builder.rating_issues.is_empty()
-        || sources
-            .first()
-            .is_some_and(|first| sources.iter().any(|rating| rating != first));
+    builder.rating_state.conflict =
+        !builder.rating_issues.is_empty() || calculate_rating_conflict(&builder.rating_state);
 }
 
 fn finalize_asset(key: String, mut builder: PhotoAssetBuilder) -> PhotoAsset {
@@ -336,4 +341,15 @@ pub(crate) fn index_directory(root: &Path) -> Result<PhotoIndex, String> {
         raw_only_assets,
         assets,
     })
+}
+
+pub(crate) fn apply_framepair_ratings(index: &mut PhotoIndex, ratings: &HashMap<String, u8>) {
+    for asset in &mut index.assets {
+        let rating = ratings.get(&asset.id).copied().unwrap_or_default();
+        asset.rating = rating;
+        asset.rating_state.frame_pair = rating;
+        asset.rating_state.resolved = rating;
+        asset.rating_state.conflict =
+            !asset.rating_issues.is_empty() || calculate_rating_conflict(&asset.rating_state);
+    }
 }

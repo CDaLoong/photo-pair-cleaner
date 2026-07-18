@@ -1,9 +1,14 @@
 #[allow(dead_code)]
 #[path = "../src/formats.rs"]
 mod formats;
+#[path = "../src/photo_groups.rs"]
+mod photo_groups;
+#[path = "../src/rating_metadata.rs"]
+mod rating_metadata;
 #[path = "../src/ratings.rs"]
 mod ratings;
 
+use std::collections::HashMap;
 use std::fs;
 
 #[test]
@@ -71,4 +76,39 @@ fn ratings_are_isolated_between_photo_roots() {
             .expect("second ratings")
             .is_empty()
     );
+}
+
+#[test]
+fn framepair_overlay_updates_legacy_and_structured_rating_fields() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    fs::create_dir_all(root.join("day")).expect("photo directory");
+    fs::write(root.join("day/A.NEF"), b"raw").expect("first raw");
+    fs::write(root.join("day/A.xmp"), br#"<xmp:Rating>5</xmp:Rating>"#).expect("first xmp");
+    fs::write(root.join("day/B.NEF"), b"raw").expect("second raw");
+    fs::write(root.join("day/B.xmp"), br#"<xmp:Rating>4</xmp:Rating>"#).expect("second xmp");
+
+    let mut index = photo_groups::index_directory(&root).expect("photo index");
+    let ratings = HashMap::from([("day/a".to_string(), 4), ("day/b".to_string(), 4)]);
+    photo_groups::apply_framepair_ratings(&mut index, &ratings);
+
+    let first = index
+        .assets
+        .iter()
+        .find(|asset| asset.id == "day/a")
+        .expect("first group");
+    assert_eq!(first.rating, 4);
+    assert_eq!(first.rating_state.frame_pair, 4);
+    assert_eq!(first.rating_state.resolved, 4);
+    assert!(first.rating_state.conflict);
+
+    let second = index
+        .assets
+        .iter()
+        .find(|asset| asset.id == "day/b")
+        .expect("second group");
+    assert_eq!(second.rating, 4);
+    assert_eq!(second.rating_state.frame_pair, 4);
+    assert_eq!(second.rating_state.resolved, 4);
+    assert!(!second.rating_state.conflict);
 }

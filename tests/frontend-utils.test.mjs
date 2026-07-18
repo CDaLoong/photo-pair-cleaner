@@ -152,10 +152,20 @@ const previewAssets = [
     previewPath: null,
     jpegPaths: [],
     rawPaths: ["day/B.NEF"],
+    xmpPaths: [],
+    members: [],
     extensions: ["NEF"],
     sizeBytes: 20,
     modifiedMs: 20,
     rating: 0,
+    ratingState: {
+      framePair: 0,
+      jpegMetadata: null,
+      rawXmp: null,
+      resolved: 0,
+      conflict: false,
+    },
+    ratingIssues: [],
   },
   {
     id: "day/a",
@@ -164,10 +174,20 @@ const previewAssets = [
     previewPath: "day/A.JPG",
     jpegPaths: ["day/A.JPG"],
     rawPaths: ["day/A.CR3"],
+    xmpPaths: ["day/A.xmp"],
+    members: [],
     extensions: ["JPG", "CR3"],
     sizeBytes: 10,
     modifiedMs: 10,
     rating: 4,
+    ratingState: {
+      framePair: 4,
+      jpegMetadata: 4,
+      rawXmp: null,
+      resolved: 4,
+      conflict: false,
+    },
+    ratingIssues: [],
   },
   {
     id: "other/c",
@@ -176,10 +196,20 @@ const previewAssets = [
     previewPath: "other/C.jpeg",
     jpegPaths: ["other/C.jpeg"],
     rawPaths: [],
+    xmpPaths: [],
+    members: [],
     extensions: ["JPEG"],
     sizeBytes: 30,
     modifiedMs: 30,
     rating: 2,
+    ratingState: {
+      framePair: 2,
+      jpegMetadata: null,
+      rawXmp: null,
+      resolved: 2,
+      conflict: false,
+    },
+    ratingIssues: [],
   },
 ];
 
@@ -313,6 +343,16 @@ test("preview rating filter combines with type and search filters", () => {
     previewUtils.filterPreviewAssets(previewAssets, "all", "", 5).map((item) => item.id),
     [],
   );
+});
+
+test("optimistic ratings update scalar and structured FramePair state", () => {
+  const updated = previewUtils.withFramePairRating(previewAssets[1], 5);
+  assert.equal(updated.rating, 5);
+  assert.equal(updated.ratingState.framePair, 5);
+  assert.equal(updated.ratingState.resolved, 5);
+  assert.equal(updated.ratingState.jpegMetadata, 4);
+  assert.equal(updated.ratingState.rawXmp, null);
+  assert.equal(updated.ratingState.conflict, true);
 });
 
 test("preview sorting and keyboard selection are stable", () => {

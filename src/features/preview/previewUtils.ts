@@ -15,6 +15,28 @@ function matchesFilter(asset: PhotoAsset, filter: PreviewFilter): boolean {
   return true;
 }
 
+export function withFramePairRating(asset: PhotoAsset, rating: number): PhotoAsset {
+  const sourceRatings = [
+    rating > 0 ? rating : null,
+    asset.ratingState.jpegMetadata,
+    asset.ratingState.rawXmp,
+  ].filter((value): value is number => value !== null && value > 0);
+  const firstRating = sourceRatings[0];
+  const sourceConflict = firstRating !== undefined
+    && sourceRatings.some((value) => value !== firstRating);
+
+  return {
+    ...asset,
+    rating,
+    ratingState: {
+      ...asset.ratingState,
+      framePair: rating,
+      resolved: rating,
+      conflict: asset.ratingIssues.length > 0 || sourceConflict,
+    },
+  };
+}
+
 export function buildPhotoDirectoryTree(assets: PhotoAsset[]): PhotoDirectoryNode[] {
   const roots: PhotoDirectoryNode[] = [];
   const nodes = new Map<string, PhotoDirectoryNode>();
