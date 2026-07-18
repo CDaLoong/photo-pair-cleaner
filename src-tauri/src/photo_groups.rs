@@ -1,4 +1,5 @@
 use crate::formats;
+use crate::rating_metadata;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;
@@ -75,6 +76,7 @@ struct PhotoAssetBuilder {
     members: Vec<PhotoMemberSnapshot>,
     size_bytes: u64,
     modified_ms: Option<u64>,
+    rating_state: RatingState,
     rating_issues: Vec<String>,
 }
 
@@ -122,6 +124,72 @@ fn member_snapshot(
     })
 }
 
+fn collect_external_rating<F>(
+    root: &Path,
+    paths: &[String],
+    source: &str,
+    reader: F,
+    issues: &mut Vec<String>,
+) -> Option<i8>
+where
+    F: Fn(&Path) -> Result<Option<i8>, String>,
+{
+    let mut ratings = Vec::new();
+    for relative_path in paths {
+        match reader(&root.join(relative_path)) {
+            Ok(Some(rating)) => ratings.push(rating),
+            Ok(None) => {}
+            Err(error) => issues.push(format!("{source} {relative_path}：{error}")),
+        }
+    }
+    ratings.sort_unstable();
+    ratings.dedup();
+    if ratings.len() > 1 {
+        issues.push(format!("{source} 中存在多个不同评分：{ratings:?}"));
+    }
+    if ratings.contains(&-1) {
+        issues.push(format!("{source} 包含暂不支持的拒绝评分 -1"));
+    }
+    ratings.first().copied()
+}
+
+fn populate_external_ratings(root: &Path, builder: &mut PhotoAssetBuilder) {
+    builder.jpeg_paths.sort_by_key(|path| path.to_lowercase());
+    builder.xmp_paths.sort_by_key(|path| path.to_lowercase());
+
+    if builder.xmp_paths.len() > 1 {
+        builder
+            .rating_issues
+            .push("照片组包含多个 XMP，后续写入目标不明确".to_string());
+    }
+    builder.rating_state.jpeg_metadata = collect_external_rating(
+        root,
+        &builder.jpeg_paths,
+        "JPG 内嵌评分",
+        rating_metadata::read_jpeg_rating,
+        &mut builder.rating_issues,
+    );
+    builder.rating_state.raw_xmp = collect_external_rating(
+        root,
+        &builder.xmp_paths,
+        "RAW XMP 评分",
+        rating_metadata::read_sidecar_rating,
+        &mut builder.rating_issues,
+    );
+
+    let sources = [
+        builder.rating_state.jpeg_metadata,
+        builder.rating_state.raw_xmp,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    builder.rating_state.conflict = !builder.rating_issues.is_empty()
+        || sources
+            .first()
+            .is_some_and(|first| sources.iter().any(|rating| rating != first));
+}
+
 fn finalize_asset(key: String, mut builder: PhotoAssetBuilder) -> PhotoAsset {
     builder.jpeg_paths.sort_by_key(|path| path.to_lowercase());
     builder.raw_paths.sort_by_key(|path| path.to_lowercase());
@@ -156,7 +224,7 @@ fn finalize_asset(key: String, mut builder: PhotoAssetBuilder) -> PhotoAsset {
         size_bytes: builder.size_bytes,
         modified_ms: builder.modified_ms,
         rating: 0,
-        rating_state: RatingState::default(),
+        rating_state: builder.rating_state,
         rating_issues: builder.rating_issues,
     }
 }
@@ -241,7 +309,10 @@ pub(crate) fn index_directory(root: &Path) -> Result<PhotoIndex, String> {
 
     let assets = groups
         .into_iter()
-        .map(|(key, builder)| finalize_asset(key, builder))
+        .map(|(key, mut builder)| {
+            populate_external_ratings(&root, &mut builder);
+            finalize_asset(key, builder)
+        })
         .collect::<Vec<_>>();
     let paired_assets = assets
         .iter()

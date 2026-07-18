@@ -5,6 +5,8 @@ mod formats;
 mod photo_groups;
 #[path = "../src/preview.rs"]
 mod preview;
+#[path = "../src/rating_metadata.rs"]
+mod rating_metadata;
 
 use std::fs;
 
