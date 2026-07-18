@@ -242,6 +242,40 @@ pub(crate) fn prepare_output_metadata(
     })
 }
 
+pub(crate) fn verify_output_metadata(
+    encoded: &[u8],
+    policy: MetadataPolicy,
+    target: MetadataTarget,
+) -> Result<(), String> {
+    let metadata = match target {
+        MetadataTarget::Jpeg => parse_jpeg_exif(encoded)?,
+        MetadataTarget::Png => {
+            match panic_safe("校验 PNG 元数据", || {
+                Metadata::new_from_vec(&encoded.to_vec(), target.file_extension())
+            }) {
+                Ok(metadata) => metadata,
+                Err(error) if error.contains("No metadata found") => Metadata::new(),
+                Err(error) => return Err(error),
+            }
+        }
+    };
+    if policy == MetadataPolicy::Remove && (&metadata).into_iter().next().is_some() {
+        return Err("输出文件仍包含应移除的 EXIF 元数据".into());
+    }
+    if policy == MetadataPolicy::Privacy && (&metadata).into_iter().any(is_private_tag) {
+        return Err("输出文件仍包含隐私元数据".into());
+    }
+    if target == MetadataTarget::Jpeg {
+        let sidecars = extract_jpeg_sidecars(encoded)?;
+        if policy == MetadataPolicy::Remove
+            && (!sidecars.xmp_packets.is_empty() || !sidecars.iptc_segments.is_empty())
+        {
+            return Err("输出文件仍包含应移除的 XMP/IPTC 元数据".into());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn extract_jpeg_sidecars(jpeg: &[u8]) -> Result<JpegSidecars, String> {
     let mut sidecars = JpegSidecars::default();
     let mut total_bytes = 0usize;
@@ -367,6 +401,19 @@ fn privacy_metadata(source: &Metadata) -> Metadata {
         output.set_tag(tag.clone());
     }
     output
+}
+
+fn is_private_tag(tag: &ExifTag) -> bool {
+    tag.get_group() == ExifTagGroup::GPS
+        || matches!(
+            tag,
+            ExifTag::GPSInfo(_)
+                | ExifTag::OwnerName(_)
+                | ExifTag::SerialNumber(_)
+                | ExifTag::LensSerialNumber(_)
+                | ExifTag::ImageUniqueID(_)
+                | ExifTag::MakerNote(_)
+        )
 }
 
 fn normalize_output_metadata(metadata: &mut Metadata, width: u32, height: u32) {

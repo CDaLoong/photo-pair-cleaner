@@ -1,5 +1,6 @@
 use crate::watermark_color::{
-    OutputColorSpace, linear_srgb_to_output, parse_css_color_linear, source_to_linear_srgb,
+    OutputColorSpace as EncodedColorSpace, linear_srgb_to_output, parse_css_color_linear,
+    source_to_linear_srgb,
 };
 use crate::watermark_geometry::{
     PixelRect, ResolvedLayout, ResolvedLayoutInput, anchor_region, normalized_placement,
@@ -8,11 +9,13 @@ use crate::watermark_geometry::{
 use crate::watermark_metadata::{ExifField, format_exif_fields, read_exif_values};
 use crate::watermark_model::{
     EmbeddedTemplateResource, GradientStop, ImageFit, LayoutVariant, MAX_RESOURCE_BYTES,
-    PhotoPlacementOverride, WATERMARK_SCHEMA_VERSION, WatermarkBackground, WatermarkLayer,
-    WatermarkOrientation, WatermarkRenderRequest, validate_template,
+    OutputColorSpace, PhotoPlacementOverride, WATERMARK_SCHEMA_VERSION, WatermarkBackground,
+    WatermarkLayer, WatermarkOrientation, WatermarkOutputFormat, WatermarkRenderRequest,
+    validate_template,
 };
 use crate::watermark_text::{FontCatalog, TextRenderRequest, rasterize_text};
 use base64::Engine;
+use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::imageops::{FilterType, resize};
 use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageReader, Rgba, Rgba32FImage};
@@ -944,7 +947,7 @@ pub(crate) fn encode_preview_png(rendered: &RenderOutcome) -> Result<Vec<u8>, St
             straight_linear_rgb.extend_from_slice(&[0.0, 0.0, 0.0]);
         }
     }
-    let (encoded_rgb, icc) = linear_srgb_to_output(&straight_linear_rgb, &OutputColorSpace::Srgb)?;
+    let (encoded_rgb, icc) = linear_srgb_to_output(&straight_linear_rgb, &EncodedColorSpace::Srgb)?;
     let mut rgba = Vec::with_capacity(alpha.len() * 4);
     for (rgb, alpha) in encoded_rgb.chunks_exact(3).zip(alpha) {
         rgba.extend_from_slice(rgb);
@@ -964,6 +967,94 @@ pub(crate) fn encode_preview_png(rendered: &RenderOutcome) -> Result<Vec<u8>, St
         )
         .map_err(|error| format!("无法编码水印预览 PNG：{error}"))?;
     Ok(png)
+}
+
+pub(crate) fn encode_output(
+    rendered: &RenderOutcome,
+    format: WatermarkOutputFormat,
+    jpeg_quality: u8,
+    color_space: OutputColorSpace,
+    transparent_background: bool,
+    flatten_color: &str,
+) -> Result<Vec<u8>, String> {
+    if !(1..=100).contains(&jpeg_quality) {
+        return Err("JPEG 质量必须在 1 到 100 之间".into());
+    }
+    let preserve_alpha = format == WatermarkOutputFormat::Png && transparent_background;
+    let background = parse_css_color_linear(flatten_color)?;
+    let mut straight_linear_rgb = Vec::with_capacity(rendered.image.len() / 4 * 3);
+    let mut alpha = preserve_alpha.then(|| Vec::with_capacity(rendered.image.len() / 4));
+    for pixel in rendered.image.pixels() {
+        let pixel_alpha = pixel[3].clamp(0.0, 1.0);
+        if preserve_alpha {
+            if let Some(values) = alpha.as_mut() {
+                values.push((pixel_alpha * 255.0).round() as u8);
+            }
+            if pixel_alpha > f32::EPSILON {
+                straight_linear_rgb.push((pixel[0] / pixel_alpha).clamp(0.0, 1.0));
+                straight_linear_rgb.push((pixel[1] / pixel_alpha).clamp(0.0, 1.0));
+                straight_linear_rgb.push((pixel[2] / pixel_alpha).clamp(0.0, 1.0));
+            } else {
+                straight_linear_rgb.extend_from_slice(&[0.0, 0.0, 0.0]);
+            }
+        } else {
+            let inverse = 1.0 - pixel_alpha;
+            straight_linear_rgb.push((pixel[0] + background[0] * inverse).clamp(0.0, 1.0));
+            straight_linear_rgb.push((pixel[1] + background[1] * inverse).clamp(0.0, 1.0));
+            straight_linear_rgb.push((pixel[2] + background[2] * inverse).clamp(0.0, 1.0));
+        }
+    }
+    let destination = match color_space {
+        OutputColorSpace::Srgb => EncodedColorSpace::Srgb,
+        OutputColorSpace::Preserve => rendered
+            .source_icc
+            .clone()
+            .map(EncodedColorSpace::SourceIcc)
+            .unwrap_or(EncodedColorSpace::Srgb),
+    };
+    let (encoded_rgb, icc) = linear_srgb_to_output(&straight_linear_rgb, &destination)?;
+    let mut output = Vec::new();
+    match format {
+        WatermarkOutputFormat::Jpeg => {
+            let mut encoder = JpegEncoder::new_with_quality(&mut output, jpeg_quality);
+            encoder
+                .set_icc_profile(icc)
+                .map_err(|error| format!("无法写入 JPEG ICC：{error}"))?;
+            encoder
+                .write_image(
+                    &encoded_rgb,
+                    rendered.image.width(),
+                    rendered.image.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .map_err(|error| format!("无法编码水印 JPEG：{error}"))?;
+        }
+        WatermarkOutputFormat::Png => {
+            let (pixels, color_type) = if let Some(alpha) = alpha {
+                let mut rgba = Vec::with_capacity(alpha.len() * 4);
+                for (rgb, value) in encoded_rgb.chunks_exact(3).zip(alpha) {
+                    rgba.extend_from_slice(rgb);
+                    rgba.push(value);
+                }
+                (rgba, image::ExtendedColorType::Rgba8)
+            } else {
+                (encoded_rgb, image::ExtendedColorType::Rgb8)
+            };
+            let mut encoder = PngEncoder::new(&mut output);
+            encoder
+                .set_icc_profile(icc)
+                .map_err(|error| format!("无法写入 PNG ICC：{error}"))?;
+            encoder
+                .write_image(
+                    &pixels,
+                    rendered.image.width(),
+                    rendered.image.height(),
+                    color_type,
+                )
+                .map_err(|error| format!("无法编码水印 PNG：{error}"))?;
+        }
+    }
+    Ok(output)
 }
 
 fn parse_exif_field(field: &str) -> Result<ExifField, String> {

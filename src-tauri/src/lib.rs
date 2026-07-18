@@ -24,6 +24,8 @@ mod watermark_metadata;
 #[allow(dead_code)]
 mod watermark_model;
 #[allow(dead_code)]
+mod watermark_output;
+#[allow(dead_code)]
 mod watermark_render;
 mod watermark_resource;
 mod watermark_source;
