@@ -178,6 +178,16 @@ export interface WatermarkSourceRequest {
   inputs: WatermarkSourceInput[];
 }
 
+export type WatermarkTransferScope = "currentPhoto" | "currentDirectory" | "currentFilter";
+
+export interface WatermarkTransferDraft {
+  transferId: string;
+  origin: "preview-photo" | "preview-directory" | "preview-filter";
+  inputs: Array<{ kind: "relativePaths"; root: string; relativePaths: string[] }>;
+}
+
+export type WatermarkTransferIntent = Omit<WatermarkTransferDraft, "transferId">;
+
 export interface PhotoPlacementOverride {
   alignX: number;
   alignY: number;

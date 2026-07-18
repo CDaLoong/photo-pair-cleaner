@@ -5,12 +5,13 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ShieldCheck,
+  Stamp,
 } from "lucide-react";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { storedBooleanPreference } from "../utils";
 
-export type AppModule = "preview" | "cleanup";
+export type AppModule = "preview" | "cleanup" | "watermark";
 
 interface AppShellProps {
   activeModule: AppModule;
@@ -21,6 +22,7 @@ interface AppShellProps {
 const MODULES = [
   { id: "preview", label: "照片浏览", detail: "预览与筛选", icon: Images },
   { id: "cleanup", label: "配对清理", detail: "筛选与安全处理", icon: ListChecks },
+  { id: "watermark", label: "水印导出", detail: "边框与发布副本", icon: Stamp },
 ] as const;
 
 const MODULE_SIDEBAR_STORAGE_KEY = "framepair.layout.module-sidebar-collapsed.v1";

@@ -37,6 +37,11 @@ import {
 import type { Notice } from "../../types";
 import { RatingSyncDialog } from "../rating-sync/RatingSyncDialog";
 import { autoSyncOutcomeNotice } from "../rating-sync/ratingSyncUtils";
+import { SendToWatermarkMenu } from "../watermark/SendToWatermarkMenu";
+import type {
+  WatermarkTransferIntent,
+  WatermarkTransferScope,
+} from "../watermark/types";
 import { PhotoContextMenu } from "./PhotoContextMenu";
 import { PhotoDirectoryTree } from "./PhotoDirectoryTree";
 import { PhotoThumbnail } from "./PhotoThumbnail";
@@ -90,6 +95,7 @@ const SYSTEM_EDITOR: ExternalEditor = {
 
 interface PreviewModuleProps {
   active: boolean;
+  onSendToWatermark: (draft: WatermarkTransferIntent) => void;
 }
 
 const FILTERS: Array<{ value: PreviewFilter; label: string }> = [
@@ -99,7 +105,7 @@ const FILTERS: Array<{ value: PreviewFilter; label: string }> = [
   { value: "raw", label: "仅 RAW" },
 ];
 
-export function PreviewModule({ active }: PreviewModuleProps) {
+export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps) {
   const [index, setIndex] = useState<PhotoIndex | null>(null);
   const [root, setRoot] = useState(() => {
     try {
@@ -193,6 +199,11 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     : null;
   const selectedEditor = externalEditors.find((editor) => editor.id === editorId) ?? SYSTEM_EDITOR;
   const dismissContextMenu = useCallback(() => setContextMenu(null), []);
+  const watermarkScopeCounts = useMemo<Record<WatermarkTransferScope, number>>(() => ({
+    currentPhoto: selectedAsset?.jpegPaths.length ?? 0,
+    currentDirectory: directoryAssets.reduce((count, asset) => count + asset.jpegPaths.length, 0),
+    currentFilter: visibleAssets.reduce((count, asset) => count + asset.jpegPaths.length, 0),
+  }), [directoryAssets, selectedAsset, visibleAssets]);
 
   async function loadDirectory(
     path: string,
@@ -442,7 +453,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     setSelectedId(asset.id);
     setContextMenu({
       assetId: asset.id,
-      ...contextMenuPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight, 260, 220),
+      ...contextMenuPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight, 260, 260),
     });
   }
 
@@ -538,6 +549,29 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     }
   }
 
+  function sendToWatermark(scope: WatermarkTransferScope, contextPhoto?: PhotoAsset) {
+    if (!index) return;
+    const assets = scope === "currentPhoto"
+      ? [contextPhoto ?? selectedAsset].filter((asset): asset is PhotoAsset => asset !== null)
+      : scope === "currentDirectory"
+        ? directoryAssets
+        : visibleAssets;
+    const relativePaths = [...new Set(assets.flatMap((asset) => asset.jpegPaths))];
+    if (relativePaths.length === 0) {
+      setActionError("当前范围没有可用于水印导出的 JPG/JPEG");
+      return;
+    }
+    const origin = scope === "currentPhoto"
+      ? "preview-photo"
+      : scope === "currentDirectory"
+        ? "preview-directory"
+        : "preview-filter";
+    onSendToWatermark({
+      origin,
+      inputs: [{ kind: "relativePaths", root: index.root, relativePaths }],
+    });
+  }
+
   return (
     <section className="preview-module" aria-label="照片浏览">
       <header className="preview-header">
@@ -550,6 +584,13 @@ export function PreviewModule({ active }: PreviewModuleProps) {
           <span>{index?.root || root || "尚未选择照片目录"}</span>
         </div>
         <div className="preview-header-actions">
+          {index ? (
+            <SendToWatermarkMenu
+              counts={watermarkScopeCounts}
+              disabled={busy}
+              onSelect={(scope) => sendToWatermark(scope)}
+            />
+          ) : null}
           {index ? <button className="secondary-command" type="button" onClick={() => openRatingSync(selectedAsset)} disabled={busy || !selectedAsset} title="设置自动同步或同步当前照片"><RefreshCw aria-hidden="true" size={16} />评分同步</button> : null}
           <button className="guide-trigger" type="button" onClick={openPreviewGuide} disabled={busy || !index?.assets.length} title={index?.assets.length ? "查看照片浏览与评分引导" : "选择目录后可查看引导"}>
             <CircleHelp aria-hidden="true" size={16} />使用引导
@@ -745,6 +786,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                 onReveal={() => void revealAsset(contextAsset)}
                 onEdit={() => void openInEditor(contextAsset)}
                 onSync={() => openRatingSync(contextAsset)}
+                onWatermark={() => sendToWatermark("currentPhoto", contextAsset)}
                 onDismiss={dismissContextMenu}
               />
             ) : null}
