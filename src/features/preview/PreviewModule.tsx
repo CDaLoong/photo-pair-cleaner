@@ -145,7 +145,11 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const selectedFilmstripItemRef = useRef<HTMLButtonElement>(null);
   const attemptedEditorDiscovery = useRef(false);
   const attemptedPreviewGuide = useRef(false);
-  const loadDirectoryRef = useRef<(path: string) => Promise<void>>(async () => undefined);
+  const loadDirectoryRef = useRef<(
+    path: string,
+    options?: { preserveContext?: boolean },
+  ) => Promise<void>>(async () => undefined);
+  const pendingDirectoryRefresh = useRef(false);
   const deferredSearch = useDeferredValue(search);
 
   const ratedAssets = useMemo(
@@ -261,6 +265,26 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     attemptedStoredRoot.current = true;
     void loadDirectoryRef.current(root);
   }, [active, root]);
+
+  useEffect(() => {
+    function handlePhotosChanged(event: Event) {
+      const changedRoot = (event as CustomEvent<{ root?: string }>).detail?.root;
+      if (!changedRoot || changedRoot !== indexedRootRef.current) return;
+      if (active) {
+        void loadDirectoryRef.current(changedRoot, { preserveContext: true });
+      } else {
+        pendingDirectoryRefresh.current = true;
+      }
+    }
+    window.addEventListener("framepair:photos-changed", handlePhotosChanged);
+    return () => window.removeEventListener("framepair:photos-changed", handlePhotosChanged);
+  }, [active]);
+
+  useEffect(() => {
+    if (!active || !pendingDirectoryRefresh.current || !indexedRootRef.current) return;
+    pendingDirectoryRefresh.current = false;
+    void loadDirectoryRef.current(indexedRootRef.current, { preserveContext: true });
+  }, [active]);
 
   useEffect(() => {
     if (!active || !isTauri() || attemptedEditorDiscovery.current) return;

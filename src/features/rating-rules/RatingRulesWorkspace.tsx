@@ -18,6 +18,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../../utils";
 import type { RatingSyncState } from "../rating-sync/types";
 import { validateSyncTargets } from "../rating-sync/ratingSyncUtils";
+import { OperationExecuteDialog } from "./OperationExecuteDialog";
+import { OperationHistoryPanel } from "./OperationHistoryPanel";
 import { OperationPlanReview } from "./OperationPlanReview";
 import { RatingRuleCard } from "./RatingRuleCard";
 import {
@@ -29,10 +31,14 @@ import {
 import type {
   OperationPlanRequest,
   OperationPlanSummary,
+  OperationHistoryEntry,
+  OrganizerExecutionSummary,
+  OrganizerRecoverySummary,
   OperationSyncPreference,
   RatingRule,
   RatingRuleState,
   RatingRuleTemplateId,
+  RecoveryKind,
 } from "./types";
 import type { RatingConflictPolicy } from "../rating-sync/types";
 
@@ -71,6 +77,9 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
   const [conflictPolicy, setConflictPolicy] = useState<RatingConflictPolicy>("skip");
   const [sync, setSync] = useState<OperationSyncPreference>(DEFAULT_SYNC);
   const [plan, setPlan] = useState<OperationPlanSummary | null>(null);
+  const [history, setHistory] = useState<OperationHistoryEntry[]>([]);
+  const [lastExecution, setLastExecution] = useState<OrganizerExecutionSummary | null>(null);
+  const [pendingGroupIds, setPendingGroupIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const [message, setMessage] = useState<{
@@ -90,9 +99,9 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
       busy,
       hasPlan: Boolean(plan),
       detail: busy
-        ? "正在生成只读模拟计划"
+        ? "正在处理评分整理任务"
         : plan
-          ? `模拟计划包含 ${plan.totalItems} 个照片组`
+          ? `计划包含 ${plan.totalItems} 个照片组`
           : root
             ? "规则草稿已就绪"
             : "等待选择照片目录",
@@ -107,8 +116,9 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
     void Promise.all([
       invoke<RatingRuleState>("get_rating_rules"),
       invoke<RatingSyncState>("get_rating_sync_state", { root: null }),
+      invoke<OperationHistoryEntry[]>("list_rating_operation_history"),
     ])
-      .then(([ruleState, syncState]) => {
+      .then(([ruleState, syncState, operationHistory]) => {
         setRules(ruleState.rules);
         setConflictPolicy(syncState.settings.conflictPolicy);
         setSync((current) => ({
@@ -116,6 +126,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
           targets: syncState.settings.targets,
           jpegWriteConfirmed: syncState.settings.jpegWriteConfirmed,
         }));
+        setHistory(operationHistory);
       })
       .catch((loadError) => setMessage({
         tone: "error",
@@ -169,11 +180,24 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
     setMessage(null);
   }
 
+  const refreshHistory = useCallback(async () => {
+    if (!isTauri()) return;
+    const operationHistory = await invoke<OperationHistoryEntry[]>("list_rating_operation_history");
+    setHistory(operationHistory);
+  }, []);
+
+  function notifyPhotosChanged(changedRoot: string) {
+    window.dispatchEvent(new CustomEvent("framepair:photos-changed", {
+      detail: { root: changedRoot },
+    }));
+  }
+
   async function validateAndSetRoot(path: string) {
     try {
       const validated = await invoke<string>("validate_directory_path", { path });
       setRoot(validated);
       clearPlan();
+      setPendingGroupIds([]);
       try {
         localStorage.setItem(ROOT_STORAGE_KEY, validated);
       } catch {
@@ -307,8 +331,8 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
       const nextPlan = await invoke<OperationPlanSummary>("generate_operation_plan", { request });
       setPlan(nextPlan);
       setMessage(nextPlan.conflicts > 0
-        ? { tone: "warning", title: `模拟计划已生成，${nextPlan.conflicts} 个照片组存在冲突`, detail: "冲突项必须修改规则或目录后重新生成计划。" }
-        : { tone: "success", title: `模拟计划已生成，共 ${nextPlan.totalItems} 个照片组` });
+        ? { tone: "warning", title: `执行计划已生成，${nextPlan.conflicts} 个照片组存在冲突`, detail: "冲突项必须修改规则或目录后重新生成计划。" }
+        : { tone: "success", title: `执行计划已生成，共 ${nextPlan.totalItems} 个照片组` });
     } catch (planError) {
       setMessage({ tone: "error", title: "无法生成评分整理计划", detail: errorMessage(planError) });
     } finally {
@@ -316,13 +340,81 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
     }
   }
 
+  async function executeSelected() {
+    if (!plan || pendingGroupIds.length === 0) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const summary = await invoke<OrganizerExecutionSummary>("execute_operation_plan", {
+        request: {
+          planId: plan.planId,
+          root: plan.root,
+          groupIds: pendingGroupIds,
+        },
+      });
+      setLastExecution(summary);
+      setPlan(null);
+      setPendingGroupIds([]);
+      notifyPhotosChanged(plan.root);
+      await refreshHistory();
+      setMessage(summary.failed > 0 || summary.partial > 0
+        ? { tone: "warning", title: `${summary.succeeded} 组完成，${summary.partial} 组部分完成，${summary.failed} 组失败`, detail: "可在操作历史中查看并恢复仍安全的文件。" }
+        : { tone: "success", title: `${summary.succeeded} 个照片组已完成评分整理`, detail: "复制可撤销，移动可从下方操作历史恢复。" });
+    } catch (executeError) {
+      setPlan(null);
+      setPendingGroupIds([]);
+      setMessage({ tone: "error", title: "评分整理执行失败，请重新生成计划", detail: errorMessage(executeError) });
+      try {
+        await refreshHistory();
+      } catch {
+        // Preserve the execution error as the actionable message.
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recoverOperation(kind: RecoveryKind, operationId: string, groupIds: string[]) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const command = kind === "restoreMove" ? "restore_rating_move" : "undo_rating_copy";
+      const summary = await invoke<OrganizerRecoverySummary>(command, {
+        request: { operationId, groupIds },
+      });
+      notifyPhotosChanged(root);
+      await refreshHistory();
+      const action = kind === "restoreMove" ? "恢复移动" : "撤销复制";
+      setMessage(summary.failed > 0 || summary.partial > 0
+        ? { tone: "warning", title: `${action}：${summary.succeeded} 组完成，${summary.partial} 组部分完成，${summary.failed} 组失败`, detail: "已变化或原位置被占用的文件不会被覆盖。" }
+        : { tone: "success", title: `${summary.succeeded} 个照片组已完成${action}` });
+    } catch (recoveryError) {
+      setMessage({ tone: "error", title: "恢复操作失败", detail: errorMessage(recoveryError) });
+      try {
+        await refreshHistory();
+      } catch {
+        // Preserve the recovery error as the actionable message.
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="rating-rules-workspace">
+      <OperationExecuteDialog
+        open={Boolean(plan && pendingGroupIds.length > 0)}
+        plan={plan}
+        groupIds={pendingGroupIds}
+        busy={busy}
+        onDismiss={() => { if (!busy) setPendingGroupIds([]); }}
+        onConfirm={() => void executeSelected()}
+      />
       {message ? <div className={`notice notice-${message.tone}`} role={message.tone === "error" ? "alert" : "status"}>{message.tone === "success" ? <CheckCircle2 aria-hidden="true" size={18} /> : <AlertTriangle aria-hidden="true" size={18} />}<div><strong>{message.title}</strong>{message.detail ? <span>{message.detail}</span> : null}</div><button className="notice-close" type="button" onClick={() => setMessage(null)} aria-label="关闭消息" title="关闭消息"><X aria-hidden="true" size={16} /></button></div> : null}
 
       <section className="rating-rules-setup">
         <header className="rating-rules-heading">
-          <div><h1>评分整理与清理规则</h1><p>用评分和格式生成文件处理模拟计划，确认每个目标与冲突。</p></div>
+          <div><h1>评分整理与清理规则</h1><p>用评分和格式生成计划，复核后执行复制或移动；清理将在下一阶段开放。</p></div>
           <div className="rating-rules-file-actions">
             <button className="icon-button" type="button" disabled={busy} onClick={() => void importRules()} aria-label="导入规则" title="导入规则"><FileDown aria-hidden="true" size={16} /></button>
             <button className="icon-button" type="button" disabled={busy || rules.length === 0} onClick={() => void exportRules()} aria-label="导出规则" title="导出规则"><FileUp aria-hidden="true" size={16} /></button>
@@ -333,7 +425,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
 
         <button className={dropActive ? "rating-rules-root-picker is-drop-target" : "rating-rules-root-picker"} type="button" onClick={() => void chooseRoot()} disabled={busy} data-tour="rating-rules-root">
           <FolderInput aria-hidden="true" size={20} />
-          <span><strong>{root || "选择或拖入照片根目录"}</strong><small>计划会递归读取 JPG、RAW、XMP 和 FramePair 评分，但不会修改文件</small></span>
+          <span><strong>{root || "选择或拖入照片根目录"}</strong><small>生成计划时只读扫描；执行前还会再次核对文件与目标</small></span>
         </button>
 
         <div className="rating-rules-template" data-tour="rating-rules-template">
@@ -359,21 +451,22 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
         </div>
 
         <section className="rating-rules-sync" data-tour="rating-rules-sync">
-          <header><div><strong>同时预览评分同步</strong><span>可叠加元数据动作，但不会改变文件操作规则。</span></div><label className="switch"><input type="checkbox" checked={sync.enabled} disabled={busy} onChange={(event) => { setSync({ ...sync, enabled: event.target.checked }); clearPlan(); }} /><span /></label></header>
+          <header><div><strong>同时执行评分同步</strong><span>仅同步本次复制或移动到目标目录的格式，不修改 RAW 原文件。</span></div><label className="switch"><input type="checkbox" checked={sync.enabled} disabled={busy} onChange={(event) => { setSync({ ...sync, enabled: event.target.checked }); clearPlan(); }} /><span /></label></header>
           {sync.enabled ? <div className="rating-rules-sync-fields">
             <label><span>冲突策略</span><select value={conflictPolicy} disabled={busy} onChange={(event) => { setConflictPolicy(event.target.value as RatingConflictPolicy); clearPlan(); }}><option value="skip">不覆盖并提示</option><option value="framePair">FramePair 评分优先</option><option value="external">外部评分优先</option><option value="highest">取较高评分</option></select></label>
             <label className="rating-rules-sync-check"><input type="checkbox" checked={sync.targets.rawXmp} disabled={busy} onChange={(event) => { setSync({ ...sync, targets: { ...sync.targets, rawXmp: event.target.checked } }); clearPlan(); }} /><span><strong>RAW XMP</strong><small>永不修改 RAW 原文件</small></span></label>
             <label className="rating-rules-sync-check"><input type="checkbox" checked={sync.targets.jpegMetadata} disabled={busy} onChange={(event) => { setSync({ ...sync, targets: { ...sync.targets, jpegMetadata: event.target.checked }, jpegWriteConfirmed: event.target.checked ? sync.jpegWriteConfirmed : false }); clearPlan(); }} /><span><strong>JPG 元数据</strong><small>高级选项，默认关闭</small></span></label>
             {sync.targets.jpegMetadata ? <label className="rating-rules-sync-confirm"><input type="checkbox" checked={sync.jpegWriteConfirmed} disabled={busy} onChange={(event) => { setSync({ ...sync, jpegWriteConfirmed: event.target.checked }); clearPlan(); }} />我确认允许修改 JPG 评分元数据</label> : null}
-            <label className="rating-rules-sync-confirm"><input type="checkbox" checked={sync.syncCleanupBefore} disabled={busy} onChange={(event) => { setSync({ ...sync, syncCleanupBefore: event.target.checked }); clearPlan(); }} />待清理照片在计划中包含清理前同步</label>
+            <label className="rating-rules-sync-confirm"><input type="checkbox" checked={sync.syncCleanupBefore} disabled={busy} onChange={(event) => { setSync({ ...sync, syncCleanupBefore: event.target.checked }); clearPlan(); }} />待清理照片包含清理前同步（第五阶段执行）</label>
           </div> : null}
         </section>
 
-        <div className="rating-rules-safety"><ShieldCheck aria-hidden="true" size={17} /><span>当前仅生成只读模拟计划，不会移动、复制或清理照片。模板也不会创建目录。</span></div>
-        <div className="rating-rules-command"><button className="primary-command" type="button" disabled={busy || !root || rules.length === 0} onClick={() => void generatePlan()}>{busy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : <ScanSearch aria-hidden="true" size={16} />}生成只读模拟计划</button></div>
+        <div className="rating-rules-safety"><ShieldCheck aria-hidden="true" size={17} /><span>生成计划保持只读；复制和移动必须在下方逐组复核并再次确认。已有目标不会被覆盖。</span></div>
+        <div className="rating-rules-command"><button className="primary-command" type="button" disabled={busy || !root || rules.length === 0} onClick={() => void generatePlan()}>{busy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : <ScanSearch aria-hidden="true" size={16} />}生成执行计划</button></div>
       </section>
 
-      {plan ? <OperationPlanReview plan={plan} /> : null}
+      {plan ? <OperationPlanReview plan={plan} busy={busy} onRequestExecute={setPendingGroupIds} /> : null}
+      <OperationHistoryPanel history={history} latest={lastExecution} busy={busy} onRecover={(kind, operationId, groupIds) => void recoverOperation(kind, operationId, groupIds)} />
     </div>
   );
 }

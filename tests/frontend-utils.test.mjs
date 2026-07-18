@@ -10,7 +10,7 @@ import * as ratingRuleUtils from "../src/features/rating-rules/ratingRuleUtils.t
 import * as ratingSyncUtils from "../src/features/rating-sync/ratingSyncUtils.ts";
 import * as utils from "../src/utils.ts";
 
-test("phase three registers read-only rating rule commands without an executor", () => {
+test("phase four registers rating organizer execution and recovery without cleanup execution", () => {
   const source = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   for (const command of [
     "get_rating_rules",
@@ -18,11 +18,15 @@ test("phase three registers read-only rating rule commands without an executor",
     "import_rating_rules",
     "export_rating_rules",
     "generate_operation_plan",
+    "execute_operation_plan",
+    "list_rating_operation_history",
+    "restore_rating_move",
+    "undo_rating_copy",
   ]) {
     assert.match(source, new RegExp(`async fn ${command}\\b`));
     assert.match(source, new RegExp(`\\n\\s*${command},?`));
   }
-  assert.doesNotMatch(source, /execute_operation_plan/);
+  assert.doesNotMatch(source, /async fn execute_rating_cleanup\b/);
 });
 
 test("new rating rules use the agreed move, group, and path defaults", () => {
@@ -91,18 +95,53 @@ test("operation plan filters and Chinese labels remain stable", () => {
   );
   assert.equal(ratingRuleUtils.ruleActionLabel("move"), "移动");
   assert.equal(ratingRuleUtils.operationStatusLabel("conflict"), "存在冲突");
-  assert.equal(ratingRuleUtils.isReadOnlyPlanItem({ status: "ready" }), true);
+  assert.equal(ratingRuleUtils.isExecutablePlanItem(items[0]), true);
+  assert.equal(ratingRuleUtils.isExecutablePlanItem(items[1]), false);
+  assert.equal(ratingRuleUtils.isExecutablePlanItem(items[2]), false);
+  assert.deepEqual(ratingRuleUtils.defaultExecutableGroupIds(items), ["a"]);
+  assert.equal(ratingRuleUtils.organizerGroupStatusLabel("partial"), "部分完成");
 });
 
-test("rating organization UI is a third read-only cleanup task", () => {
+test("operation selection summary counts only selected executable groups", () => {
+  const items = [
+    {
+      groupId: "copy",
+      terminalAction: "copy",
+      status: "ready",
+      members: [{ sizeBytes: 10 }, { sizeBytes: 5 }],
+    },
+    {
+      groupId: "move",
+      terminalAction: "move",
+      status: "ready",
+      members: [{ sizeBytes: 20 }],
+    },
+    {
+      groupId: "cleanup",
+      terminalAction: "cleanup",
+      status: "ready",
+      members: [{ sizeBytes: 99 }],
+    },
+  ];
+  assert.deepEqual(
+    ratingRuleUtils.operationSelectionSummary(items, new Set(["copy", "cleanup"])),
+    { groups: 1, copyGroups: 1, moveGroups: 0, files: 2, bytes: 15 },
+  );
+});
+
+test("rating organization UI executes only copy and move plans", () => {
   const selector = fs.readFileSync(new URL("../src/features/cleanup/TaskTypeSelector.tsx", import.meta.url), "utf8");
   const workspacePath = new URL("../src/features/rating-rules/RatingRulesWorkspace.tsx", import.meta.url);
   assert.equal(fs.existsSync(workspacePath), true);
   const workspace = fs.readFileSync(workspacePath, "utf8");
   assert.match(selector, /评分整理/);
-  assert.match(workspace, /当前仅生成只读模拟计划，不会移动、复制或清理照片/);
-  assert.doesNotMatch(workspace, /execute_operation_plan/);
-  assert.doesNotMatch(workspace, /执行所选|开始执行/);
+  const review = fs.readFileSync(new URL("../src/features/rating-rules/OperationPlanReview.tsx", import.meta.url), "utf8");
+  assert.match(workspace, /execute_operation_plan/);
+  assert.match(workspace, /list_rating_operation_history/);
+  assert.match(review, /执行所选/);
+  assert.match(review, /第五阶段开放/);
+  assert.match(workspace, /OperationExecuteDialog/);
+  assert.match(workspace, /OperationHistoryPanel/);
 });
 
 test("sidebar preferences collapse only when storage explicitly says true", () => {

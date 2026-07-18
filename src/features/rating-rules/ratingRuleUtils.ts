@@ -2,6 +2,7 @@ import type {
   OperationPlanFilter,
   OperationPlanItem,
   OperationPlanStatus,
+  OrganizerGroupStatus,
   RatingCondition,
   RatingRule,
   RatingRuleTemplate,
@@ -143,6 +144,46 @@ export function filterOperationPlanItems<T extends Pick<
   return items.filter((item) => item.terminalAction === filter);
 }
 
-export function isReadOnlyPlanItem(_item: Pick<OperationPlanItem, "status">): true {
-  return true;
+export function isExecutablePlanItem<T extends Pick<
+  OperationPlanItem,
+  "status" | "terminalAction"
+>>(item: T): boolean {
+  return item.status === "ready"
+    && (item.terminalAction === "copy" || item.terminalAction === "move");
+}
+
+export function defaultExecutableGroupIds<T extends Pick<
+  OperationPlanItem,
+  "groupId" | "status" | "terminalAction"
+>>(items: T[]): string[] {
+  return items.filter(isExecutablePlanItem).map((item) => item.groupId);
+}
+
+export function operationSelectionSummary<T extends Pick<
+  OperationPlanItem,
+  "groupId" | "status" | "terminalAction" | "members"
+>>(items: T[], selected: Set<string>) {
+  const executable = items.filter(
+    (item) => selected.has(item.groupId) && isExecutablePlanItem(item),
+  );
+  return {
+    groups: executable.length,
+    copyGroups: executable.filter((item) => item.terminalAction === "copy").length,
+    moveGroups: executable.filter((item) => item.terminalAction === "move").length,
+    files: executable.reduce((total, item) => total + item.members.length, 0),
+    bytes: executable.reduce(
+      (total, item) => total + item.members.reduce(
+        (memberTotal, member) => memberTotal + member.sizeBytes,
+        0,
+      ),
+      0,
+    ),
+  };
+}
+
+export function organizerGroupStatusLabel(status: OrganizerGroupStatus): string {
+  if (status === "success") return "已完成";
+  if (status === "failed") return "失败";
+  if (status === "partial") return "部分完成";
+  return "已跳过";
 }

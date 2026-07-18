@@ -112,6 +112,86 @@ export interface OperationPlanSummary {
   items: OperationPlanItem[];
 }
 
+export type OrganizerAction = "copy" | "move";
+export type OrganizerGroupStatus = "success" | "failed" | "partial" | "skipped";
+export type RecoveryKind = "restoreMove" | "undoCopy";
+
+export interface FileFingerprint {
+  sizeBytes: number;
+  modifiedMs: number | null;
+  sha256: string;
+}
+
+export interface OperationMemberRecord {
+  kind: RuleMemberKind;
+  sourcePath: string;
+  targetPath: string;
+  expectedSizeBytes: number;
+  expectedModifiedMs: number | null;
+  targetSnapshot: FileFingerprint | null;
+  message: string;
+}
+
+export interface OperationGroupRecord {
+  groupId: string;
+  relativeStem: string;
+  action: OrganizerAction;
+  status: OrganizerGroupStatus;
+  message: string;
+  members: OperationMemberRecord[];
+}
+
+export interface OrganizerExecutionSummary {
+  operationId: string;
+  planId: string;
+  succeeded: number;
+  failed: number;
+  partial: number;
+  skipped: number;
+  groups: OperationGroupRecord[];
+}
+
+export interface RecoveryMemberResult {
+  sourcePath: string;
+  targetPath: string;
+  success: boolean;
+  message: string;
+}
+
+export interface RecoveryRecord {
+  operationId: string;
+  groupId: string;
+  kind: RecoveryKind;
+  createdAtMs: number;
+  status: OrganizerGroupStatus;
+  message: string;
+  members: RecoveryMemberResult[];
+}
+
+export interface OperationManifest {
+  operationId: string;
+  planId: string;
+  root: string;
+  createdAtMs: number;
+  rules: RatingRule[];
+  sync: OperationSyncPreference;
+  groups: OperationGroupRecord[];
+}
+
+export interface OperationHistoryEntry {
+  manifest: OperationManifest;
+  recoveries: RecoveryRecord[];
+  recoverableGroups: number;
+}
+
+export interface OrganizerRecoverySummary {
+  operationId: string;
+  succeeded: number;
+  failed: number;
+  partial: number;
+  results: RecoveryRecord[];
+}
+
 export interface RatingRuleTemplate {
   id: RatingRuleTemplateId;
   name: string;

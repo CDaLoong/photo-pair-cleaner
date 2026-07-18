@@ -1,9 +1,12 @@
-import { ChevronDown, ChevronRight, FileSearch, ShieldCheck } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, FileSearch, Play, ShieldCheck } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { formatBytes, formatDate } from "../../utils";
 import {
   filterOperationPlanItems,
+  defaultExecutableGroupIds,
+  isExecutablePlanItem,
   memberKindLabel,
+  operationSelectionSummary,
   operationStatusLabel,
   ruleActionLabel,
 } from "./ratingRuleUtils";
@@ -15,6 +18,8 @@ import type {
 
 interface OperationPlanReviewProps {
   plan: OperationPlanSummary;
+  busy: boolean;
+  onRequestExecute: (groupIds: string[]) => void;
 }
 
 const FILTERS: Array<{ value: OperationPlanFilter; label: string }> = [
@@ -62,13 +67,32 @@ function PlanDetails({ item }: { item: OperationPlanItem }) {
   );
 }
 
-export function OperationPlanReview({ plan }: OperationPlanReviewProps) {
+export function OperationPlanReview({ plan, busy, onRequestExecute }: OperationPlanReviewProps) {
   const [filter, setFilter] = useState<OperationPlanFilter>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(defaultExecutableGroupIds(plan.items)),
+  );
   const visibleItems = useMemo(
     () => filterOperationPlanItems(plan.items, filter),
     [filter, plan.items],
   );
+  const executableIds = useMemo(
+    () => defaultExecutableGroupIds(plan.items),
+    [plan.items],
+  );
+  const selectionSummary = useMemo(
+    () => operationSelectionSummary(plan.items, selected),
+    [plan.items, selected],
+  );
+  const allExecutableSelected = executableIds.length > 0
+    && executableIds.every((groupId) => selected.has(groupId));
+
+  useEffect(() => {
+    setSelected(new Set(defaultExecutableGroupIds(plan.items)));
+    setExpanded(new Set());
+    setFilter("all");
+  }, [plan.planId, plan.items]);
 
   function toggleExpanded(groupId: string) {
     setExpanded((current) => {
@@ -79,10 +103,23 @@ export function OperationPlanReview({ plan }: OperationPlanReviewProps) {
     });
   }
 
+  function toggleSelected(groupId: string) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }
+
+  function toggleAllExecutable() {
+    setSelected(allExecutableSelected ? new Set() : new Set(executableIds));
+  }
+
   return (
     <section className="operation-plan-review" data-tour="rating-rules-plan">
       <header>
-        <div><FileSearch aria-hidden="true" size={18} /><span><h2>只读模拟计划</h2><p>{plan.totalItems} 个照片组 · {plan.conflicts} 个冲突 · {plan.skipped} 个跳过</p></span></div>
+        <div><FileSearch aria-hidden="true" size={18} /><span><h2>执行计划复核</h2><p>{plan.totalItems} 个照片组 · {plan.conflicts} 个冲突 · {plan.skipped} 个跳过</p></span></div>
         <dl className="operation-plan-summary">
           <div><dt>移动</dt><dd>{plan.moveGroups}</dd></div>
           <div><dt>复制</dt><dd>{plan.copyGroups}</dd></div>
@@ -93,7 +130,7 @@ export function OperationPlanReview({ plan }: OperationPlanReviewProps) {
         </dl>
       </header>
 
-      <div className="operation-plan-filters" role="tablist" aria-label="模拟计划筛选">
+      <div className="operation-plan-filters" role="tablist" aria-label="执行计划筛选">
         {FILTERS.map((option) => (
           <button key={option.value} type="button" role="tab" aria-selected={filter === option.value} onClick={() => setFilter(option.value)}>{option.label}</button>
         ))}
@@ -101,13 +138,15 @@ export function OperationPlanReview({ plan }: OperationPlanReviewProps) {
 
       <div className="operation-plan-table-scroll">
         <table className="operation-plan-table">
-          <thead><tr><th aria-label="展开" /><th>照片组</th><th>工作评分</th><th>评分来源</th><th>命中规则</th><th>文件组成</th><th>最终操作</th><th>状态</th></tr></thead>
+          <thead><tr><th><input type="checkbox" checked={allExecutableSelected} disabled={busy || executableIds.length === 0} onChange={toggleAllExecutable} aria-label="选择全部可执行照片组" /></th><th aria-label="展开" /><th>照片组</th><th>工作评分</th><th>评分来源</th><th>命中规则</th><th>文件组成</th><th>最终操作</th><th>状态</th></tr></thead>
           <tbody>
             {visibleItems.map((item) => {
               const isExpanded = expanded.has(item.groupId);
+              const executable = isExecutablePlanItem(item);
               return (
                 <Fragment key={item.groupId}>
                   <tr className={`is-${item.status}`}>
+                    <td><input type="checkbox" checked={selected.has(item.groupId)} disabled={busy || !executable} onChange={() => toggleSelected(item.groupId)} aria-label={`选择 ${item.relativeStem}`} title={item.terminalAction === "cleanup" ? "待清理将在第五阶段开放" : executable ? "选择执行" : "当前照片组不可执行"} /></td>
                     <td><button className="icon-button" type="button" onClick={() => toggleExpanded(item.groupId)} aria-label={isExpanded ? `收起 ${item.relativeStem}` : `展开 ${item.relativeStem}`} title={isExpanded ? "收起详情" : "展开详情"}>{isExpanded ? <ChevronDown aria-hidden="true" size={15} /> : <ChevronRight aria-hidden="true" size={15} />}</button></td>
                     <td><strong>{item.relativeStem}</strong></td>
                     <td>{ratingText(item.rating)}</td>
@@ -115,9 +154,9 @@ export function OperationPlanReview({ plan }: OperationPlanReviewProps) {
                     <td title={item.matchedRuleNames.join("、")}>{item.matchedRuleNames.join("、") || "-"}</td>
                     <td>{item.members.map((member) => memberKindLabel(member.kind)).join(" + ") || "-"}</td>
                     <td>{item.terminalAction ? ruleActionLabel(item.terminalAction) : "-"}</td>
-                    <td><span>{operationStatusLabel(item.status)}</span></td>
+                    <td><span>{item.terminalAction === "cleanup" && item.status === "ready" ? "第五阶段开放" : operationStatusLabel(item.status)}</span></td>
                   </tr>
-                  {isExpanded ? <tr className="operation-plan-detail-row"><td colSpan={8}><PlanDetails item={item} /></td></tr> : null}
+                  {isExpanded ? <tr className="operation-plan-detail-row"><td colSpan={9}><PlanDetails item={item} /></td></tr> : null}
                 </Fragment>
               );
             })}
@@ -126,7 +165,10 @@ export function OperationPlanReview({ plan }: OperationPlanReviewProps) {
         {visibleItems.length === 0 ? <div className="operation-plan-empty">当前筛选没有照片组</div> : null}
       </div>
 
-      <footer><ShieldCheck aria-hidden="true" size={16} /><span>当前仅生成只读模拟计划，不会移动、复制或清理照片。修改规则或目录后必须重新生成计划。</span></footer>
+      <footer>
+        <div><ShieldCheck aria-hidden="true" size={16} /><span>已选 {selectionSummary.groups} 组 · {selectionSummary.files} 个文件 · {formatBytes(selectionSummary.bytes)}。不会覆盖已有文件，待清理不会执行。</span></div>
+        <button className="primary-command" type="button" disabled={busy || selectionSummary.groups === 0} onClick={() => onRequestExecute(executableIds.filter((groupId) => selected.has(groupId)))}><Play aria-hidden="true" size={15} />执行所选</button>
+      </footer>
     </section>
   );
 }
