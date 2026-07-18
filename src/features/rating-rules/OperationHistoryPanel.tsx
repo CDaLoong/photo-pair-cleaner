@@ -43,7 +43,7 @@ export function OperationHistoryPanel({
   onOpenTrash,
 }: OperationHistoryPanelProps) {
   return (
-    <section className="organizer-history" aria-label="评分整理操作历史">
+    <section id="rating-rules-history" className="organizer-history" aria-label="评分整理操作历史" data-tour="rating-rules-history">
       <header><History aria-hidden="true" size={18} /><div><h2>操作历史与恢复</h2><p>历史只追加记录；恢复和撤销都不会覆盖或删除已变化文件。</p></div></header>
 
       {latest ? (

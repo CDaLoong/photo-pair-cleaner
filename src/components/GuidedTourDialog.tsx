@@ -139,7 +139,7 @@ export function GuidedTourDialog({
     };
 
     const centerTarget = () => {
-      const scrollContainer = target.closest<HTMLElement>(".setup-view, .photo-grid-scroll, .folder-tree-scroll");
+      const scrollContainer = target.closest<HTMLElement>(".setup-view, .photo-grid-scroll, .folder-tree-scroll, .rating-rules-workspace");
       if (!scrollContainer) {
         target.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
         return;

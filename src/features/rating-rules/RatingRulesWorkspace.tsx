@@ -486,7 +486,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
         </section>
 
         <div className="rating-rules-safety"><ShieldCheck aria-hidden="true" size={17} /><span>生成计划保持只读；复制、移动和待清理必须在下方逐组复核并再次确认。默认清理到可恢复的 FramePair 隔离区。</span></div>
-        <div className="rating-rules-command"><button className="primary-command" type="button" disabled={busy || !root || rules.length === 0} onClick={() => void generatePlan()}>{busy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : <ScanSearch aria-hidden="true" size={16} />}生成执行计划</button></div>
+        <div className="rating-rules-command" data-tour="rating-rules-command"><button className="primary-command" type="button" disabled={busy || !root || rules.length === 0} onClick={() => void generatePlan()}>{busy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : <ScanSearch aria-hidden="true" size={16} />}生成执行计划</button></div>
       </section>
 
       {plan ? <OperationPlanReview plan={plan} busy={busy} onRequestExecute={setPendingGroupIds} /> : null}

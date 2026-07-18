@@ -178,6 +178,29 @@ test("rating cleanup history restores quarantine and only opens system trash", (
   assert.doesNotMatch(workspace, /restore_rating_trash/);
 });
 
+test("rating organizer guide follows the complete always-visible workflow", () => {
+  const guide = fs.readFileSync(new URL("../src/features/cleanup/CleanupGuideDialog.tsx", import.meta.url), "utf8");
+  const workspace = fs.readFileSync(new URL("../src/features/rating-rules/RatingRulesWorkspace.tsx", import.meta.url), "utf8");
+  const history = fs.readFileSync(new URL("../src/features/rating-rules/OperationHistoryPanel.tsx", import.meta.url), "utf8");
+  for (const target of [
+    "rating-rules-root",
+    "rating-rules-template",
+    "rating-rules-editor",
+    "rating-rules-sync",
+    "rating-rules-command",
+    "rating-rules-history",
+  ]) {
+    assert.match(guide, new RegExp(`data-tour='${target}'`));
+  }
+  assert.match(workspace, /data-tour="rating-rules-command"/);
+  assert.match(history, /data-tour="rating-rules-history"/);
+});
+
+test("guided tours can center targets inside the rating organizer scroller", () => {
+  const guide = fs.readFileSync(new URL("../src/components/GuidedTourDialog.tsx", import.meta.url), "utf8");
+  assert.match(guide, /\.rating-rules-workspace/);
+});
+
 test("sidebar preferences collapse only when storage explicitly says true", () => {
   assert.equal(utils.storedBooleanPreference("true"), true);
   assert.equal(utils.storedBooleanPreference("false"), false);

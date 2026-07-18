@@ -3,6 +3,7 @@ import {
   CircleHelp,
   FileCheck2,
   FolderInput,
+  History,
   ListFilter,
   RefreshCw,
   ScanSearch,
@@ -145,16 +146,29 @@ const RATING_SYNC_GUIDE_STEPS: GuidedTourStep[] = [
 const RATING_RULES_GUIDE_STEPS: GuidedTourStep[] = [
   GUIDE_STEPS[0],
   {
-    title: "选择照片根目录和规则模板",
-    description: "模板只填充可编辑草稿，不会创建目录或自动扫描。",
+    title: "先选择照片根目录",
+    description: "FramePair 会从这个目录递归读取照片组和评分，选择目录本身不会修改文件。",
     icon: FolderInput,
     selector: "[data-tour='rating-rules-root']",
     placement: "bottom",
     points: [
-      { label: "照片根目录", detail: "点击选择或直接拖入包含 JPG、RAW 与 XMP 的共同目录。" },
-      { label: "四种模板", detail: "精选归档、低分清理、保留全部备份和完全自定义都可以继续修改。" },
+      { label: "点击或拖入", detail: "选择同时包含 JPG、RAW 或对应 XMP 的共同照片根目录。" },
+      { label: "递归扫描", detail: "子目录会保留在照片组相对路径中，避免同名照片串组。" },
     ],
-    tip: "复制和移动模板不会替你创建目标文件夹，目标位置始终由你选择。",
+    tip: "选择目录和生成计划都是只读操作，直到最终确认前都不会移动文件。",
+  },
+  {
+    title: "选择一个起步模板",
+    description: "模板负责填入可编辑规则草稿，不会自动创建目录、扫描或执行。",
+    icon: ListFilter,
+    selector: "[data-tour='rating-rules-template']",
+    placement: "bottom",
+    points: [
+      { label: "精选归档", detail: "把 4 星以上照片组移动到你选择的目录。" },
+      { label: "低分清理", detail: "把 2 星以下照片组标记为待清理，执行时再选择隔离区或系统回收站。" },
+      { label: "保留全部备份", detail: "复制所有评分照片组，源文件仍保留在原位置。" },
+    ],
+    tip: "不确定时先用“精选归档”；应用模板后仍可以修改每一个字段。",
   },
   {
     title: "逐条编辑评分处理规则",
@@ -183,16 +197,30 @@ const RATING_RULES_GUIDE_STEPS: GuidedTourStep[] = [
     tip: "这里仍然只是预览；自动模式也不会移动、复制或清理照片。",
   },
   {
-    title: "复核执行计划",
-    description: "查看数量、空间、规则命中、每个源路径、目标和冲突原因；待清理还需选择隔离区或系统回收站。",
+    title: "生成计划，复核后再执行",
+    description: "先生成不可变只读计划，再逐组勾选并进入最终确认。",
     icon: ScanSearch,
-    selector: "[data-tour='rating-rules-plan']",
+    selector: "[data-tour='rating-rules-command']",
     placement: "top",
     points: [
       { label: "展开照片组", detail: "核对每个 JPG、RAW、XMP 的源路径、目标、大小和修改时间。" },
       { label: "处理冲突", detail: "目标已存在、平铺重名、目录嵌套和多规则命中都会阻止该照片组。" },
+      { label: "最终确认", detail: "待清理照片在确认窗口选择隔离区或系统回收站，默认使用可恢复的隔离区。" },
     ],
-    tip: "阶段三没有文件操作按钮；修改配置后必须重新生成计划。",
+    tip: "规则或目录有任何修改，都必须重新生成计划；计划不会静默覆盖文件。",
+  },
+  {
+    title: "从操作历史查看结果和恢复",
+    description: "每次执行都会追加独立回执，可恢复的操作会在这里提供入口。",
+    icon: History,
+    selector: "[data-tour='rating-rules-history']",
+    placement: "top",
+    points: [
+      { label: "移动与隔离", detail: "目标文件未变化且原位置未被占用时，可以整组恢复。" },
+      { label: "复制", detail: "只撤销本次创建且执行后没有变化的副本。" },
+      { label: "系统回收站", detail: "FramePair 保留操作回执，并提供打开系统回收站入口。" },
+    ],
+    tip: "历史只追加，不会用恢复结果覆盖原操作记录。",
   },
 ];
 
