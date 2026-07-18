@@ -16,7 +16,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+cosmic-text = "0.19.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+imageproc = { version = "=0.26.2", default-features = false }
+little_exif = "0.6.23"
+moxcms = "0.8.1"
 quick-xml = "0.38"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

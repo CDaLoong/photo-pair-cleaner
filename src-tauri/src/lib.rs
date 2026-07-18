@@ -14,11 +14,15 @@ mod rating_sync;
 mod ratings;
 mod reference;
 mod safety;
+#[allow(dead_code)]
+mod watermark_color;
 mod watermark_commands;
 #[allow(dead_code)]
 mod watermark_geometry;
 #[allow(dead_code)]
 mod watermark_model;
+#[allow(dead_code)]
+mod watermark_render;
 mod watermark_source;
 
 use chrono::Utc;
