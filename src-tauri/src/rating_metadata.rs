@@ -292,7 +292,7 @@ pub(crate) fn rewrite_xmp_rating(input: Option<&[u8]>, rating: u8) -> Result<Vec
         }
     }
 
-    if !description_found || !rating_updated {
+    if !rating_updated || (current.is_none() && !description_found) {
         return Err("XMP 中没有可安全更新的 rdf:Description".to_string());
     }
     let output = writer.into_inner();

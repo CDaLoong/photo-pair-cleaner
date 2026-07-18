@@ -10,6 +10,8 @@ use std::time::UNIX_EPOCH;
 use tempfile::NamedTempFile;
 
 const MAX_XMP_BYTES: u64 = 4 * 1024 * 1024;
+const SYNC_DATABASE_VERSION: u8 = 1;
+const MAX_SYNC_DATABASE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +33,87 @@ pub(crate) enum RatingResolution {
 pub(crate) struct RatingSyncTargets {
     pub(crate) raw_xmp: bool,
     pub(crate) jpeg_metadata: bool,
+}
+
+impl Default for RatingSyncTargets {
+    fn default() -> Self {
+        Self {
+            raw_xmp: true,
+            jpeg_metadata: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RatingSyncMode {
+    #[default]
+    Manual,
+    Automatic,
+}
+
+impl Default for RatingConflictPolicy {
+    fn default() -> Self {
+        Self::Skip
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RatingSyncSettings {
+    pub(crate) mode: RatingSyncMode,
+    pub(crate) targets: RatingSyncTargets,
+    pub(crate) conflict_policy: RatingConflictPolicy,
+    pub(crate) jpeg_write_confirmed: bool,
+}
+
+impl Default for RatingSyncSettings {
+    fn default() -> Self {
+        Self {
+            mode: RatingSyncMode::Manual,
+            targets: RatingSyncTargets::default(),
+            conflict_policy: RatingConflictPolicy::Skip,
+            jpeg_write_confirmed: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingRatingSync {
+    pub(crate) root: String,
+    pub(crate) asset_id: String,
+    pub(crate) rating: u8,
+    pub(crate) targets: RatingSyncTargets,
+    pub(crate) error: String,
+    pub(crate) failed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RatingSyncState {
+    pub(crate) settings: RatingSyncSettings,
+    pub(crate) pending: Vec<PendingRatingSync>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RatingSyncDatabase {
+    version: u8,
+    #[serde(default)]
+    settings: RatingSyncSettings,
+    #[serde(default)]
+    pending: Vec<PendingRatingSync>,
+}
+
+impl Default for RatingSyncDatabase {
+    fn default() -> Self {
+        Self {
+            version: SYNC_DATABASE_VERSION,
+            settings: RatingSyncSettings::default(),
+            pending: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +234,22 @@ pub(crate) struct RatingSyncExecutionSummary {
     pub(crate) succeeded: usize,
     pub(crate) failed: usize,
     pub(crate) results: Vec<RatingSyncExecutionResult>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AutoSyncStatus {
+    Disabled,
+    Unchanged,
+    Synced,
+    Pending,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AutoSyncOutcome {
+    pub(crate) status: AutoSyncStatus,
+    pub(crate) message: Option<String>,
 }
 
 #[derive(Default)]
@@ -730,4 +829,319 @@ pub(crate) fn execute_plan(
         failed: results.len().saturating_sub(succeeded),
         results,
     })
+}
+
+fn validate_settings(settings: &RatingSyncSettings) -> Result<(), String> {
+    if settings.mode == RatingSyncMode::Automatic
+        && !settings.targets.raw_xmp
+        && !settings.targets.jpeg_metadata
+    {
+        return Err("自动同步模式必须至少选择一个评分同步目标".to_string());
+    }
+    if settings.targets.jpeg_metadata && !settings.jpeg_write_confirmed {
+        return Err("启用 JPG 元数据写入前必须明确确认".to_string());
+    }
+    Ok(())
+}
+
+fn read_sync_database(path: &Path) -> Result<RatingSyncDatabase, String> {
+    if !path.exists() {
+        return Ok(RatingSyncDatabase::default());
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("无法读取评分同步设置文件信息：{error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("评分同步设置不是可信普通文件".to_string());
+    }
+    if metadata.len() > MAX_SYNC_DATABASE_BYTES {
+        return Err("评分同步设置超过 4 MiB 上限".to_string());
+    }
+    let input = fs::read(path).map_err(|error| format!("无法读取评分同步设置：{error}"))?;
+    let database: RatingSyncDatabase =
+        serde_json::from_slice(&input).map_err(|error| format!("评分同步设置已损坏：{error}"))?;
+    if database.version != SYNC_DATABASE_VERSION {
+        return Err(format!("不支持评分同步设置版本 {}", database.version));
+    }
+    validate_settings(&database.settings)?;
+    if database.pending.iter().any(|pending| {
+        pending.root.trim().is_empty()
+            || pending.asset_id.trim().is_empty()
+            || pending.rating > 5
+            || (!pending.targets.raw_xmp && !pending.targets.jpeg_metadata)
+            || pending.error.trim().is_empty()
+    }) {
+        return Err("评分同步待处理记录无效".to_string());
+    }
+    Ok(database)
+}
+
+fn write_sync_database(path: &Path, database: &RatingSyncDatabase) -> Result<(), String> {
+    let bytes =
+        serde_json::to_vec(database).map_err(|error| format!("无法序列化评分同步设置：{error}"))?;
+    if bytes.len() as u64 > MAX_SYNC_DATABASE_BYTES {
+        return Err("评分同步设置超过 4 MiB 上限".to_string());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法确定评分同步设置目录".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| format!("无法创建评分同步设置目录：{error}"))?;
+    let mut temporary = NamedTempFile::new_in(parent)
+        .map_err(|error| format!("无法创建评分同步设置临时文件：{error}"))?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|_| temporary.as_file_mut().sync_all())
+        .map_err(|error| format!("无法写入评分同步设置：{error}"))?;
+    if path.exists() {
+        temporary
+            .persist(path)
+            .map_err(|error| format!("无法替换评分同步设置：{}", error.error))?;
+    } else {
+        temporary
+            .persist_noclobber(path)
+            .map_err(|error| format!("无法保存评分同步设置：{}", error.error))?;
+    }
+    #[cfg(unix)]
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("评分同步设置已写入，但目录同步失败：{error}"))?;
+    Ok(())
+}
+
+fn canonical_root_key(root: &Path) -> Result<String, String> {
+    let root = fs::canonicalize(root).map_err(|error| format!("照片目录不可访问：{error}"))?;
+    if !root.is_dir() {
+        return Err("照片目录不是文件夹".to_string());
+    }
+    Ok(display_path(&root))
+}
+
+pub(crate) fn load_sync_state(
+    database_path: &Path,
+    root: Option<&Path>,
+) -> Result<RatingSyncState, String> {
+    let database = read_sync_database(database_path)?;
+    let root_key = root.map(canonical_root_key).transpose()?;
+    let pending = database
+        .pending
+        .into_iter()
+        .filter(|pending| root_key.as_ref().is_none_or(|root| &pending.root == root))
+        .collect();
+    Ok(RatingSyncState {
+        settings: database.settings,
+        pending,
+    })
+}
+
+pub(crate) fn save_sync_settings(
+    database_path: &Path,
+    settings: &RatingSyncSettings,
+) -> Result<RatingSyncSettings, String> {
+    validate_settings(settings)?;
+    let mut database = read_sync_database(database_path)?;
+    database.settings = settings.clone();
+    write_sync_database(database_path, &database)?;
+    Ok(settings.clone())
+}
+
+pub(crate) fn record_pending(
+    database_path: &Path,
+    mut pending: PendingRatingSync,
+) -> Result<(), String> {
+    if pending.asset_id.trim().is_empty()
+        || pending.rating > 5
+        || (!pending.targets.raw_xmp && !pending.targets.jpeg_metadata)
+        || pending.error.trim().is_empty()
+    {
+        return Err("评分同步待处理记录无效".to_string());
+    }
+    pending.root = canonical_root_key(Path::new(&pending.root))?;
+    let mut database = read_sync_database(database_path)?;
+    database
+        .pending
+        .retain(|item| item.root != pending.root || item.asset_id != pending.asset_id);
+    database.pending.push(pending);
+    database.pending.sort_by(|left, right| {
+        left.root
+            .cmp(&right.root)
+            .then_with(|| left.asset_id.cmp(&right.asset_id))
+    });
+    write_sync_database(database_path, &database)
+}
+
+pub(crate) fn clear_pending(
+    database_path: &Path,
+    root: &Path,
+    asset_id: &str,
+) -> Result<(), String> {
+    let root = canonical_root_key(root)?;
+    let mut database = read_sync_database(database_path)?;
+    let original_len = database.pending.len();
+    database
+        .pending
+        .retain(|pending| pending.root != root || pending.asset_id != asset_id);
+    if database.pending.len() != original_len {
+        write_sync_database(database_path, &database)?;
+    }
+    Ok(())
+}
+
+fn pending_outcome(
+    database_path: &Path,
+    root: &Path,
+    asset_id: &str,
+    rating: u8,
+    targets: RatingSyncTargets,
+    error: String,
+    failed_at_ms: u64,
+) -> AutoSyncOutcome {
+    let pending = PendingRatingSync {
+        root: display_path(root),
+        asset_id: asset_id.to_string(),
+        rating,
+        targets,
+        error: error.clone(),
+        failed_at_ms,
+    };
+    let message = match record_pending(database_path, pending) {
+        Ok(()) => error,
+        Err(persist_error) => format!("{error}；待处理状态保存失败：{persist_error}"),
+    };
+    AutoSyncOutcome {
+        status: AutoSyncStatus::Pending,
+        message: Some(message),
+    }
+}
+
+pub(crate) fn auto_sync_saved_rating(
+    database_path: &Path,
+    index: &PhotoIndex,
+    settings: &RatingSyncSettings,
+    root: &Path,
+    asset_id: &str,
+    rating: u8,
+    plan_id: &str,
+    failed_at_ms: u64,
+) -> AutoSyncOutcome {
+    if settings.mode == RatingSyncMode::Manual {
+        return AutoSyncOutcome {
+            status: AutoSyncStatus::Disabled,
+            message: None,
+        };
+    }
+    if let Err(error) = validate_settings(settings) {
+        return pending_outcome(
+            database_path,
+            root,
+            asset_id,
+            rating,
+            settings.targets,
+            error,
+            failed_at_ms,
+        );
+    }
+
+    let request = RatingSyncPlanRequest {
+        root: display_path(root),
+        minimum_rating: 0,
+        maximum_rating: 5,
+        asset_ids: vec![asset_id.to_string()],
+        targets: settings.targets,
+        conflict_policy: settings.conflict_policy,
+        jpeg_write_confirmed: settings.jpeg_write_confirmed,
+    };
+    let plan = match build_plan(index, &request, plan_id.to_string()) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return pending_outcome(
+                database_path,
+                root,
+                asset_id,
+                rating,
+                settings.targets,
+                error,
+                failed_at_ms,
+            );
+        }
+    };
+    let Some(item) = plan
+        .summary()
+        .items
+        .iter()
+        .find(|item| item.asset_id == asset_id)
+    else {
+        return pending_outcome(
+            database_path,
+            root,
+            asset_id,
+            rating,
+            settings.targets,
+            "当前照片组不在评分同步计划中".to_string(),
+            failed_at_ms,
+        );
+    };
+    match item.status {
+        RatingSyncStatus::Conflict => {
+            return pending_outcome(
+                database_path,
+                root,
+                asset_id,
+                rating,
+                settings.targets,
+                item.issues
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "评分来源存在冲突".to_string()),
+                failed_at_ms,
+            );
+        }
+        RatingSyncStatus::Unchanged => {
+            let message = clear_pending(database_path, root, asset_id).err();
+            return AutoSyncOutcome {
+                status: AutoSyncStatus::Unchanged,
+                message,
+            };
+        }
+        RatingSyncStatus::Ready => {}
+    }
+
+    let execution = execute_plan(
+        &plan,
+        &RatingSyncExecuteRequest {
+            plan_id: plan_id.to_string(),
+            root: display_path(root),
+            asset_ids: vec![asset_id.to_string()],
+        },
+    );
+    match execution {
+        Ok(summary) if summary.failed == 0 => {
+            let message = clear_pending(database_path, root, asset_id).err();
+            AutoSyncOutcome {
+                status: AutoSyncStatus::Synced,
+                message,
+            }
+        }
+        Ok(summary) => pending_outcome(
+            database_path,
+            root,
+            asset_id,
+            rating,
+            settings.targets,
+            summary
+                .results
+                .iter()
+                .find(|result| !result.success)
+                .map(|result| format!("{}：{}", result.relative_path, result.message))
+                .unwrap_or_else(|| "评分同步未完成".to_string()),
+            failed_at_ms,
+        ),
+        Err(error) => pending_outcome(
+            database_path,
+            root,
+            asset_id,
+            rating,
+            settings.targets,
+            error,
+            failed_at_ms,
+        ),
+    }
 }

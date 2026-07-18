@@ -7,11 +7,14 @@ mod rating_metadata;
 #[allow(dead_code)]
 #[path = "../src/rating_sync.rs"]
 mod rating_sync;
+#[path = "../src/ratings.rs"]
+mod ratings;
 
 use photo_groups::RatingState;
 use rating_sync::{
-    RatingConflictPolicy, RatingResolution, RatingSyncExecuteRequest, RatingSyncPlanRequest,
-    RatingSyncPlanStore, RatingSyncStatus, RatingSyncTarget, RatingSyncTargets,
+    AutoSyncStatus, PendingRatingSync, RatingConflictPolicy, RatingResolution,
+    RatingSyncExecuteRequest, RatingSyncMode, RatingSyncPlanRequest, RatingSyncPlanStore,
+    RatingSyncSettings, RatingSyncStatus, RatingSyncTarget, RatingSyncTargets,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -462,5 +465,314 @@ fn execution_rejects_a_sidecar_that_became_a_symlink() {
     assert_eq!(
         rating_metadata::read_sidecar_rating(&outside).expect("outside unchanged"),
         Some(1),
+    );
+}
+
+#[test]
+fn sync_settings_default_to_manual_raw_xmp_and_persist_valid_changes() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let database = temp.path().join("app-data/rating-sync.json");
+
+    let initial = rating_sync::load_sync_state(&database, None).expect("default sync state");
+    assert_eq!(initial.settings, RatingSyncSettings::default());
+    assert_eq!(initial.settings.mode, RatingSyncMode::Manual);
+    assert_eq!(
+        initial.settings.targets,
+        RatingSyncTargets {
+            raw_xmp: true,
+            jpeg_metadata: false,
+        },
+    );
+    assert_eq!(initial.settings.conflict_policy, RatingConflictPolicy::Skip);
+    assert!(!initial.settings.jpeg_write_confirmed);
+
+    let settings = RatingSyncSettings {
+        mode: RatingSyncMode::Automatic,
+        targets: RatingSyncTargets {
+            raw_xmp: true,
+            jpeg_metadata: true,
+        },
+        conflict_policy: RatingConflictPolicy::FramePair,
+        jpeg_write_confirmed: true,
+    };
+    assert_eq!(
+        rating_sync::save_sync_settings(&database, &settings).expect("saved settings"),
+        settings,
+    );
+    assert_eq!(
+        rating_sync::load_sync_state(&database, None)
+            .expect("stored sync state")
+            .settings,
+        settings,
+    );
+}
+
+#[test]
+fn invalid_settings_or_untrusted_databases_are_never_overwritten() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let database = temp.path().join("rating-sync.json");
+    let no_targets = RatingSyncSettings {
+        mode: RatingSyncMode::Automatic,
+        targets: RatingSyncTargets {
+            raw_xmp: false,
+            jpeg_metadata: false,
+        },
+        ..RatingSyncSettings::default()
+    };
+    assert!(rating_sync::save_sync_settings(&database, &no_targets).is_err());
+
+    let unconfirmed_jpeg = RatingSyncSettings {
+        targets: RatingSyncTargets {
+            raw_xmp: false,
+            jpeg_metadata: true,
+        },
+        jpeg_write_confirmed: false,
+        ..RatingSyncSettings::default()
+    };
+    assert!(rating_sync::save_sync_settings(&database, &unconfirmed_jpeg).is_err());
+
+    fs::write(&database, b"not json").expect("damaged database");
+    assert!(rating_sync::save_sync_settings(&database, &RatingSyncSettings::default()).is_err(),);
+    assert_eq!(
+        fs::read(&database).expect("damaged bytes remain"),
+        b"not json"
+    );
+
+    fs::write(&database, br#"{"version":99,"settings":{},"pending":[]}"#)
+        .expect("unknown database");
+    assert!(rating_sync::load_sync_state(&database, None).is_err());
+
+    fs::write(&database, vec![b'x'; 4 * 1024 * 1024 + 1]).expect("oversized database");
+    assert!(rating_sync::load_sync_state(&database, None).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_sync_database_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().expect("temp directory");
+    let target = temp.path().join("target.json");
+    let database = temp.path().join("rating-sync.json");
+    fs::write(&target, br#"{"version":1}"#).expect("target database");
+    symlink(&target, &database).expect("database symlink");
+
+    assert!(rating_sync::load_sync_state(&database, None).is_err());
+    assert!(rating_sync::save_sync_settings(&database, &RatingSyncSettings::default()).is_err(),);
+}
+
+#[test]
+fn pending_failures_are_filtered_updated_and_cleared_by_root_and_asset() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let database = temp.path().join("app-data/rating-sync.json");
+    let first_root = temp.path().join("first");
+    let second_root = temp.path().join("second");
+    fs::create_dir_all(&first_root).expect("first root");
+    fs::create_dir_all(&second_root).expect("second root");
+    let pending = |root: &std::path::Path, error: &str, failed_at_ms| PendingRatingSync {
+        root: root.to_string_lossy().into_owned(),
+        asset_id: "a".to_string(),
+        rating: 4,
+        targets: RatingSyncTargets {
+            raw_xmp: true,
+            jpeg_metadata: false,
+        },
+        error: error.to_string(),
+        failed_at_ms,
+    };
+
+    rating_sync::record_pending(&database, pending(&first_root, "第一次失败", 100))
+        .expect("first pending");
+    rating_sync::record_pending(&database, pending(&first_root, "更新后的失败", 200))
+        .expect("updated pending");
+    rating_sync::record_pending(&database, pending(&second_root, "另一个目录", 300))
+        .expect("second root pending");
+
+    let first =
+        rating_sync::load_sync_state(&database, Some(&first_root)).expect("first root state");
+    assert_eq!(first.pending.len(), 1);
+    assert_eq!(first.pending[0].error, "更新后的失败");
+    assert_eq!(first.pending[0].failed_at_ms, 200);
+
+    rating_sync::clear_pending(&database, &first_root, "a").expect("clear first pending");
+    assert!(
+        rating_sync::load_sync_state(&database, Some(&first_root))
+            .expect("cleared state")
+            .pending
+            .is_empty(),
+    );
+    assert_eq!(
+        rating_sync::load_sync_state(&database, Some(&second_root))
+            .expect("second root remains")
+            .pending
+            .len(),
+        1,
+    );
+}
+
+fn indexed_with_saved_ratings(
+    root: &std::path::Path,
+    database: &std::path::Path,
+) -> photo_groups::PhotoIndex {
+    let mut index = photo_groups::index_directory(root).expect("photo index");
+    let saved = ratings::load_ratings(database, root).expect("saved ratings");
+    photo_groups::apply_framepair_ratings(&mut index, &saved);
+    index
+}
+
+#[test]
+fn manual_mode_never_writes_external_metadata() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    let sync_database = temp.path().join("app-data/rating-sync.json");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw").expect("raw");
+    let mut index = photo_groups::index_directory(&root).expect("photo index");
+    photo_groups::apply_framepair_ratings(&mut index, &HashMap::from([("a".to_string(), 4)]));
+
+    let outcome = rating_sync::auto_sync_saved_rating(
+        &sync_database,
+        &index,
+        &RatingSyncSettings::default(),
+        &root,
+        "a",
+        4,
+        "manual",
+        100,
+    );
+
+    assert_eq!(outcome.status, AutoSyncStatus::Disabled);
+    assert!(!root.join("A.xmp").exists());
+}
+
+#[test]
+fn automatic_raw_sync_writes_metadata_and_clears_pending_state() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    let sync_database = temp.path().join("app-data/rating-sync.json");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw").expect("raw");
+    let settings = RatingSyncSettings {
+        mode: RatingSyncMode::Automatic,
+        conflict_policy: RatingConflictPolicy::FramePair,
+        ..RatingSyncSettings::default()
+    };
+    rating_sync::save_sync_settings(&sync_database, &settings).expect("saved settings");
+    rating_sync::record_pending(
+        &sync_database,
+        PendingRatingSync {
+            root: root.to_string_lossy().into_owned(),
+            asset_id: "a".to_string(),
+            rating: 3,
+            targets: settings.targets,
+            error: "旧失败".to_string(),
+            failed_at_ms: 50,
+        },
+    )
+    .expect("old pending");
+    let mut index = photo_groups::index_directory(&root).expect("photo index");
+    photo_groups::apply_framepair_ratings(&mut index, &HashMap::from([("a".to_string(), 4)]));
+
+    let outcome = rating_sync::auto_sync_saved_rating(
+        &sync_database,
+        &index,
+        &settings,
+        &root,
+        "a",
+        4,
+        "automatic",
+        100,
+    );
+
+    assert_eq!(outcome.status, AutoSyncStatus::Synced);
+    assert_eq!(
+        rating_metadata::read_sidecar_rating(&root.join("A.xmp")).expect("xmp rating"),
+        Some(4),
+    );
+    assert!(
+        rating_sync::load_sync_state(&sync_database, Some(&root))
+            .expect("sync state")
+            .pending
+            .is_empty(),
+    );
+}
+
+#[test]
+fn automatic_conflict_keeps_framepair_rating_and_records_retryable_pending_state() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    let rating_database = temp.path().join("app-data/photo-ratings.json");
+    let sync_database = temp.path().join("app-data/rating-sync.json");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw").expect("raw");
+    fs::write(root.join("A.xmp"), br#"<xmp:Rating>5</xmp:Rating>"#).expect("external rating");
+    ratings::set_rating(&rating_database, &root, "A.NEF", 4).expect("FramePair saved first");
+    let settings = RatingSyncSettings {
+        mode: RatingSyncMode::Automatic,
+        conflict_policy: RatingConflictPolicy::Skip,
+        ..RatingSyncSettings::default()
+    };
+    rating_sync::save_sync_settings(&sync_database, &settings).expect("saved settings");
+    let index = indexed_with_saved_ratings(&root, &rating_database);
+
+    let outcome = rating_sync::auto_sync_saved_rating(
+        &sync_database,
+        &index,
+        &settings,
+        &root,
+        "a",
+        4,
+        "conflict",
+        200,
+    );
+
+    assert_eq!(outcome.status, AutoSyncStatus::Pending);
+    assert_eq!(
+        ratings::load_ratings(&rating_database, &root).expect("FramePair remains")["a"],
+        4
+    );
+    assert_eq!(
+        rating_metadata::read_sidecar_rating(&root.join("A.xmp")).expect("external unchanged"),
+        Some(5),
+    );
+    let pending = rating_sync::load_sync_state(&sync_database, Some(&root))
+        .expect("pending state")
+        .pending;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].asset_id, "a");
+    assert_eq!(pending[0].rating, 4);
+    assert_eq!(pending[0].failed_at_ms, 200);
+}
+
+#[test]
+fn automatic_retry_can_clear_an_external_rating_to_zero() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    let sync_database = temp.path().join("app-data/rating-sync.json");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw").expect("raw");
+    fs::write(root.join("A.xmp"), br#"<xmp:Rating>5</xmp:Rating>"#).expect("external rating");
+    let settings = RatingSyncSettings {
+        mode: RatingSyncMode::Automatic,
+        conflict_policy: RatingConflictPolicy::FramePair,
+        ..RatingSyncSettings::default()
+    };
+    let index = photo_groups::index_directory(&root).expect("photo index");
+
+    let outcome = rating_sync::auto_sync_saved_rating(
+        &sync_database,
+        &index,
+        &settings,
+        &root,
+        "a",
+        0,
+        "clear",
+        300,
+    );
+
+    assert_eq!(outcome.status, AutoSyncStatus::Synced);
+    assert_eq!(
+        rating_metadata::read_sidecar_rating(&root.join("A.xmp")).expect("cleared xmp"),
+        Some(0),
     );
 }

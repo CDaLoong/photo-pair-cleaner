@@ -159,6 +159,14 @@ struct RatingStore {
     access: Arc<Mutex<()>>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PhotoRatingUpdate {
+    asset_id: String,
+    rating: u8,
+    auto_sync: rating_sync::AutoSyncOutcome,
+}
+
 struct CurrentPlan {
     cleanup: CleanupPlan,
     mode: ScanMode,
@@ -915,21 +923,130 @@ async fn set_photo_rating(
     root: String,
     relative_path: String,
     rating: u8,
-) -> Result<ratings::RatingUpdate, String> {
+) -> Result<PhotoRatingUpdate, String> {
     let database_path = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("无法确定评分数据目录：{error}"))?
         .join("photo-ratings.json");
+    let sync_database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分同步设置目录：{error}"))?
+        .join("rating-sync.json");
     let access = Arc::clone(&state.access);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = access
             .lock()
             .map_err(|_| "无法锁定评分数据库".to_string())?;
-        ratings::set_rating(&database_path, Path::new(&root), &relative_path, rating)
+        let update = ratings::set_rating(&database_path, Path::new(&root), &relative_path, rating)?;
+        let sync_state = rating_sync::load_sync_state(&sync_database_path, Some(Path::new(&root)));
+        let auto_sync = match sync_state {
+            Ok(sync_state) if sync_state.settings.mode == rating_sync::RatingSyncMode::Manual => {
+                rating_sync::AutoSyncOutcome {
+                    status: rating_sync::AutoSyncStatus::Disabled,
+                    message: None,
+                }
+            }
+            Ok(sync_state) => {
+                let index =
+                    photo_groups::index_directory(Path::new(&root)).and_then(|mut index| {
+                        let saved = ratings::load_ratings(&database_path, Path::new(&root))?;
+                        photo_groups::apply_framepair_ratings(&mut index, &saved);
+                        Ok(index)
+                    });
+                match index {
+                    Ok(index) => rating_sync::auto_sync_saved_rating(
+                        &sync_database_path,
+                        &index,
+                        &sync_state.settings,
+                        Path::new(&root),
+                        &update.asset_id,
+                        update.rating,
+                        &next_plan_id(),
+                        now_ms(),
+                    ),
+                    Err(error) => {
+                        let pending = rating_sync::PendingRatingSync {
+                            root: root.clone(),
+                            asset_id: update.asset_id.clone(),
+                            rating: update.rating,
+                            targets: sync_state.settings.targets,
+                            error: error.clone(),
+                            failed_at_ms: now_ms(),
+                        };
+                        let message = rating_sync::record_pending(&sync_database_path, pending)
+                            .err()
+                            .map(|pending_error| {
+                                format!("{error}；待处理状态保存失败：{pending_error}")
+                            })
+                            .unwrap_or(error);
+                        rating_sync::AutoSyncOutcome {
+                            status: rating_sync::AutoSyncStatus::Pending,
+                            message: Some(message),
+                        }
+                    }
+                }
+            }
+            Err(error) => rating_sync::AutoSyncOutcome {
+                status: rating_sync::AutoSyncStatus::Pending,
+                message: Some(format!(
+                    "FramePair 评分已保存，但无法读取自动同步设置：{error}"
+                )),
+            },
+        };
+        Ok(PhotoRatingUpdate {
+            asset_id: update.asset_id,
+            rating: update.rating,
+            auto_sync,
+        })
     })
     .await
     .map_err(|error| format!("保存照片评分任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn get_rating_sync_state(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RatingStore>,
+    root: Option<String>,
+) -> Result<rating_sync::RatingSyncState, String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分同步设置目录：{error}"))?
+        .join("rating-sync.json");
+    let access = Arc::clone(&state.access);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access
+            .lock()
+            .map_err(|_| "无法锁定评分同步设置".to_string())?;
+        rating_sync::load_sync_state(&database_path, root.as_deref().map(Path::new))
+    })
+    .await
+    .map_err(|error| format!("读取评分同步设置任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn save_rating_sync_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RatingStore>,
+    settings: rating_sync::RatingSyncSettings,
+) -> Result<rating_sync::RatingSyncSettings, String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分同步设置目录：{error}"))?
+        .join("rating-sync.json");
+    let access = Arc::clone(&state.access);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access
+            .lock()
+            .map_err(|_| "无法锁定评分同步设置".to_string())?;
+        rating_sync::save_sync_settings(&database_path, &settings)
+    })
+    .await
+    .map_err(|error| format!("保存评分同步设置任务异常结束：{error}"))?
 }
 
 #[tauri::command]
@@ -1064,6 +1181,8 @@ pub fn run() {
             reveal_scan_item,
             index_photo_directory,
             set_photo_rating,
+            get_rating_sync_state,
+            save_rating_sync_settings,
             generate_rating_sync_plan,
             execute_rating_sync_plan,
             load_photo_thumbnail,
