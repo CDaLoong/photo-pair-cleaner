@@ -1322,6 +1322,32 @@ fn restore_member(
     }
 }
 
+fn preflight_restore_member(
+    root: &Path,
+    rules: &[RatingRule],
+    member: &OperationMemberRecord,
+) -> Result<(), String> {
+    let source = trusted_history_source(root, &member.source_path)?;
+    let target = trusted_history_target(rules, &member.target_path)?;
+    let snapshot = member
+        .target_snapshot
+        .as_ref()
+        .ok_or_else(|| "历史记录缺少目标摘要".to_string())?;
+    if source.exists() {
+        return Err(format!("原位置已有文件：{}", member.source_path));
+    }
+    if !unchanged(&target, snapshot) {
+        return Err(format!("移动目标已变化或不存在：{}", member.target_path));
+    }
+    let parent = source
+        .parent()
+        .ok_or_else(|| "无法确定恢复目标目录".to_string())?;
+    if !parent.starts_with(root) {
+        return Err("恢复目标目录超出了照片目录".to_string());
+    }
+    Ok(())
+}
+
 fn undo_copy_member(rules: &[RatingRule], member: &OperationMemberRecord) -> RecoveryMemberResult {
     let result = trusted_history_target(rules, &member.target_path).and_then(|target| {
         let snapshot = member
@@ -1381,15 +1407,39 @@ fn recover_operation(
         if completed.contains(group_id.as_str()) {
             return Err(format!("照片组“{}”已经恢复或撤销", group.relative_stem));
         }
-        let members = group
+        let recoverable_members = group
             .members
             .iter()
             .filter(|member| member.target_snapshot.is_some())
-            .map(|member| match kind {
-                RecoveryKind::RestoreMove => restore_member(&root, &history.manifest.rules, member),
-                RecoveryKind::UndoCopy => undo_copy_member(&history.manifest.rules, member),
-            })
             .collect::<Vec<_>>();
+        let restore_preflight = if kind == RecoveryKind::RestoreMove {
+            recoverable_members.iter().find_map(|member| {
+                preflight_restore_member(&root, &history.manifest.rules, member).err()
+            })
+        } else {
+            None
+        };
+        let members = if let Some(error) = restore_preflight {
+            recoverable_members
+                .iter()
+                .map(|member| RecoveryMemberResult {
+                    source_path: member.source_path.clone(),
+                    target_path: member.target_path.clone(),
+                    success: false,
+                    message: format!("照片组恢复预检未通过：{error}"),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            recoverable_members
+                .iter()
+                .map(|member| match kind {
+                    RecoveryKind::RestoreMove => {
+                        restore_member(&root, &history.manifest.rules, member)
+                    }
+                    RecoveryKind::UndoCopy => undo_copy_member(&history.manifest.rules, member),
+                })
+                .collect::<Vec<_>>()
+        };
         let status = recovery_status(&members);
         let succeeded = members.iter().filter(|member| member.success).count();
         let record = RecoveryRecord {
@@ -1944,7 +1994,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_move_recovery_restores_only_unoccupied_originals() {
+    fn partial_move_recovery_pauses_the_group_when_an_original_is_occupied() {
         let source = tempdir().expect("source");
         let target = tempdir().expect("target");
         let app_data = tempdir().expect("app data");
@@ -1972,10 +2022,10 @@ mod tests {
             restore_move_operation(app_data.path(), "operation-1", &["pair".to_string()], 200)
                 .expect("partial restore");
 
-        assert_eq!(restored.partial, 1);
-        assert!(root.join("one.jpg").exists());
+        assert_eq!(restored.failed, 1);
+        assert!(!root.join("one.jpg").exists());
         assert!(root.join("two.jpg").exists());
-        assert!(!destination.join("one.jpg").exists());
+        assert!(destination.join("one.jpg").exists());
         assert!(destination.join("two.jpg").exists());
     }
 }

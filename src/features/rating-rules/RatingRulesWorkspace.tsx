@@ -377,12 +377,13 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
   async function recoverOperation(kind: RecoveryKind, operationId: string, groupIds: string[]) {
     setBusy(true);
     setMessage(null);
+    const changedRoot = history.find((entry) => entry.manifest.operationId === operationId)?.manifest.root ?? root;
     try {
       const command = kind === "restoreMove" ? "restore_rating_move" : "undo_rating_copy";
       const summary = await invoke<OrganizerRecoverySummary>(command, {
         request: { operationId, groupIds },
       });
-      notifyPhotosChanged(root);
+      notifyPhotosChanged(changedRoot);
       await refreshHistory();
       const action = kind === "restoreMove" ? "恢复移动" : "撤销复制";
       setMessage(summary.failed > 0 || summary.partial > 0
