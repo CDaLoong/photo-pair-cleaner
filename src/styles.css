@@ -3737,6 +3737,71 @@ dd {
   font-size: 9px;
 }
 
+.rating-rules-template-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  width: min(760px, calc(100% - 24px));
+  margin-top: 13px;
+}
+
+.rating-rules-template-shortcut {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 52px;
+  padding: 7px 9px;
+  color: var(--muted);
+  text-align: left;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.rating-rules-template-shortcut:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.rating-rules-template-shortcut > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  margin: 0;
+}
+
+.rating-rules-template-shortcut strong {
+  margin: 0;
+  color: var(--text);
+  font-size: 10px;
+}
+
+.rating-rules-template-shortcut small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.rating-rules-custom-action {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 8px;
+  margin-top: 8px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.rating-rules-custom-action:hover {
+  color: var(--text);
+}
+
 .rating-rule-card {
   background: var(--surface-subtle);
   border: 1px solid var(--line);
@@ -4331,8 +4396,13 @@ dd {
 
 .organizer-history {
   flex: 0 0 auto;
+  scroll-margin-top: 8px;
   border-top: 1px solid var(--line);
   background: var(--surface);
+}
+
+.organizer-history:focus {
+  outline: none;
 }
 
 .organizer-history > header {
@@ -4497,7 +4567,8 @@ dd {
   .rating-rules-template,
   .rating-rule-fields,
   .rating-rule-target,
-  .rating-rules-sync-fields {
+  .rating-rules-sync-fields,
+  .rating-rules-template-shortcuts {
     grid-template-columns: 1fr;
   }
 

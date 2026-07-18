@@ -201,6 +201,25 @@ test("guided tours can center targets inside the rating organizer scroller", () 
   assert.match(guide, /\.rating-rules-workspace/);
 });
 
+test("rating organizer empty state offers direct editable template starts", () => {
+  const workspace = fs.readFileSync(new URL("../src/features/rating-rules/RatingRulesWorkspace.tsx", import.meta.url), "utf8");
+  assert.match(workspace, /useState<RatingRuleTemplateId>\("curatedArchive"\)/);
+  assert.match(workspace, /rating-rules-template-shortcuts/);
+  assert.match(workspace, /从常用模板开始/);
+  assert.match(workspace, /applyTemplate\(item\.id\)/);
+  assert.match(workspace, /添加完全自定义规则/);
+});
+
+test("rating organizer header exposes history count and a real jump target", () => {
+  const workspace = fs.readFileSync(new URL("../src/features/rating-rules/RatingRulesWorkspace.tsx", import.meta.url), "utf8");
+  const history = fs.readFileSync(new URL("../src/features/rating-rules/OperationHistoryPanel.tsx", import.meta.url), "utf8");
+  assert.match(workspace, /aria-controls="rating-rules-history"/);
+  assert.match(workspace, /history\.length/);
+  assert.match(workspace, /getElementById\("rating-rules-history"\)/);
+  assert.match(history, /id="rating-rules-history"/);
+  assert.match(history, /执行完成后，操作回执与可恢复入口会显示在这里/);
+});
+
 test("sidebar preferences collapse only when storage explicitly says true", () => {
   assert.equal(utils.storedBooleanPreference("true"), true);
   assert.equal(utils.storedBooleanPreference("false"), false);

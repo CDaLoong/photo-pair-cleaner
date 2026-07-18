@@ -2,16 +2,20 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
+  Archive,
   CheckCircle2,
+  Copy,
   FileDown,
   FileUp,
   FolderInput,
   FolderOpen,
+  History,
   LoaderCircle,
   Plus,
   Save,
   ScanSearch,
   ShieldCheck,
+  Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -74,7 +78,7 @@ function loadStoredRoot(): string {
 export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorkspaceProps) {
   const [root, setRoot] = useState(loadStoredRoot);
   const [rules, setRules] = useState<RatingRule[]>([]);
-  const [template, setTemplate] = useState<RatingRuleTemplateId>("custom");
+  const [template, setTemplate] = useState<RatingRuleTemplateId>("curatedArchive");
   const [conflictPolicy, setConflictPolicy] = useState<RatingConflictPolicy>("skip");
   const [sync, setSync] = useState<OperationSyncPreference>(DEFAULT_SYNC);
   const [plan, setPlan] = useState<OperationPlanSummary | null>(null);
@@ -229,13 +233,25 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
     }
   }
 
-  function applyTemplate() {
-    replaceRules(rulesForTemplate(template, nextRuleId));
+  function applyTemplate(nextTemplate: RatingRuleTemplateId = template) {
+    setTemplate(nextTemplate);
+    replaceRules(rulesForTemplate(nextTemplate, nextRuleId));
     setMessage({
       tone: "success",
-      title: template === "custom" ? "已切换为空白规则草稿" : "模板已填入规则草稿",
+      title: nextTemplate === "custom" ? "已切换为空白规则草稿" : "模板已填入规则草稿",
       detail: "模板不会创建目录，也不会自动生成计划。",
     });
+  }
+
+  function addCustomRule() {
+    setTemplate("custom");
+    replaceRules([...rules, createRatingRule(nextRuleId())]);
+  }
+
+  function scrollToHistory() {
+    const historySection = document.getElementById("rating-rules-history");
+    historySection?.scrollIntoView({ block: "start" });
+    historySection?.focus({ preventScroll: true });
   }
 
   function updateRule(next: RatingRule) {
@@ -440,6 +456,9 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
         <header className="rating-rules-heading">
           <div><h1>评分整理与清理规则</h1><p>用评分和格式生成计划，复核后执行复制、移动或安全清理。</p></div>
           <div className="rating-rules-file-actions">
+            <button className="secondary-command" type="button" onClick={scrollToHistory} aria-controls="rating-rules-history">
+              <History aria-hidden="true" size={16} />{history.length > 0 ? `操作历史 ${history.length}` : "操作历史"}
+            </button>
             <button className="icon-button" type="button" disabled={busy} onClick={() => void importRules()} aria-label="导入规则" title="导入规则"><FileDown aria-hidden="true" size={16} /></button>
             <button className="icon-button" type="button" disabled={busy || rules.length === 0} onClick={() => void exportRules()} aria-label="导出规则" title="导出规则"><FileUp aria-hidden="true" size={16} /></button>
             <button className="secondary-command" type="button" disabled={busy || rules.length === 0} onClick={() => void saveRules()}><Save aria-hidden="true" size={16} />保存规则</button>
@@ -454,12 +473,15 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
 
         <div className="rating-rules-template" data-tour="rating-rules-template">
           <label><span>规则模板</span><select value={template} disabled={busy} onChange={(event) => setTemplate(event.target.value as RatingRuleTemplateId)}>{RATING_RULE_TEMPLATES.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.detail}</option>)}</select></label>
-          <button className="secondary-command" type="button" disabled={busy} onClick={applyTemplate}>应用模板</button>
-          <button className="secondary-command" type="button" disabled={busy || rules.length >= 100} onClick={() => replaceRules([...rules, createRatingRule(nextRuleId())])}><Plus aria-hidden="true" size={16} />添加规则</button>
+          <button className="secondary-command" type="button" disabled={busy} onClick={() => applyTemplate()}>应用模板</button>
+          <button className="secondary-command" type="button" disabled={busy || rules.length >= 100} onClick={addCustomRule}><Plus aria-hidden="true" size={16} />添加规则</button>
         </div>
 
         <div className="rating-rules-list" data-tour="rating-rules-editor">
-          {rules.length === 0 ? <div className="rating-rules-empty"><ScanSearch aria-hidden="true" size={24} /><strong>当前没有评分规则</strong><span>选择模板，或添加一条完全自定义规则。</span></div> : rules.map((rule, index) => (
+          {rules.length === 0 ? <div className="rating-rules-empty"><ScanSearch aria-hidden="true" size={24} /><strong>从常用模板开始</strong><span>模板只会填充草稿，你仍可以修改评分、格式、操作和目标目录。</span><div className="rating-rules-template-shortcuts" role="group" aria-label="常用评分规则模板">{RATING_RULE_TEMPLATES.filter((item) => item.id !== "custom").map((item) => {
+            const TemplateIcon = item.id === "curatedArchive" ? Archive : item.id === "lowRatingCleanup" ? Trash2 : Copy;
+            return <button key={item.id} className="rating-rules-template-shortcut" type="button" disabled={busy} onClick={() => applyTemplate(item.id)}><TemplateIcon aria-hidden="true" size={17} /><span><strong>{item.name}</strong><small>{item.detail}</small></span></button>;
+          })}</div><button className="rating-rules-custom-action" type="button" disabled={busy || rules.length >= 100} onClick={addCustomRule}><Plus aria-hidden="true" size={15} />添加完全自定义规则</button></div> : rules.map((rule, index) => (
             <RatingRuleCard
               key={rule.id}
               rule={rule}

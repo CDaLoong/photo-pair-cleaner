@@ -43,7 +43,7 @@ export function OperationHistoryPanel({
   onOpenTrash,
 }: OperationHistoryPanelProps) {
   return (
-    <section id="rating-rules-history" className="organizer-history" aria-label="评分整理操作历史" data-tour="rating-rules-history">
+    <section id="rating-rules-history" className="organizer-history" aria-label="评分整理操作历史" data-tour="rating-rules-history" tabIndex={-1}>
       <header><History aria-hidden="true" size={18} /><div><h2>操作历史与恢复</h2><p>历史只追加记录；恢复和撤销都不会覆盖或删除已变化文件。</p></div></header>
 
       {latest ? (
@@ -53,7 +53,7 @@ export function OperationHistoryPanel({
         </div>
       ) : null}
 
-      {history.length === 0 ? <div className="organizer-history-empty">当前还没有评分整理或清理历史</div> : (
+      {history.length === 0 ? <div className="organizer-history-empty">执行完成后，操作回执与可恢复入口会显示在这里</div> : (
         <div className="organizer-history-list">
           {history.slice(0, 6).map((entry) => {
             const moveGroups = recoverableGroups(entry, "restoreMove");
