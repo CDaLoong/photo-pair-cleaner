@@ -109,7 +109,7 @@ pub(crate) fn discover_installed() -> Vec<ExternalEditor> {
         if let Some(home) = std::env::var_os("HOME") {
             roots.push(PathBuf::from(home).join("Applications"));
         }
-        return discover_in(&roots, EditorPlatform::Macos);
+        discover_in(&roots, EditorPlatform::Macos)
     }
     #[cfg(target_os = "windows")]
     {

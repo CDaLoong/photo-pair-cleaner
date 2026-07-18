@@ -43,10 +43,10 @@ pub(crate) fn xmp_rating(input: &[u8]) -> Result<Option<i8>, String> {
                         }
                     }
                 }
-                if element.local_name().as_ref() == b"Rating" {
-                    if rating_depth.replace(depth).is_some() {
-                        return Err("XMP 中包含嵌套的 Rating".to_string());
-                    }
+                if element.local_name().as_ref() == b"Rating"
+                    && rating_depth.replace(depth).is_some()
+                {
+                    return Err("XMP 中包含嵌套的 Rating".to_string());
                 }
             }
             Ok(Event::Empty(element)) => {
@@ -308,7 +308,9 @@ pub(crate) fn rewrite_xmp_rating(input: Option<&[u8]>, rating: u8) -> Result<Vec
     Ok(output)
 }
 
-fn jpeg_xmp_segment(input: &[u8]) -> Result<Option<(usize, usize, &[u8])>, String> {
+type JpegXmpSegment<'a> = Option<(usize, usize, &'a [u8])>;
+
+fn jpeg_xmp_segment(input: &[u8]) -> Result<JpegXmpSegment<'_>, String> {
     if input.len() < 4 || input[..2] != [0xff, 0xd8] {
         return Err("JPG 缺少有效的 SOI 文件头".to_string());
     }

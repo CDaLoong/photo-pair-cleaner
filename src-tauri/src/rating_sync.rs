@@ -13,9 +13,10 @@ const MAX_XMP_BYTES: u64 = 4 * 1024 * 1024;
 const SYNC_DATABASE_VERSION: u8 = 1;
 const MAX_SYNC_DATABASE_BYTES: u64 = 4 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum RatingConflictPolicy {
+    #[default]
     Skip,
     FramePair,
     External,
@@ -50,12 +51,6 @@ pub(crate) enum RatingSyncMode {
     #[default]
     Manual,
     Automatic,
-}
-
-impl Default for RatingConflictPolicy {
-    fn default() -> Self {
-        Self::Skip
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -545,20 +540,18 @@ pub(crate) fn build_plan(
         let mut writes = Vec::new();
         let mut candidates = Vec::new();
         if initial_resolution != RatingResolution::Conflict {
-            if request.targets.raw_xmp {
-                if let Some((write, planned)) = raw_target(&root, asset, target_rating, &mut issues)
-                {
-                    writes.push(write);
-                    candidates.push(planned);
-                }
+            if request.targets.raw_xmp
+                && let Some((write, planned)) = raw_target(&root, asset, target_rating, &mut issues)
+            {
+                writes.push(write);
+                candidates.push(planned);
             }
-            if request.targets.jpeg_metadata {
-                if let Some((write, planned)) =
+            if request.targets.jpeg_metadata
+                && let Some((write, planned)) =
                     jpeg_target(&root, asset, target_rating, &mut issues)
-                {
-                    writes.push(write);
-                    candidates.push(planned);
-                }
+            {
+                writes.push(write);
+                candidates.push(planned);
             }
         }
 
@@ -1076,6 +1069,7 @@ fn pending_outcome(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn auto_sync_saved_rating(
     database_path: &Path,
     index: &PhotoIndex,

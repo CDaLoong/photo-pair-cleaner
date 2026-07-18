@@ -496,10 +496,10 @@ fn write_audit_manifest(paths: &[String], destination: &Path) -> Result<(), Stri
     if !parent.is_dir() {
         return Err("审计清单保存目录不存在".to_string());
     }
-    if let Ok(metadata) = fs::symlink_metadata(destination) {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err("审计清单目标不是可信普通文件".to_string());
-        }
+    if let Ok(metadata) = fs::symlink_metadata(destination)
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        return Err("审计清单目标不是可信普通文件".to_string());
     }
     let mut file = OpenOptions::new()
         .create(true)
@@ -593,10 +593,10 @@ fn validate_delete_candidate(
     if metadata.len() != candidate.expected_size_bytes {
         return Err("文件大小在扫描后发生变化，请重新扫描".to_string());
     }
-    if let Some(expected) = candidate.expected_modified_ms {
-        if modified_ms(&metadata) != Some(expected) {
-            return Err("文件修改时间在扫描后发生变化，请重新扫描".to_string());
-        }
+    if let Some(expected) = candidate.expected_modified_ms
+        && modified_ms(&metadata) != Some(expected)
+    {
+        return Err("文件修改时间在扫描后发生变化，请重新扫描".to_string());
     }
     Ok(path)
 }

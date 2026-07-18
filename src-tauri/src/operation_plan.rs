@@ -26,24 +26,13 @@ pub(crate) struct PlannedSyncAction {
     pub(crate) timing: SyncTiming,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OperationSyncPreference {
     pub(crate) enabled: bool,
     pub(crate) targets: RatingSyncTargets,
     pub(crate) jpeg_write_confirmed: bool,
     pub(crate) sync_cleanup_before: bool,
-}
-
-impl Default for OperationSyncPreference {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            targets: RatingSyncTargets::default(),
-            jpeg_write_confirmed: false,
-            sync_cleanup_before: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -709,6 +698,10 @@ pub(crate) fn build_operation_plan(
                     Vec::new(),
                 )
             } else {
+                let target_rating = match rating {
+                    Some(rating) => rating,
+                    None => unreachable!("resolved rating must exist for a matched rule"),
+                };
                 let issue_count = issues.len();
                 assign_member_targets(rule, &mut members, &mut issues);
                 let sync_actions = build_sync_actions(
@@ -717,7 +710,7 @@ pub(crate) fn build_operation_plan(
                     rule,
                     &members,
                     request.sync,
-                    rating.expect("resolved rating must exist for a matched rule"),
+                    target_rating,
                     &mut issues,
                 );
                 let status = if issues.len() > issue_count {
