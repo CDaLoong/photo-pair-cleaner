@@ -6,6 +6,7 @@ import {
   preloadPreviewRequests,
 } from "../src/features/preview/previewCache.ts";
 import * as previewUtils from "../src/features/preview/previewUtils.ts";
+import * as ratingRuleUtils from "../src/features/rating-rules/ratingRuleUtils.ts";
 import * as ratingSyncUtils from "../src/features/rating-sync/ratingSyncUtils.ts";
 import * as utils from "../src/utils.ts";
 
@@ -22,6 +23,75 @@ test("phase three registers read-only rating rule commands without an executor",
     assert.match(source, new RegExp(`\\n\\s*${command},?`));
   }
   assert.doesNotMatch(source, /execute_operation_plan/);
+});
+
+test("new rating rules use the agreed move, group, and path defaults", () => {
+  const rule = ratingRuleUtils.createRatingRule("rule-1");
+  assert.equal(rule.action, "move");
+  assert.deepEqual(rule.memberScope, ["jpeg", "raw", "xmp"]);
+  assert.equal(rule.preserveRelativePath, true);
+  assert.equal(rule.destination, null);
+  assert.deepEqual(rule.condition, { type: "equal", rating: 3 });
+});
+
+test("rating rule templates create editable drafts without destinations", () => {
+  const id = () => "template-rule";
+  const curated = ratingRuleUtils.rulesForTemplate("curatedArchive", id);
+  assert.equal(curated[0].action, "move");
+  assert.deepEqual(curated[0].condition, { type: "atLeast", rating: 4 });
+  assert.equal(curated[0].destination, null);
+
+  const cleanup = ratingRuleUtils.rulesForTemplate("lowRatingCleanup", id);
+  assert.equal(cleanup[0].action, "cleanup");
+  assert.deepEqual(cleanup[0].condition, { type: "atMost", rating: 2 });
+
+  const backup = ratingRuleUtils.rulesForTemplate("backupAll", id);
+  assert.equal(backup[0].action, "copy");
+  assert.deepEqual(backup[0].condition, { type: "between", minimum: 0, maximum: 5 });
+  assert.equal(backup[0].destination, null);
+  assert.deepEqual(ratingRuleUtils.rulesForTemplate("custom", id), []);
+});
+
+test("rating rule draft validation explains the first actionable problem", () => {
+  assert.deepEqual(ratingRuleUtils.validateRatingRuleDrafts([]), {
+    valid: false,
+    message: "请至少创建一条评分规则",
+  });
+  const move = ratingRuleUtils.createRatingRule("move");
+  assert.deepEqual(ratingRuleUtils.validateRatingRuleDrafts([move]), {
+    valid: false,
+    message: "规则“自定义规则”必须选择目标目录",
+  });
+  const cleanup = { ...move, id: "cleanup", action: "cleanup", destination: null };
+  assert.deepEqual(ratingRuleUtils.validateRatingRuleDrafts([cleanup]), { valid: true });
+  assert.deepEqual(ratingRuleUtils.validateRatingRuleDrafts([cleanup, { ...cleanup }]), {
+    valid: false,
+    message: "规则 ID 重复：cleanup",
+  });
+});
+
+test("operation plan filters and Chinese labels remain stable", () => {
+  const items = [
+    { groupId: "a", terminalAction: "move", status: "ready", syncActions: [] },
+    { groupId: "b", terminalAction: "cleanup", status: "ready", syncActions: [] },
+    { groupId: "c", terminalAction: null, status: "conflict", syncActions: [] },
+    { groupId: "d", terminalAction: "keep", status: "keep", syncActions: [{ target: "rawXmp" }] },
+  ];
+  assert.deepEqual(
+    ratingRuleUtils.filterOperationPlanItems(items, "cleanup").map((item) => item.groupId),
+    ["b"],
+  );
+  assert.deepEqual(
+    ratingRuleUtils.filterOperationPlanItems(items, "sync").map((item) => item.groupId),
+    ["d"],
+  );
+  assert.deepEqual(
+    ratingRuleUtils.filterOperationPlanItems(items, "conflict").map((item) => item.groupId),
+    ["c"],
+  );
+  assert.equal(ratingRuleUtils.ruleActionLabel("move"), "移动");
+  assert.equal(ratingRuleUtils.operationStatusLabel("conflict"), "存在冲突");
+  assert.equal(ratingRuleUtils.isReadOnlyPlanItem({ status: "ready" }), true);
 });
 
 test("sidebar preferences collapse only when storage explicitly says true", () => {
