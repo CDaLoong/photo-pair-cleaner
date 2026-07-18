@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  canManipulateWatermarkLayer,
+  clampWatermarkNumber,
   classifyWatermarkOrientation,
   createDefaultWatermarkTemplate,
+  keyboardNudgeNormalized,
+  normalizeWatermarkRotation,
   outputExtension,
   selectedLayoutVariant,
+  snapNormalizedPosition,
+  viewportDeltaToNormalized,
 } from "../src/features/watermark/watermarkUtils.ts";
 import {
   WatermarkPreviewCache,
@@ -171,6 +177,16 @@ test("watermark preview binary envelope validates header bounds", () => {
     width: 320,
     height: 200,
     warnings: ["字体已回退"],
+    photoRect: { x: 10, y: 8, width: 300, height: 170 },
+    layers: [{
+      id: "signature",
+      anchorRect: { x: 0, y: 178, width: 320, height: 22 },
+      centerX: 160,
+      centerY: 188,
+      width: 100,
+      height: 16,
+      rotationDeg: 0,
+    }],
   }));
   const png = Uint8Array.from([137, 80, 78, 71]);
   const envelope = new Uint8Array(4 + header.length + png.length);
@@ -182,6 +198,16 @@ test("watermark preview binary envelope validates header bounds", () => {
     width: 320,
     height: 200,
     warnings: ["字体已回退"],
+    photoRect: { x: 10, y: 8, width: 300, height: 170 },
+    layers: [{
+      id: "signature",
+      anchorRect: { x: 0, y: 178, width: 320, height: 22 },
+      centerX: 160,
+      centerY: 188,
+      width: 100,
+      height: 16,
+      rotationDeg: 0,
+    }],
   });
   assert.deepEqual([...decoded.png], [...png]);
   assert.throws(() => decodeWatermarkPreviewEnvelope(Uint8Array.from([0, 1, 2])));
@@ -336,4 +362,103 @@ test("watermark history remains bounded to one hundred documents", () => {
     });
   }
   assert.equal(state.past.length, 100);
+});
+
+test("canvas drag converts viewport pixels into anchor-relative coordinates", () => {
+  assert.deepEqual(viewportDeltaToNormalized(
+    { dx: 20, dy: -10 },
+    { width: 400, height: 200 },
+  ), { x: 0.05, y: -0.05 });
+});
+
+test("watermark snapping covers center edges and peers within six pixels", () => {
+  const centerAndEdge = snapNormalizedPosition({
+    position: { x: 0.508, y: 0.028 },
+    anchorSize: { width: 400, height: 200 },
+    layerSize: { width: 0.2, height: 0.1 },
+    peers: [],
+    thresholdPx: 6,
+    bypass: false,
+  });
+  assert.deepEqual(centerAndEdge.position, { x: 0.5, y: 0.05 });
+  assert.deepEqual(centerAndEdge.guides.sort(), ["anchor-center-x", "anchor-top"]);
+
+  const peer = snapNormalizedPosition({
+    position: { x: 0.69, y: 0.52 },
+    anchorSize: { width: 400, height: 200 },
+    layerSize: { width: 0.2, height: 0.1 },
+    peers: [{ id: "peer", x: 0.7, y: 0.8 }],
+    thresholdPx: 6,
+    bypass: false,
+  });
+  assert.equal(peer.position.x, 0.7);
+  assert.ok(peer.guides.includes("peer-x:peer"));
+});
+
+test("holding shift bypasses watermark snapping", () => {
+  const snapped = snapNormalizedPosition({
+    position: { x: 0.508, y: 0.49 },
+    anchorSize: { width: 400, height: 200 },
+    layerSize: { width: 0.2, height: 0.1 },
+    peers: [],
+    thresholdPx: 6,
+    bypass: true,
+  });
+  assert.deepEqual(snapped, { position: { x: 0.508, y: 0.49 }, guides: [] });
+});
+
+test("keyboard nudges are zoom independent and support a coarse step", () => {
+  assert.deepEqual(keyboardNudgeNormalized(
+    { x: 0.5, y: 0.5 },
+    "ArrowRight",
+    { width: 500, height: 250 },
+    false,
+  ), { x: 0.502, y: 0.5 });
+  assert.deepEqual(keyboardNudgeNormalized(
+    { x: 0.5, y: 0.5 },
+    "ArrowUp",
+    { width: 500, height: 250 },
+    true,
+  ), { x: 0.5, y: 0.46 });
+});
+
+test("rotation numeric fields and locked layers enforce editor bounds", () => {
+  assert.equal(normalizeWatermarkRotation(190), -170);
+  assert.equal(normalizeWatermarkRotation(-540), -180);
+  assert.equal(clampWatermarkNumber(1.4, 0, 1, 0.5), 1);
+  assert.equal(clampWatermarkNumber(Number.NaN, 0, 1, 0.5), 0.5);
+  assert.equal(canManipulateWatermarkLayer({ locked: false, visible: true }), true);
+  assert.equal(canManipulateWatermarkLayer({ locked: true, visible: true }), false);
+  assert.equal(canManipulateWatermarkLayer({ locked: false, visible: false }), false);
+});
+
+test("variant styling and resources participate in editor undo history", () => {
+  let state = createWatermarkEditorState(templateWithOneLayer());
+  state = watermarkEditorReducer(state, {
+    type: "setVariantFrame",
+    orientation: "landscape",
+    patch: { bottom: 0.28 },
+  });
+  state = watermarkEditorReducer(state, {
+    type: "setVariantBackground",
+    orientation: "landscape",
+    background: { kind: "solid", color: "#123456", opacity: 0.8 },
+  });
+  state = watermarkEditorReducer(state, {
+    type: "addResource",
+    resource: {
+      id: "logo",
+      name: "logo.png",
+      mimeType: "image/png",
+      sha256: "a".repeat(64),
+      width: 20,
+      height: 10,
+      dataBase64: "AA==",
+    },
+  });
+  assert.equal(state.present.template.variants.landscape.frame.bottom, 0.28);
+  assert.equal(state.present.template.variants.landscape.background.color, "#123456");
+  assert.equal(state.present.template.resources.logo.name, "logo.png");
+  state = watermarkEditorReducer(state, { type: "undo" });
+  assert.equal(state.present.template.resources.logo, undefined);
 });

@@ -1,7 +1,11 @@
 import type {
+  EmbeddedTemplateResource,
+  FrameInsets,
   NormalizedPlacement,
   PhotoPlacementOverride,
+  PhotoStyle,
   VariantLayerLayout,
+  WatermarkBackground,
   WatermarkLayer,
   WatermarkOrientation,
   WatermarkTemplate,
@@ -36,6 +40,12 @@ export type WatermarkEditorAction =
   | { type: "reorderLayer"; layerId: string; toIndex: number }
   | { type: "setLayerLocked"; layerId: string; locked: boolean }
   | { type: "setLayerVisible"; layerId: string; visible: boolean }
+  | { type: "setVariantFrame"; orientation: WatermarkOrientation; patch: Partial<FrameInsets>; historyGroup?: HistoryGroup }
+  | { type: "setVariantPhoto"; orientation: WatermarkOrientation; patch: Partial<PhotoStyle>; historyGroup?: HistoryGroup }
+  | { type: "setVariantBackground"; orientation: WatermarkOrientation; background: WatermarkBackground }
+  | { type: "setCanvasRatio"; orientation: WatermarkOrientation; canvasRatio: number | null }
+  | { type: "addResource"; resource: EmbeddedTemplateResource }
+  | { type: "removeResource"; resourceId: string }
   | {
       type: "setLayerPlacement";
       orientation: WatermarkOrientation;
@@ -228,6 +238,47 @@ export function watermarkEditorReducer(
       return setLayerBoolean(state, action.layerId, "locked", action.locked);
     case "setLayerVisible":
       return setLayerBoolean(state, action.layerId, "visible", action.visible);
+    case "setVariantFrame":
+      return editDocument(state, true, action.historyGroup, (document) => {
+        const frame = document.template.variants[action.orientation].frame;
+        if (!valuesDiffer(frame, action.patch)) return false;
+        Object.assign(frame, action.patch);
+        return true;
+      });
+    case "setVariantPhoto":
+      return editDocument(state, true, action.historyGroup, (document) => {
+        const photo = document.template.variants[action.orientation].photo;
+        if (!valuesDiffer(photo, action.patch)) return false;
+        Object.assign(photo, action.patch);
+        return true;
+      });
+    case "setVariantBackground":
+      return editDocument(state, true, null, (document) => {
+        document.template.variants[action.orientation].background = clone(action.background);
+        return true;
+      });
+    case "setCanvasRatio":
+      return editDocument(state, true, null, (document) => {
+        const variant = document.template.variants[action.orientation];
+        if (variant.canvasRatio === action.canvasRatio) return false;
+        variant.canvasRatio = action.canvasRatio;
+        return true;
+      });
+    case "addResource":
+      return editDocument(state, true, null, (document) => {
+        if (document.template.resources[action.resource.id]) return false;
+        document.template.resources[action.resource.id] = clone(action.resource);
+        return true;
+      });
+    case "removeResource":
+      return editDocument(state, true, null, (document) => {
+        if (!document.template.resources[action.resourceId]) return false;
+        if (document.template.shared.layers.some((layer) => (
+          layer.kind === "image" && layer.resourceId === action.resourceId
+        ))) return false;
+        delete document.template.resources[action.resourceId];
+        return true;
+      });
     case "setLayerPlacement":
       return editDocument(state, true, action.historyGroup, (document) => {
         const layout = document.template.variants[action.orientation].layerLayouts[action.layerId];

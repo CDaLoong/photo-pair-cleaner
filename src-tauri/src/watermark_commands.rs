@@ -19,6 +19,29 @@ pub(crate) struct WatermarkPreviewHeader {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) warnings: Vec<String>,
+    pub(crate) photo_rect: WatermarkPreviewRect,
+    pub(crate) layers: Vec<WatermarkPreviewLayerGeometry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WatermarkPreviewRect {
+    pub(crate) x: i64,
+    pub(crate) y: i64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WatermarkPreviewLayerGeometry {
+    pub(crate) id: String,
+    pub(crate) anchor_rect: WatermarkPreviewRect,
+    pub(crate) center_x: i64,
+    pub(crate) center_y: i64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rotation_deg: f32,
 }
 
 pub(crate) fn preview_envelope(
@@ -59,6 +82,17 @@ pub(crate) async fn list_watermark_fonts(
     tauri::async_runtime::spawn_blocking(move || crate::watermark_text::list_fonts(&resource_dir))
         .await
         .map_err(|error| format!("读取字体列表任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn import_watermark_resource(
+    path: String,
+) -> Result<crate::watermark_model::EmbeddedTemplateResource, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::watermark_resource::import_image_resource(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("导入图片水印任务异常结束：{error}"))?
 }
 
 #[tauri::command]
@@ -108,6 +142,30 @@ pub(crate) async fn render_watermark_preview(
             width: rendered.image.width(),
             height: rendered.image.height(),
             warnings: rendered.warnings.clone(),
+            photo_rect: WatermarkPreviewRect {
+                x: rendered.layout.photo_rect.x,
+                y: rendered.layout.photo_rect.y,
+                width: rendered.layout.photo_rect.width,
+                height: rendered.layout.photo_rect.height,
+            },
+            layers: rendered
+                .layer_geometries
+                .iter()
+                .map(|geometry| WatermarkPreviewLayerGeometry {
+                    id: geometry.id.clone(),
+                    anchor_rect: WatermarkPreviewRect {
+                        x: geometry.anchor_rect.x,
+                        y: geometry.anchor_rect.y,
+                        width: geometry.anchor_rect.width,
+                        height: geometry.anchor_rect.height,
+                    },
+                    center_x: geometry.center_x,
+                    center_y: geometry.center_y,
+                    width: geometry.width,
+                    height: geometry.height,
+                    rotation_deg: geometry.rotation_deg,
+                })
+                .collect(),
         };
         let png = crate::watermark_render::encode_preview_png(&rendered)?;
         preview_envelope(&header, &png)
@@ -119,7 +177,7 @@ pub(crate) async fn render_watermark_preview(
 
 #[cfg(test)]
 mod tests {
-    use super::{WatermarkPreviewHeader, preview_envelope};
+    use super::{WatermarkPreviewHeader, WatermarkPreviewRect, preview_envelope};
 
     #[test]
     fn watermark_preview_envelope_prefixes_a_big_endian_header_length() {
@@ -127,6 +185,13 @@ mod tests {
             width: 320,
             height: 200,
             warnings: vec!["字体已回退".into()],
+            photo_rect: WatermarkPreviewRect {
+                x: 12,
+                y: 8,
+                width: 296,
+                height: 170,
+            },
+            layers: Vec::new(),
         };
         let png = [137, 80, 78, 71];
         let envelope = preview_envelope(&header, &png).unwrap();

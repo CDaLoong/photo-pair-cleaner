@@ -220,3 +220,9 @@ export interface WatermarkRenderRequest {
   transparentBackground: boolean;
   jpegFlattenColor: string;
 }
+
+export interface WatermarkFontSummary {
+  family: string;
+  weights: number[];
+  bundled: boolean;
+}

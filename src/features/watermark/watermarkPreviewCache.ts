@@ -5,6 +5,25 @@ export interface WatermarkPreviewHeader {
   width: number;
   height: number;
   warnings: string[];
+  photoRect: WatermarkPreviewRect;
+  layers: WatermarkPreviewLayerGeometry[];
+}
+
+export interface WatermarkPreviewRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface WatermarkPreviewLayerGeometry {
+  id: string;
+  anchorRect: WatermarkPreviewRect;
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+  rotationDeg: number;
 }
 
 export interface WatermarkPreviewResult extends WatermarkPreviewHeader {
@@ -128,7 +147,14 @@ export class WatermarkPreviewCache {
 
     const entry: CacheEntry = {
       descriptor,
-      promise: Promise.resolve({ url: "", width: 0, height: 0, warnings: [] }),
+      promise: Promise.resolve({
+        url: "",
+        width: 1,
+        height: 1,
+        warnings: [],
+        photoRect: { x: 0, y: 0, width: 1, height: 1 },
+        layers: [],
+      }),
       result: null,
       disposed: false,
     };
@@ -207,10 +233,32 @@ export function decodeWatermarkPreviewEnvelope(
     throw new Error("水印预览信息无法解析");
   }
   const header = parsed as Partial<WatermarkPreviewHeader>;
+  const validRect = (rect: unknown): rect is WatermarkPreviewRect => {
+    const candidate = rect as Partial<WatermarkPreviewRect> | null;
+    return Boolean(candidate)
+      && Number.isFinite(candidate?.x)
+      && Number.isFinite(candidate?.y)
+      && Number.isInteger(candidate?.width) && (candidate?.width ?? 0) > 0
+      && Number.isInteger(candidate?.height) && (candidate?.height ?? 0) > 0;
+  };
+  const validLayer = (layer: unknown): layer is WatermarkPreviewLayerGeometry => {
+    const candidate = layer as Partial<WatermarkPreviewLayerGeometry> | null;
+    return Boolean(candidate)
+      && typeof candidate?.id === "string" && candidate.id.length > 0
+      && validRect(candidate.anchorRect)
+      && Number.isFinite(candidate.centerX)
+      && Number.isFinite(candidate.centerY)
+      && Number.isInteger(candidate.width) && (candidate.width ?? 0) > 0
+      && Number.isInteger(candidate.height) && (candidate.height ?? 0) > 0
+      && Number.isFinite(candidate.rotationDeg);
+  };
   if (!Number.isInteger(header.width) || (header.width ?? 0) <= 0
     || !Number.isInteger(header.height) || (header.height ?? 0) <= 0
     || !Array.isArray(header.warnings)
-    || !header.warnings.every((warning) => typeof warning === "string")) {
+    || !header.warnings.every((warning) => typeof warning === "string")
+    || !validRect(header.photoRect)
+    || !Array.isArray(header.layers)
+    || !header.layers.every(validLayer)) {
     throw new Error("水印预览信息格式无效");
   }
   const png = bytes.slice(headerEnd);
@@ -220,6 +268,8 @@ export function decodeWatermarkPreviewEnvelope(
       width: header.width as number,
       height: header.height as number,
       warnings: header.warnings,
+      photoRect: header.photoRect,
+      layers: header.layers,
     },
     png,
   };

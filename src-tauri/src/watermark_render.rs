@@ -39,6 +39,18 @@ pub(crate) struct RenderOutcome {
     pub(crate) layout: ResolvedLayout,
     pub(crate) source_icc: Option<Vec<u8>>,
     pub(crate) warnings: Vec<String>,
+    pub(crate) layer_geometries: Vec<RenderedLayerGeometry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RenderedLayerGeometry {
+    pub(crate) id: String,
+    pub(crate) anchor_rect: PixelRect,
+    pub(crate) center_x: i64,
+    pub(crate) center_y: i64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rotation_deg: f32,
 }
 
 struct DecodedImage {
@@ -741,6 +753,7 @@ pub(crate) fn render_request_with_catalog(
         .width
         .min(rendered.layout.canvas.height) as f32;
     let mut warnings = Vec::new();
+    let mut layer_geometries = Vec::with_capacity(layers.len());
 
     for layer in layers {
         let base = layer.base();
@@ -883,8 +896,19 @@ pub(crate) fn render_request_with_catalog(
                 fit_image(&decoded.image, placement.width, placement.width, *fit, 1.0)
             }
         };
+        let layer_width = layer_image.width();
+        let layer_height = layer_image.height();
         let mut layer_image = rotate_layer(&layer_image, placement.rotation_deg);
         apply_opacity(&mut layer_image, placement.opacity);
+        layer_geometries.push(RenderedLayerGeometry {
+            id: base.id.clone(),
+            anchor_rect: region,
+            center_x: placement.center_x,
+            center_y: placement.center_y,
+            width: layer_width,
+            height: layer_height,
+            rotation_deg: placement.rotation_deg,
+        });
         if composite_centered(
             &mut rendered.image,
             &layer_image,
@@ -902,6 +926,7 @@ pub(crate) fn render_request_with_catalog(
         layout: rendered.layout,
         source_icc: rendered.source_icc,
         warnings,
+        layer_geometries,
     })
 }
 

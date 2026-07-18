@@ -119,3 +119,41 @@ test("watermark header icon commands have accessible Chinese names", () => {
     assert.match(headerSource, new RegExp(`aria-label=.*${label}`));
   }
 });
+
+test("watermark canvas supports precise pointer and keyboard manipulation", () => {
+  const canvasSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkCanvas.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(canvasSource, /setPointerCapture/);
+  assert.match(canvasSource, /onPointerCancel/);
+  assert.match(canvasSource, /historyGroup/);
+  assert.match(canvasSource, /event\.shiftKey/);
+  assert.match(canvasSource, /thresholdPx: 6/);
+  assert.match(canvasSource, /watermark-scale-handle/);
+  assert.match(canvasSource, /watermark-rotate-handle/);
+  assert.match(canvasSource, /ZOOM_LEVELS = \[0\.5, 0\.75, 1, 1\.5, 2, 3, 4\]/);
+});
+
+test("watermark inspector exposes complete local editing controls", () => {
+  const inspectorSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkInspector.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const label of [
+    "添加水印图层",
+    "复制图层",
+    "删除图层",
+    "EXIF 内容",
+    "锚定区域",
+    "画布比例",
+    "照片样式",
+    "背景",
+    "单张照片调整",
+    "清除单张调整",
+  ]) {
+    assert.match(inspectorSource, new RegExp(label));
+  }
+  const backend = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(backend, /import_watermark_resource/);
+});

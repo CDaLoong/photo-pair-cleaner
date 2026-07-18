@@ -23,13 +23,21 @@ import { WatermarkSourcePanel } from "./WatermarkSourcePanel";
 import { WatermarkTemplatePanel } from "./WatermarkTemplatePanel";
 import type {
   WatermarkRenderRequest,
+  EmbeddedTemplateResource,
+  WatermarkFontSummary,
   WatermarkSourcePhoto,
   WatermarkSourceInput,
   WatermarkSourceOrigin,
   WatermarkSourceSnapshot,
   WatermarkTransferDraft,
 } from "./types";
-import { createDefaultWatermarkTemplate } from "./watermarkUtils";
+import {
+  createDefaultWatermarkTemplate,
+  createWatermarkExifLayer,
+  createWatermarkImageLayer,
+  createWatermarkTextLayer,
+  defaultWatermarkLayerLayouts,
+} from "./watermarkUtils";
 import {
   loadWatermarkPreview,
   watermarkPreviewRequestKey,
@@ -102,6 +110,7 @@ export function WatermarkModule({
   const [leftTab, setLeftTab] = useState<"photos" | "templates">("photos");
   const [leftCollapsed, setLeftCollapsed] = useState(() => storedPanelPreference(LEFT_PANEL_STORAGE_KEY));
   const [rightCollapsed, setRightCollapsed] = useState(() => storedPanelPreference(RIGHT_PANEL_STORAGE_KEY));
+  const [fonts, setFonts] = useState<WatermarkFontSummary[]>([]);
   const busyRef = useRef(false);
   const processedTransferId = useRef<string | null>(null);
   const previousPreviewPhotoId = useRef<string | null>(null);
@@ -208,6 +217,15 @@ export function WatermarkModule({
   }, [active]);
 
   useEffect(() => () => previewCacheRef.current?.clear(), []);
+
+  useEffect(() => {
+    if (!active || !isTauri() || fonts.length > 0) return;
+    let disposed = false;
+    void invoke<WatermarkFontSummary[]>("list_watermark_fonts")
+      .then((items) => { if (!disposed) setFonts(items); })
+      .catch(() => undefined);
+    return () => { disposed = true; };
+  }, [active, fonts.length]);
 
   useEffect(() => {
     onUnsavedWorkChange({
@@ -405,6 +423,39 @@ export function WatermarkModule({
     onImmersiveChange(false);
   }
 
+  function addTextLayer() {
+    const layer = createWatermarkTextLayer(crypto.randomUUID());
+    dispatchEditor({ type: "addLayer", layer, layouts: defaultWatermarkLayerLayouts("text") });
+  }
+
+  function addExifLayer() {
+    const layer = createWatermarkExifLayer(crypto.randomUUID());
+    dispatchEditor({ type: "addLayer", layer, layouts: defaultWatermarkLayerLayouts("exifText") });
+  }
+
+  async function addImageLayer() {
+    try {
+      const path = await open({
+        multiple: false,
+        directory: false,
+        title: "选择 PNG 或 JPEG 图片水印",
+        filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg"] }],
+      });
+      if (typeof path !== "string") return;
+      const resource = await invoke<EmbeddedTemplateResource>("import_watermark_resource", { path });
+      dispatchEditor({ type: "addResource", resource });
+      const layer = createWatermarkImageLayer(crypto.randomUUID(), resource.id);
+      dispatchEditor({ type: "addLayer", layer, layouts: defaultWatermarkLayerLayouts("image") });
+    } catch (resourceError) {
+      setPreviewError(errorMessage(resourceError));
+    }
+  }
+
+  function changeOrientation(orientation: WatermarkSourcePhoto["orientation"]) {
+    const target = snapshot?.photos.find((photo) => photo.orientation === orientation);
+    if (target) setSelectedPhotoId(target.id);
+  }
+
   async function chooseDirectory() {
     try {
       const selected = await open({
@@ -478,6 +529,9 @@ export function WatermarkModule({
               <WatermarkCanvas
                 photo={selectedPhoto}
                 preview={preview}
+                template={template}
+                orientation={selectedPhoto?.orientation ?? editor.activeOrientation}
+                activeLayerId={editor.activeLayerId}
                 loading={previewBusy}
                 error={previewError}
                 originalUrl={originalUrl}
@@ -486,6 +540,15 @@ export function WatermarkModule({
                 total={snapshot.photos.length}
                 onPrevious={() => selectAt(selectedIndex - 1)}
                 onNext={() => selectAt(selectedIndex + 1)}
+                onSelectLayer={(layerId) => dispatchEditor({ type: "setActiveLayer", layerId })}
+                onSetLayerPlacement={(layerId, patch, historyGroup) => dispatchEditor({
+                  type: "setLayerPlacement",
+                  orientation: selectedPhoto?.orientation ?? editor.activeOrientation,
+                  layerId,
+                  patch,
+                  historyGroup,
+                })}
+                onCloseHistoryGroup={() => dispatchEditor({ type: "closeHistoryGroup" })}
               />
             </main>
             <aside className="watermark-inspector-panel" data-watermark-tour="inspector">
@@ -493,10 +556,14 @@ export function WatermarkModule({
                 template={template}
                 orientation={editor.activeOrientation}
                 activeLayerId={editor.activeLayerId}
-                onOrientationChange={(orientation) => dispatchEditor({ type: "setActiveOrientation", orientation })}
-                onSelectLayer={(layerId) => dispatchEditor({ type: "setActiveLayer", layerId })}
-                onSetLayerVisible={(layerId, visible) => dispatchEditor({ type: "setLayerVisible", layerId, visible })}
-                onSetLayerLocked={(layerId, locked) => dispatchEditor({ type: "setLayerLocked", layerId, locked })}
+                photoId={selectedPhoto?.id ?? null}
+                photoOverride={selectedPhoto ? editor.present.photoOverrides[selectedPhoto.id] ?? null : null}
+                fonts={fonts}
+                dispatch={dispatchEditor}
+                onOrientationChange={changeOrientation}
+                onAddText={addTextLayer}
+                onAddExif={addExifLayer}
+                onAddImage={() => void addImageLayer()}
               />
             </aside>
           </div>

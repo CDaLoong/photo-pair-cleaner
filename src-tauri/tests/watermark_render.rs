@@ -563,6 +563,14 @@ fn request_renders_ordered_image_text_and_exif_layers_in_each_anchor_space() {
 
     let request = render_request_for(&source, template);
     let rendered = render_request(&source, &request, &resource_dir()).unwrap();
+    assert_eq!(rendered.layer_geometries.len(), 5);
+    let photo_geometry = rendered
+        .layer_geometries
+        .iter()
+        .find(|geometry| geometry.id == "photo-logo")
+        .unwrap();
+    assert_eq!(photo_geometry.anchor_rect, rendered.layout.photo_rect);
+    assert!(photo_geometry.width > 0 && photo_geometry.height > 0);
     assert!(
         rendered
             .warnings
@@ -576,6 +584,8 @@ fn request_renders_ordered_image_text_and_exif_layers_in_each_anchor_space() {
     let photo_logo_y = (rendered.layout.photo_rect.y as f32
         + rendered.layout.photo_rect.height as f32 * 0.2)
         .round() as u32;
+    assert_eq!(photo_geometry.center_x, photo_logo_x as i64);
+    assert_eq!(photo_geometry.center_y, photo_logo_y as i64);
     let photo_logo = pixel(&rendered.image, photo_logo_x, photo_logo_y);
     assert!(photo_logo[0] > photo_logo[2]);
 
