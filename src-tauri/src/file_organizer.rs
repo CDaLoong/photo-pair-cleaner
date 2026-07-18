@@ -8,7 +8,7 @@ use crate::operation_plan::{
 };
 use crate::rating_rules::{RatingRule, RuleAction, RuleMemberKind};
 use crate::rating_sync::{self, RatingSyncTarget};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -36,6 +36,13 @@ pub(crate) struct OrganizerRecoverySummary {
     pub(crate) failed: usize,
     pub(crate) partial: usize,
     pub(crate) results: Vec<RecoveryRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OrganizerRecoveryRequest {
+    pub(crate) operation_id: String,
+    pub(crate) group_ids: Vec<String>,
 }
 
 struct ValidatedMember {
