@@ -25,6 +25,14 @@ export interface PhotoIndex {
   assets: PhotoAsset[];
 }
 
+export interface PhotoDirectoryNode {
+  name: string;
+  path: string;
+  directCount: number;
+  totalCount: number;
+  children: PhotoDirectoryNode[];
+}
+
 export interface RatingUpdate {
   assetId: string;
   rating: number;

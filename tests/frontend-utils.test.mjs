@@ -176,6 +176,97 @@ const previewAssets = [
   },
 ];
 
+const directoryAssets = [
+  {
+    ...previewAssets[2],
+    id: "root",
+    name: "Root",
+    relativeStem: "Root",
+  },
+  {
+    ...previewAssets[1],
+    id: "2026/a",
+    name: "A",
+    relativeStem: "2026/A",
+  },
+  {
+    ...previewAssets[2],
+    id: "2026/trip/b",
+    name: "B",
+    relativeStem: "2026/trip/B",
+  },
+  {
+    ...previewAssets[2],
+    id: "20260/c",
+    name: "C",
+    relativeStem: "20260/C",
+  },
+];
+
+test("photo directory tree preserves nesting and recursive photo counts", () => {
+  const tree = previewUtils.buildPhotoDirectoryTree(directoryAssets);
+
+  assert.deepEqual(tree.map((node) => [node.path, node.totalCount]), [
+    ["2026", 2],
+    ["20260", 1],
+  ]);
+  assert.equal(tree[0].directCount, 1);
+  assert.deepEqual(tree[0].children.map((node) => [node.path, node.totalCount]), [
+    ["2026/trip", 1],
+  ]);
+});
+
+test("directory filtering includes descendants without matching sibling prefixes", () => {
+  assert.deepEqual(
+    previewUtils.filterAssetsByDirectory(directoryAssets, "2026").map((item) => item.id),
+    ["2026/a", "2026/trip/b"],
+  );
+  assert.deepEqual(
+    previewUtils.filterAssetsByDirectory(directoryAssets, "2026/trip").map((item) => item.id),
+    ["2026/trip/b"],
+  );
+  assert.equal(previewUtils.filterAssetsByDirectory(directoryAssets, "").length, 4);
+});
+
+test("preview filter counts explain paired and single-format groups", () => {
+  const counts = previewUtils.previewFilterCounts(previewAssets);
+  assert.deepEqual(counts, {
+    all: 3,
+    paired: 1,
+    jpeg: 1,
+    raw: 1,
+  });
+  assert.equal(previewUtils.availablePreviewFilter("paired", counts), "paired");
+  assert.equal(
+    previewUtils.availablePreviewFilter("paired", { ...counts, paired: 0 }),
+    "all",
+  );
+});
+
+test("preview guide opens until the completed preference is stored", () => {
+  assert.equal(previewUtils.shouldOpenPreviewGuide(null), true);
+  assert.equal(previewUtils.shouldOpenPreviewGuide("false"), true);
+  assert.equal(previewUtils.shouldOpenPreviewGuide("true"), false);
+});
+
+test("preview keyboard shortcuts pause while an overlay is open", () => {
+  assert.equal(previewUtils.previewKeyboardShortcutsEnabled("loupe", false, false), true);
+  assert.equal(previewUtils.previewKeyboardShortcutsEnabled("loupe", true, false), false);
+  assert.equal(previewUtils.previewKeyboardShortcutsEnabled("loupe", false, true), false);
+  assert.equal(previewUtils.previewKeyboardShortcutsEnabled("grid", false, false), false);
+});
+
+test("context menu position stays inside the viewport", () => {
+  assert.deepEqual(
+    previewUtils.contextMenuPosition(790, 590, 800, 600, 260, 220),
+    { left: 532, top: 372 },
+  );
+  assert.deepEqual(
+    previewUtils.contextMenuPosition(120, 80, 800, 600, 260, 220),
+    { left: 120, top: 80 },
+  );
+});
+
 test("preview filters distinguish paired, JPEG-only, and RAW-only photos", () => {
   assert.deepEqual(
     previewUtils.filterPreviewAssets(previewAssets, "paired", "").map((item) => item.id),

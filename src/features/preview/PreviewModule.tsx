@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
   ArrowRight,
+  CircleHelp,
   ExternalLink,
   FolderInput,
   FolderOpen,
@@ -18,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  useCallback,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -25,9 +27,12 @@ import {
   useRef,
   useState,
 } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { errorMessage, formatBytes, formatDate } from "../../utils";
+import { PhotoContextMenu } from "./PhotoContextMenu";
+import { PhotoDirectoryTree } from "./PhotoDirectoryTree";
 import { PhotoThumbnail } from "./PhotoThumbnail";
+import { PreviewGuideDialog } from "./PreviewGuideDialog";
 import { RatingControl } from "./RatingControl";
 import {
   clearPhotoPreviewCache,
@@ -40,9 +45,16 @@ import {
 } from "./previewCache";
 import {
   adjacentPreviewAssetId,
+  availablePreviewFilter,
+  buildPhotoDirectoryTree,
+  contextMenuPosition,
   filmstripScrollTarget,
+  filterAssetsByDirectory,
   filterPreviewAssets,
+  previewFilterCounts,
+  previewKeyboardShortcutsEnabled,
   previewAssetPosition,
+  shouldOpenPreviewGuide,
   sortPreviewAssets,
 } from "./previewUtils";
 import type {
@@ -56,6 +68,7 @@ import type {
 } from "./types";
 
 const PREVIEW_ROOT_STORAGE_KEY = "framepair.preview.root.v1";
+const PREVIEW_GUIDE_STORAGE_KEY = "framepair.preview.guide.v1";
 const LOUPE_PREVIEW_EDGE = 1800;
 const PRELOAD_CONCURRENCY = 3;
 const EMPTY_PRELOAD_PROGRESS: PreloadProgress = { total: 0, completed: 0, failed: 0 };
@@ -71,7 +84,7 @@ interface PreviewModuleProps {
 
 const FILTERS: Array<{ value: PreviewFilter; label: string }> = [
   { value: "all", label: "全部" },
-  { value: "paired", label: "JPG + RAW" },
+  { value: "paired", label: "已配对" },
   { value: "jpeg", label: "仅 JPG" },
   { value: "raw", label: "仅 RAW" },
 ];
@@ -89,6 +102,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PreviewFilter>("all");
+  const [selectedDirectory, setSelectedDirectory] = useState("");
   const [minimumRating, setMinimumRating] = useState(0);
   const [sort, setSort] = useState<PreviewSort>("name");
   const [view, setView] = useState<PreviewView>("grid");
@@ -101,6 +115,8 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const [externalEditors, setExternalEditors] = useState<ExternalEditor[]>([SYSTEM_EDITOR]);
   const [editorId, setEditorId] = useState("system");
   const [editorBusy, setEditorBusy] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ assetId: string; left: number; top: number } | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [preloadProgress, setPreloadProgress] = useState<PreloadProgress>(EMPTY_PRELOAD_PROGRESS);
   const attemptedStoredRoot = useRef(false);
   const busyRef = useRef(busy);
@@ -108,6 +124,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   const filmstripRef = useRef<HTMLDivElement>(null);
   const selectedFilmstripItemRef = useRef<HTMLButtonElement>(null);
   const attemptedEditorDiscovery = useRef(false);
+  const attemptedPreviewGuide = useRef(false);
   const loadDirectoryRef = useRef<(path: string) => Promise<void>>(async () => undefined);
   const deferredSearch = useDeferredValue(search);
 
@@ -118,21 +135,38 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     })),
     [index, ratings],
   );
+  const directoryTree = useMemo(
+    () => buildPhotoDirectoryTree(index?.assets ?? []),
+    [index],
+  );
+  const directoryAssets = useMemo(
+    () => filterAssetsByDirectory(ratedAssets, selectedDirectory),
+    [ratedAssets, selectedDirectory],
+  );
+  const filterCounts = useMemo(
+    () => previewFilterCounts(directoryAssets),
+    [directoryAssets],
+  );
   const visibleAssets = useMemo(
     () => sortPreviewAssets(
-      filterPreviewAssets(ratedAssets, filter, deferredSearch, minimumRating),
+      filterPreviewAssets(directoryAssets, filter, deferredSearch, minimumRating),
       sort,
     ),
-    [deferredSearch, filter, minimumRating, ratedAssets, sort],
+    [deferredSearch, directoryAssets, filter, minimumRating, sort],
   );
   const selectedPosition = previewAssetPosition(visibleAssets, selectedId);
   const effectiveSelectedPosition = selectedPosition || (visibleAssets.length > 0 ? 1 : 0);
   const selectedAsset = visibleAssets[effectiveSelectedPosition - 1] ?? null;
   const effectiveSelectedId = selectedAsset?.id ?? null;
   const ratedCount = useMemo(
-    () => ratedAssets.filter((asset) => asset.rating > 0).length,
-    [ratedAssets],
+    () => directoryAssets.filter((asset) => asset.rating > 0).length,
+    [directoryAssets],
   );
+  const contextAsset = contextMenu
+    ? ratedAssets.find((asset) => asset.id === contextMenu.assetId) ?? null
+    : null;
+  const selectedEditor = externalEditors.find((editor) => editor.id === editorId) ?? SYSTEM_EDITOR;
+  const dismissContextMenu = useCallback(() => setContextMenu(null), []);
 
   async function loadDirectory(path: string) {
     if (!path || busyRef.current) return;
@@ -149,8 +183,20 @@ export function PreviewModule({ active }: PreviewModuleProps) {
       setSelectedId(result.assets[0]?.id ?? null);
       setSearch("");
       setFilter("all");
+      setSelectedDirectory("");
       setMinimumRating(0);
-      setView("grid");
+      setContextMenu(null);
+      let autoOpenGuide = false;
+      if (result.assets.length > 0 && !attemptedPreviewGuide.current) {
+        attemptedPreviewGuide.current = true;
+        try {
+          autoOpenGuide = shouldOpenPreviewGuide(localStorage.getItem(PREVIEW_GUIDE_STORAGE_KEY));
+        } catch {
+          autoOpenGuide = true;
+        }
+      }
+      setView(autoOpenGuide ? "loupe" : "grid");
+      setGuideOpen(autoOpenGuide);
       try {
         localStorage.setItem(PREVIEW_ROOT_STORAGE_KEY, result.root);
       } catch {
@@ -162,6 +208,9 @@ export function PreviewModule({ active }: PreviewModuleProps) {
       indexedRootRef.current = null;
       setIndex(null);
       setRatings({});
+      setSelectedDirectory("");
+      setContextMenu(null);
+      setGuideOpen(false);
       setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
     } finally {
       busyRef.current = false;
@@ -230,7 +279,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   }, [active]);
 
   useEffect(() => {
-    if (!active || view !== "loupe") return;
+    if (!active || !previewKeyboardShortcutsEnabled(view, guideOpen, contextMenu !== null)) return;
     function handleKeyDown(event: KeyboardEvent) {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
       if (event.key === "Escape") {
@@ -250,7 +299,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [active, effectiveSelectedId, ratingBusyId, selectedAsset, view, visibleAssets]);
+  }, [active, contextMenu, effectiveSelectedId, guideOpen, ratingBusyId, selectedAsset, view, visibleAssets]);
 
   useLayoutEffect(() => {
     if (!active || view !== "loupe" || !effectiveSelectedId) return;
@@ -308,6 +357,52 @@ export function PreviewModule({ active }: PreviewModuleProps) {
   function openLoupe(asset: PhotoAsset) {
     setSelectedId(asset.id);
     setView("loupe");
+  }
+
+  function selectDirectory(path: string) {
+    const nextAssets = filterAssetsByDirectory(ratedAssets, path);
+    const nextCounts = previewFilterCounts(nextAssets);
+    const nextFilter = availablePreviewFilter(filter, nextCounts);
+    setSelectedDirectory(path);
+    setFilter(nextFilter);
+    setSelectedId((current) => nextAssets.some((asset) => asset.id === current)
+      ? current
+      : nextAssets[0]?.id ?? null);
+    setContextMenu(null);
+  }
+
+  function clearPreviewFilters() {
+    setSearch("");
+    setFilter("all");
+    setMinimumRating(0);
+  }
+
+  function showContextMenu(event: ReactMouseEvent, asset: PhotoAsset) {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedId(asset.id);
+    setContextMenu({
+      assetId: asset.id,
+      ...contextMenuPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight, 260, 220),
+    });
+  }
+
+  function openPreviewGuide() {
+    const firstAsset = selectedAsset ?? visibleAssets[0] ?? directoryAssets[0];
+    if (!firstAsset) return;
+    setSelectedId(firstAsset.id);
+    setView("loupe");
+    setContextMenu(null);
+    setGuideOpen(true);
+  }
+
+  function dismissPreviewGuide() {
+    try {
+      localStorage.setItem(PREVIEW_GUIDE_STORAGE_KEY, "true");
+    } catch {
+      // The guide remains available from the header when storage is unavailable.
+    }
+    setGuideOpen(false);
   }
 
   async function rateAsset(asset: PhotoAsset, rating: number) {
@@ -375,12 +470,15 @@ export function PreviewModule({ active }: PreviewModuleProps) {
           <span>{index?.root || root || "尚未选择照片目录"}</span>
         </div>
         <div className="preview-header-actions">
+          <button className="guide-trigger" type="button" onClick={openPreviewGuide} disabled={busy || !index?.assets.length} title={index?.assets.length ? "查看照片浏览与评分引导" : "选择目录后可查看引导"}>
+            <CircleHelp aria-hidden="true" size={16} />使用引导
+          </button>
           {index ? (
             <button className="icon-button" type="button" onClick={() => void loadDirectory(index.root)} disabled={busy} aria-label="刷新照片目录" title="刷新照片目录">
               <RefreshCw className={busy ? "spin" : undefined} aria-hidden="true" size={17} />
             </button>
           ) : null}
-          <button className="secondary-command" type="button" onClick={() => void chooseDirectory()} disabled={busy}>
+          <button className="secondary-command" type="button" onClick={() => void chooseDirectory()} disabled={busy} data-preview-tour="choose-directory">
             <FolderOpen aria-hidden="true" size={16} />选择目录
           </button>
         </div>
@@ -409,12 +507,22 @@ export function PreviewModule({ active }: PreviewModuleProps) {
               <Search aria-hidden="true" size={16} />
               <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索文件名或目录" aria-label="搜索照片" />
             </label>
-            <div className="preview-filters" role="group" aria-label="照片类型">
+            <div className="preview-filters" role="group" aria-label="照片类型" data-preview-tour="type-filters">
               {FILTERS.map((item) => (
-                <button key={item.value} type="button" aria-pressed={filter === item.value} onClick={() => setFilter(item.value)}>{item.label}</button>
+                <button
+                  key={item.value}
+                  type="button"
+                  aria-pressed={filter === item.value}
+                  aria-label={`${item.label}，${filterCounts[item.value]} 张`}
+                  disabled={item.value !== "all" && filterCounts[item.value] === 0}
+                  title={item.value === "paired" ? "同路径、同文件名，同时存在 JPG 和 RAW" : `${item.label}照片`}
+                  onClick={() => setFilter(item.value)}
+                >
+                  <span>{item.label}</span><small>{filterCounts[item.value]}</small>
+                </button>
               ))}
             </div>
-            <label className="preview-rating-filter" title="最低评分">
+            <label className="preview-rating-filter" title="最低评分" data-preview-tour="rating-filter">
               <Star aria-hidden="true" size={15} />
               <select value={minimumRating} onChange={(event) => setMinimumRating(Number(event.target.value))} aria-label="最低评分">
                 <option value={0}>全部评分</option>
@@ -445,8 +553,10 @@ export function PreviewModule({ active }: PreviewModuleProps) {
             </div>
           </div>
 
-          {view === "grid" ? (
-            <main className="photo-grid-scroll">
+          <div className="preview-browser">
+            <PhotoDirectoryTree key={`${index.root}:${index.indexedAtMs}`} nodes={directoryTree} totalCount={ratedAssets.length} selectedPath={selectedDirectory} onSelect={selectDirectory} />
+            {view === "grid" ? (
+            <main className="photo-grid-scroll" data-preview-tour="grid">
               <div
                 className="photo-grid"
                 style={{ "--preview-tile-size": `${tileSize}px` } as CSSProperties}
@@ -458,6 +568,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                     type="button"
                     onClick={() => setSelectedId(asset.id)}
                     onDoubleClick={() => openLoupe(asset)}
+                    onContextMenu={(event) => showContextMenu(event, asset)}
                     aria-pressed={asset.id === effectiveSelectedId}
                     title={`${asset.relativeStem} · ${asset.extensions.join(" + ")}`}
                   >
@@ -471,11 +582,15 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                 ))}
               </div>
               {visibleAssets.length === 0 ? (
-                <div className="preview-empty compact"><Search aria-hidden="true" size={28} /><strong>没有符合条件的照片</strong></div>
+                <div className="preview-empty compact">
+                  <Search aria-hidden="true" size={28} />
+                  <strong>当前目录没有符合筛选条件的照片</strong>
+                  <button className="secondary-command" type="button" onClick={clearPreviewFilters}>清除筛选</button>
+                </div>
               ) : null}
             </main>
           ) : selectedAsset ? (
-            <main className="loupe-workspace">
+            <main className="loupe-workspace" data-preview-tour="loupe">
               <div className="loupe-commandbar">
                 <div>
                   <button className="icon-button" type="button" onClick={() => setSelectedId(adjacentPreviewAssetId(visibleAssets, effectiveSelectedId, -1))} disabled={effectiveSelectedId === visibleAssets[0]?.id} aria-label="上一张" title="上一张"><ArrowLeft aria-hidden="true" size={18} /></button>
@@ -496,11 +611,11 @@ export function PreviewModule({ active }: PreviewModuleProps) {
                   <button className="icon-button" type="button" onClick={() => void revealAsset(selectedAsset)} aria-label="在文件管理器中显示" title="在文件管理器中显示"><FolderOpen aria-hidden="true" size={16} /></button>
                 </div>
               </div>
-              <div className="loupe-stage">
+              <div className="loupe-stage" onContextMenu={(event) => showContextMenu(event, selectedAsset)}>
                 <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={LOUPE_PREVIEW_EDGE} version={photoPreviewVersion(selectedAsset, index.indexedAtMs)} alt={selectedAsset.name} eager />
               </div>
               <div className="loupe-metadata">
-                <span className="loupe-rating">
+                <span className="loupe-rating" data-preview-tour="rating">
                   <RatingControl rating={selectedAsset.rating} onChange={(rating) => void rateAsset(selectedAsset, rating)} disabled={ratingBusyId === selectedAsset.id} />
                   <small>{ratingBusyId === selectedAsset.id ? "正在保存" : selectedAsset.rating > 0 ? `${selectedAsset.rating} 星` : "未评分"}</small>
                 </span>
@@ -511,7 +626,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
               </div>
               <div ref={filmstripRef} className="loupe-filmstrip" aria-label="照片胶片栏">
                 {visibleAssets.map((asset) => (
-                  <button ref={asset.id === effectiveSelectedId ? selectedFilmstripItemRef : undefined} key={asset.id} type="button" className={asset.id === effectiveSelectedId ? "is-selected" : ""} onClick={() => setSelectedId(asset.id)} aria-label={asset.name} aria-pressed={asset.id === effectiveSelectedId} title={asset.name}>
+                  <button ref={asset.id === effectiveSelectedId ? selectedFilmstripItemRef : undefined} key={asset.id} type="button" className={asset.id === effectiveSelectedId ? "is-selected" : ""} onClick={() => setSelectedId(asset.id)} onContextMenu={(event) => showContextMenu(event, asset)} aria-label={asset.name} aria-pressed={asset.id === effectiveSelectedId} title={asset.name}>
                     <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={160} version={photoPreviewVersion(asset, index.indexedAtMs)} alt="" />
                     {asset.rating > 0 ? <span className="filmstrip-rating"><Star aria-hidden="true" size={10} fill="currentColor" />{asset.rating}</span> : null}
                   </button>
@@ -519,16 +634,33 @@ export function PreviewModule({ active }: PreviewModuleProps) {
               </div>
             </main>
           ) : null}
+            {contextAsset && contextMenu ? (
+              <PhotoContextMenu
+                asset={contextAsset}
+                position={{ left: contextMenu.left, top: contextMenu.top }}
+                view={view}
+                editorLabel={selectedEditor.label}
+                ratingBusy={ratingBusyId === contextAsset.id}
+                editorBusy={editorBusy}
+                onRate={(rating) => void rateAsset(contextAsset, rating)}
+                onOpenLoupe={() => openLoupe(contextAsset)}
+                onShowGrid={() => setView("grid")}
+                onReveal={() => void revealAsset(contextAsset)}
+                onEdit={() => void openInEditor(contextAsset)}
+                onDismiss={dismissContextMenu}
+              />
+            ) : null}
+          </div>
 
           <footer className="preview-statusbar">
             <span>
               {view === "loupe" ? effectiveSelectedPosition : visibleAssets.length}
               {" / "}
-              {view === "loupe" ? visibleAssets.length : index.totalAssets} 张照片
+              {view === "loupe" ? visibleAssets.length : directoryAssets.length} 张照片
             </span>
-            <span>{index.pairedAssets} 组 JPG + RAW</span>
+            <span>{filterCounts.paired} 组已配对</span>
             <span>{ratedCount} 张已评分</span>
-            {index.rawOnlyAssets > 0 ? <span>{index.rawOnlyAssets} 张仅 RAW</span> : null}
+            {filterCounts.raw > 0 ? <span>{filterCounts.raw} 张仅 RAW</span> : null}
             {preloadProgress.total > 0 ? (
               <span className={preloadProgress.completed < preloadProgress.total ? "preload-status is-loading" : "preload-status"} aria-live="polite">
                 {preloadProgress.completed < preloadProgress.total
@@ -556,6 +688,7 @@ export function PreviewModule({ active }: PreviewModuleProps) {
       {dropActive && index ? (
         <div className="preview-drop-overlay"><FolderInput aria-hidden="true" size={28} /><strong>松开以切换照片目录</strong></div>
       ) : null}
+      <PreviewGuideDialog open={active && guideOpen} onDismiss={dismissPreviewGuide} />
     </section>
   );
 }

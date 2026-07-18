@@ -1,4 +1,10 @@
-import type { PhotoAsset, PreviewFilter, PreviewSort } from "./types";
+import type {
+  PhotoAsset,
+  PhotoDirectoryNode,
+  PreviewFilter,
+  PreviewSort,
+  PreviewView,
+} from "./types";
 
 function matchesFilter(asset: PhotoAsset, filter: PreviewFilter): boolean {
   const hasJpeg = asset.jpegPaths.length > 0;
@@ -7,6 +13,95 @@ function matchesFilter(asset: PhotoAsset, filter: PreviewFilter): boolean {
   if (filter === "jpeg") return hasJpeg && !hasRaw;
   if (filter === "raw") return !hasJpeg && hasRaw;
   return true;
+}
+
+export function buildPhotoDirectoryTree(assets: PhotoAsset[]): PhotoDirectoryNode[] {
+  const roots: PhotoDirectoryNode[] = [];
+  const nodes = new Map<string, PhotoDirectoryNode>();
+
+  for (const asset of assets) {
+    const parts = asset.relativeStem.split("/").filter(Boolean);
+    parts.pop();
+    let siblings = roots;
+    let path = "";
+    let lastNode: PhotoDirectoryNode | null = null;
+
+    for (const part of parts) {
+      path = path ? `${path}/${part}` : part;
+      let node = nodes.get(path);
+      if (!node) {
+        node = { name: part, path, directCount: 0, totalCount: 0, children: [] };
+        nodes.set(path, node);
+        siblings.push(node);
+      }
+      node.totalCount += 1;
+      lastNode = node;
+      siblings = node.children;
+    }
+    if (lastNode) lastNode.directCount += 1;
+  }
+
+  const sortNodes = (items: PhotoDirectoryNode[]) => {
+    items.sort((left, right) => left.name.localeCompare(right.name, "zh-CN", {
+      numeric: true,
+      sensitivity: "base",
+    }));
+    for (const item of items) sortNodes(item.children);
+  };
+  sortNodes(roots);
+  return roots;
+}
+
+export function filterAssetsByDirectory(
+  assets: PhotoAsset[],
+  directoryPath: string,
+): PhotoAsset[] {
+  if (!directoryPath) return assets;
+  const prefix = `${directoryPath.replace(/\/+$/, "")}/`.toLocaleLowerCase();
+  return assets.filter((asset) => asset.relativeStem.toLocaleLowerCase().startsWith(prefix));
+}
+
+export function previewFilterCounts(assets: PhotoAsset[]): Record<PreviewFilter, number> {
+  return {
+    all: assets.length,
+    paired: assets.filter((asset) => matchesFilter(asset, "paired")).length,
+    jpeg: assets.filter((asset) => matchesFilter(asset, "jpeg")).length,
+    raw: assets.filter((asset) => matchesFilter(asset, "raw")).length,
+  };
+}
+
+export function availablePreviewFilter(
+  filter: PreviewFilter,
+  counts: Record<PreviewFilter, number>,
+): PreviewFilter {
+  return filter === "all" || counts[filter] > 0 ? filter : "all";
+}
+
+export function shouldOpenPreviewGuide(storedValue: string | null): boolean {
+  return storedValue !== "true";
+}
+
+export function previewKeyboardShortcutsEnabled(
+  view: PreviewView,
+  guideOpen: boolean,
+  contextMenuOpen: boolean,
+): boolean {
+  return view === "loupe" && !guideOpen && !contextMenuOpen;
+}
+
+export function contextMenuPosition(
+  x: number,
+  y: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  menuWidth: number,
+  menuHeight: number,
+): { left: number; top: number } {
+  const margin = 8;
+  return {
+    left: Math.max(margin, Math.min(x, viewportWidth - menuWidth - margin)),
+    top: Math.max(margin, Math.min(y, viewportHeight - menuHeight - margin)),
+  };
 }
 
 export function filterPreviewAssets(

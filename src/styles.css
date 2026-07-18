@@ -394,6 +394,23 @@ input:disabled {
   white-space: nowrap;
 }
 
+.preview-filters button {
+  gap: 5px;
+}
+
+.preview-filters button small {
+  min-width: 14px;
+  color: var(--faint);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-filters button:disabled {
+  color: var(--faint);
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 .preview-view-switch button {
   display: inline-flex;
   align-items: center;
@@ -448,8 +465,148 @@ input:disabled {
   accent-color: var(--accent);
 }
 
+.preview-browser {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.photo-folder-sidebar {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--surface-subtle);
+  border-right: 1px solid var(--line);
+}
+
+.folder-tree-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.folder-tree-heading strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.folder-tree-scroll {
+  min-height: 0;
+  padding: 7px;
+  overflow: auto;
+}
+
+.folder-tree-root,
+.folder-tree-row {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  color: var(--muted);
+  border-radius: 4px;
+}
+
+.folder-tree-root {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 7px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.folder-tree-list,
+.folder-tree-list ul {
+  padding: 0;
+  margin: 1px 0 0;
+  list-style: none;
+}
+
+.folder-tree-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  padding-left: calc(var(--folder-depth) * 13px);
+}
+
+.folder-tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 28px;
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.folder-tree-select {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) auto;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 6px 4px 2px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.folder-tree-root span,
+.folder-tree-select span {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-tree-root small,
+.folder-tree-select small {
+  color: var(--faint);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.folder-tree-root:hover,
+.folder-tree-row:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-active), transparent 35%);
+}
+
+.folder-tree-root.is-selected,
+.folder-tree-row.is-selected {
+  color: var(--text);
+  background: var(--surface-active);
+}
+
+.folder-tree-root.is-selected,
+.folder-tree-row.is-selected .folder-tree-select {
+  font-weight: 650;
+}
+
+.folder-tree-empty {
+  margin: 8px 7px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
 .photo-grid-scroll {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   padding: 16px;
@@ -601,6 +758,10 @@ input:disabled {
   font-size: 13px;
 }
 
+.preview-empty.compact .secondary-command {
+  margin-top: 12px;
+}
+
 .preview-empty-icon {
   display: inline-flex;
   align-items: center;
@@ -649,6 +810,132 @@ input:disabled {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.preview-browser > .loupe-workspace {
+  min-width: 0;
+}
+
+.photo-context-menu {
+  position: fixed;
+  z-index: 90;
+  width: 260px;
+  padding: 5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: 0 14px 38px rgb(0 0 0 / 28%);
+  outline: 0;
+}
+
+.photo-context-heading {
+  display: flex;
+  min-width: 0;
+  padding: 7px 9px 8px;
+  flex-direction: column;
+}
+
+.photo-context-heading strong,
+.photo-context-heading small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.photo-context-heading strong {
+  font-size: 11px;
+}
+
+.photo-context-heading small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.photo-context-menu > button {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.photo-context-menu > button:hover:not(:disabled),
+.photo-context-menu > button:focus-visible {
+  background: var(--surface-active);
+}
+
+.photo-context-menu > button:disabled {
+  color: var(--disabled-text);
+  cursor: wait;
+}
+
+.photo-context-menu > button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.photo-context-separator {
+  height: 1px;
+  margin: 4px 3px;
+  background: var(--line);
+}
+
+.photo-context-rating {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 24px;
+  gap: 4px;
+  align-items: center;
+  min-height: 36px;
+  padding: 3px 7px;
+}
+
+.photo-context-rating > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.photo-context-rating > div {
+  display: grid;
+  grid-template-columns: repeat(5, 25px);
+}
+
+.photo-context-rating > div button,
+.photo-context-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 27px;
+  padding: 0;
+  color: var(--line-strong);
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.photo-context-rating > div button.is-active,
+.photo-context-rating > div button:hover,
+.photo-context-clear:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 82%);
+}
+
+.photo-context-clear {
+  width: 24px;
+  color: var(--muted);
 }
 
 .loupe-commandbar {
@@ -2747,6 +3034,10 @@ dd {
 }
 
 @media (max-width: 1100px) {
+  .preview-browser {
+    grid-template-columns: 196px minmax(0, 1fr);
+  }
+
   .preview-toolbar {
     grid-template-columns: minmax(160px, 1fr) auto auto;
     min-height: 88px;
@@ -2784,6 +3075,14 @@ dd {
 }
 
 @media (max-width: 900px) {
+  .preview-browser {
+    grid-template-columns: 168px minmax(0, 1fr);
+  }
+
+  .folder-tree-scroll {
+    padding-inline: 5px;
+  }
+
   .preview-header {
     grid-template-columns: minmax(150px, 1fr) auto;
   }
