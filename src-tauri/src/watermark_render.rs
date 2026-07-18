@@ -1,4 +1,6 @@
-use crate::watermark_color::{parse_css_color_linear, source_to_linear_srgb};
+use crate::watermark_color::{
+    OutputColorSpace, linear_srgb_to_output, parse_css_color_linear, source_to_linear_srgb,
+};
 use crate::watermark_geometry::{
     PixelRect, ResolvedLayout, ResolvedLayoutInput, anchor_region, normalized_placement,
     resolve_layout, resolve_preview_layout,
@@ -11,8 +13,9 @@ use crate::watermark_model::{
 };
 use crate::watermark_text::{FontCatalog, TextRenderRequest, rasterize_text};
 use base64::Engine;
+use image::codecs::png::PngEncoder;
 use image::imageops::{FilterType, resize};
-use image::{DynamicImage, ImageDecoder, ImageReader, Rgba, Rgba32FImage};
+use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageReader, Rgba, Rgba32FImage};
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::Path;
@@ -608,16 +611,20 @@ pub(crate) fn render_base_with_resources(
             variant.photo.align_y,
             variant.photo.scale,
         ));
-    let (output_long_edge, preview) = match target {
+    let (output_long_edge, preview, preview_max_edge) = match target {
         RenderTarget::Preview { max_edge } => {
             if max_edge == 0 {
                 return Err("预览长边必须大于 0".to_string());
             }
-            (Some(max_edge.min(source_width.max(source_height))), true)
+            (
+                Some(max_edge.min(source_width.max(source_height))),
+                true,
+                Some(max_edge),
+            )
         }
-        RenderTarget::Export { output_long_edge } => (output_long_edge, false),
+        RenderTarget::Export { output_long_edge } => (output_long_edge, false, None),
     };
-    let input = ResolvedLayoutInput {
+    let mut input = ResolvedLayoutInput {
         photo_width: source_width,
         photo_height: source_height,
         output_long_edge,
@@ -627,11 +634,24 @@ pub(crate) fn render_base_with_resources(
         align_y,
         photo_scale,
     };
-    let layout = if preview {
-        resolve_preview_layout(input)?
+    let mut layout = if preview {
+        resolve_preview_layout(input.clone())?
     } else {
-        resolve_layout(input)?
+        resolve_layout(input.clone())?
     };
+    if let Some(max_edge) = preview_max_edge {
+        let canvas_long_edge = layout.canvas.width.max(layout.canvas.height);
+        if canvas_long_edge > max_edge {
+            let current_photo_edge = input
+                .output_long_edge
+                .ok_or_else(|| "预览照片长边缺失".to_string())?;
+            let adjusted_photo_edge = ((u64::from(current_photo_edge) * u64::from(max_edge))
+                / u64::from(canvas_long_edge))
+            .max(1) as u32;
+            input.output_long_edge = Some(adjusted_photo_edge);
+            layout = resolve_preview_layout(input)?;
+        }
+    }
     let mut canvas = Rgba32FImage::new(layout.canvas.width, layout.canvas.height);
     render_background(&mut canvas, &variant.background, &decoded.image, resources)?;
     render_shadow(&mut canvas, layout.photo_rect, variant);
@@ -647,6 +667,32 @@ pub(crate) fn render_request(
     source: &Path,
     request: &WatermarkRenderRequest,
     resource_dir: &Path,
+) -> Result<RenderOutcome, String> {
+    render_request_with_target(
+        source,
+        request,
+        resource_dir,
+        RenderTarget::Export {
+            output_long_edge: None,
+        },
+    )
+}
+
+pub(crate) fn render_request_with_target(
+    source: &Path,
+    request: &WatermarkRenderRequest,
+    resource_dir: &Path,
+    target: RenderTarget,
+) -> Result<RenderOutcome, String> {
+    let mut font_catalog = FontCatalog::new(resource_dir)?;
+    render_request_with_catalog(source, request, &mut font_catalog, target)
+}
+
+pub(crate) fn render_request_with_catalog(
+    source: &Path,
+    request: &WatermarkRenderRequest,
+    font_catalog: &mut FontCatalog,
+    target: RenderTarget,
 ) -> Result<RenderOutcome, String> {
     if request.schema_version != WATERMARK_SCHEMA_VERSION {
         return Err(format!("不支持水印渲染版本 {}", request.schema_version));
@@ -666,9 +712,7 @@ pub(crate) fn render_request(
         source,
         variant,
         request.photo_override.as_ref(),
-        RenderTarget::Export {
-            output_long_edge: None,
-        },
+        target,
         &request.template.resources,
     )?;
     let mut layers = request
@@ -691,7 +735,6 @@ pub(crate) fn render_request(
     let exif_values = requires_exif
         .then(|| read_exif_values(source))
         .transpose()?;
-    let mut font_catalog = FontCatalog::new(resource_dir)?;
     let canvas_short_edge = rendered
         .layout
         .canvas
@@ -748,7 +791,7 @@ pub(crate) fn render_request(
                     shadow_offset_x_px: shadow_offset_x_ratio * canvas_short_edge,
                     shadow_offset_y_px: shadow_offset_y_ratio * canvas_short_edge,
                 };
-                let rasterized = rasterize_text(&text_request, &mut font_catalog)?;
+                let rasterized = rasterize_text(&text_request, font_catalog)?;
                 if rasterized.resolved_font.used_fallback {
                     warnings.push(format!(
                         "字体“{}”不可用，已使用“{}”",
@@ -815,7 +858,7 @@ pub(crate) fn render_request(
                     shadow_offset_x_px: shadow_offset_x_ratio * canvas_short_edge,
                     shadow_offset_y_px: shadow_offset_y_ratio * canvas_short_edge,
                 };
-                let rasterized = rasterize_text(&text_request, &mut font_catalog)?;
+                let rasterized = rasterize_text(&text_request, font_catalog)?;
                 if rasterized.resolved_font.used_fallback {
                     warnings.push(format!(
                         "字体“{}”不可用，已使用“{}”",
@@ -860,6 +903,42 @@ pub(crate) fn render_request(
         source_icc: rendered.source_icc,
         warnings,
     })
+}
+
+pub(crate) fn encode_preview_png(rendered: &RenderOutcome) -> Result<Vec<u8>, String> {
+    let mut straight_linear_rgb = Vec::with_capacity(rendered.image.len() / 4 * 3);
+    let mut alpha = Vec::with_capacity(rendered.image.len() / 4);
+    for pixel in rendered.image.pixels() {
+        let pixel_alpha = pixel[3].clamp(0.0, 1.0);
+        alpha.push((pixel_alpha * 255.0).round() as u8);
+        if pixel_alpha > f32::EPSILON {
+            straight_linear_rgb.push((pixel[0] / pixel_alpha).clamp(0.0, 1.0));
+            straight_linear_rgb.push((pixel[1] / pixel_alpha).clamp(0.0, 1.0));
+            straight_linear_rgb.push((pixel[2] / pixel_alpha).clamp(0.0, 1.0));
+        } else {
+            straight_linear_rgb.extend_from_slice(&[0.0, 0.0, 0.0]);
+        }
+    }
+    let (encoded_rgb, icc) = linear_srgb_to_output(&straight_linear_rgb, &OutputColorSpace::Srgb)?;
+    let mut rgba = Vec::with_capacity(alpha.len() * 4);
+    for (rgb, alpha) in encoded_rgb.chunks_exact(3).zip(alpha) {
+        rgba.extend_from_slice(rgb);
+        rgba.push(alpha);
+    }
+    let mut png = Vec::new();
+    let mut encoder = PngEncoder::new(&mut png);
+    encoder
+        .set_icc_profile(icc)
+        .map_err(|error| format!("无法写入水印预览 ICC：{error}"))?;
+    encoder
+        .write_image(
+            &rgba,
+            rendered.image.width(),
+            rendered.image.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|error| format!("无法编码水印预览 PNG：{error}"))?;
+    Ok(png)
 }
 
 fn parse_exif_field(field: &str) -> Result<ExifField, String> {

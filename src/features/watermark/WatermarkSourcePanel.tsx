@@ -8,7 +8,12 @@ import {
   ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  loadPhotoPreviewUrl,
+  peekPhotoPreviewUrl,
+  type PreviewRequest,
+} from "../preview/previewCache";
 import type { WatermarkSourcePhoto, WatermarkSourceSnapshot } from "./types";
 
 interface SourceDirectoryNode {
@@ -22,8 +27,10 @@ interface WatermarkSourcePanelProps {
   snapshot: WatermarkSourceSnapshot | null;
   busy: boolean;
   error: string | null;
+  selectedPhotoId: string | null;
   onChooseDirectory: () => void;
   onDismissError: () => void;
+  onSelectPhoto: (photoId: string) => void;
 }
 
 function sourceDirectoryTree(photos: WatermarkSourcePhoto[]): SourceDirectoryNode[] {
@@ -84,17 +91,51 @@ function SourceTree({ nodes, depth = 0 }: { nodes: SourceDirectoryNode[]; depth?
   );
 }
 
+function SourceThumbnail({ photo, snapshotId }: { photo: WatermarkSourcePhoto; snapshotId: string }) {
+  const request = useMemo<PreviewRequest>(() => ({
+    root: photo.root,
+    relativePath: photo.relativePath,
+    maxEdge: 220,
+    version: `${snapshotId}:${photo.sizeBytes}:${photo.modifiedMs}`,
+  }), [photo, snapshotId]);
+  const [url, setUrl] = useState(() => peekPhotoPreviewUrl(request));
+
+  useEffect(() => {
+    let disposed = false;
+    const cached = peekPhotoPreviewUrl(request);
+    if (cached) {
+      setUrl(cached);
+      return () => { disposed = true; };
+    }
+    void loadPhotoPreviewUrl(request)
+      .then((loadedUrl) => { if (!disposed) setUrl(loadedUrl); })
+      .catch(() => { if (!disposed) setUrl(null); });
+    return () => { disposed = true; };
+  }, [request]);
+
+  return url
+    ? <img src={url} alt="" draggable={false} />
+    : <span><FileImage aria-hidden="true" size={17} /></span>;
+}
+
 export function WatermarkSourcePanel({
   snapshot,
   busy,
   error,
+  selectedPhotoId,
   onChooseDirectory,
   onDismissError,
+  onSelectPhoto,
 }: WatermarkSourcePanelProps) {
+  const selectedRowRef = useRef<HTMLButtonElement>(null);
   const directoryTree = useMemo(
     () => sourceDirectoryTree(snapshot?.photos ?? []),
     [snapshot],
   );
+
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [selectedPhotoId]);
 
   return (
     <main className="watermark-source-workspace">
@@ -117,46 +158,44 @@ export function WatermarkSourcePanel({
           </button>
         </section>
       ) : (
-        <div className="watermark-source-layout">
-          <aside className="watermark-source-sidebar" aria-label="水印照片目录">
-            <header><FolderOpen aria-hidden="true" size={16} /><strong>照片来源</strong></header>
-            <div className="watermark-source-summary">
-              <span><strong>{snapshot.photos.length}</strong><small>JPG/JPEG</small></span>
-              <span><strong>{snapshot.rootPaths.length}</strong><small>来源目录</small></span>
+        <aside className="watermark-source-browser" aria-label="水印照片来源">
+          <header>
+            <div><FolderOpen aria-hidden="true" size={16} /><strong>照片来源</strong></div>
+            <span><ShieldCheck aria-hidden="true" size={14} />{snapshot.photos.length} 张</span>
+          </header>
+          <div className="watermark-source-tree-compact">
+            {directoryTree.length > 0
+              ? <SourceTree nodes={directoryTree} />
+              : <p>没有可用的 JPG/JPEG</p>}
+          </div>
+          {snapshot.photos.length > 0 ? (
+            <div className="watermark-source-rows is-compact">
+              {snapshot.photos.map((photo, index) => (
+                <button
+                  className={selectedPhotoId === photo.id ? "is-selected" : undefined}
+                  type="button"
+                  key={photo.id}
+                  ref={selectedPhotoId === photo.id ? selectedRowRef : undefined}
+                  onClick={() => onSelectPhoto(photo.id)}
+                  aria-pressed={selectedPhotoId === photo.id}
+                >
+                  <SourceThumbnail photo={photo} snapshotId={snapshot.id} />
+                  <div>
+                    <strong>{photo.fileName}</strong>
+                    <small>{index + 1} · {photo.pixelWidth} x {photo.pixelHeight}</small>
+                  </div>
+                  <span>{photo.orientation === "landscape" ? "横" : photo.orientation === "portrait" ? "竖" : "方"}</span>
+                </button>
+              ))}
             </div>
-            <div className="watermark-source-tree-scroll">
-              {directoryTree.length > 0
-                ? <SourceTree nodes={directoryTree} />
-                : <p>没有可用的 JPG/JPEG</p>}
+          ) : (
+            <div className="watermark-source-no-jpeg">
+              <ImageOff aria-hidden="true" size={28} />
+              <strong>没有找到可用的 JPG/JPEG</strong>
+              <button className="secondary-command" type="button" onClick={onChooseDirectory}>重新选择</button>
             </div>
-          </aside>
-
-          <section className="watermark-source-list" aria-label="水印照片列表">
-            <header>
-              <div><FileImage aria-hidden="true" size={17} /><strong>待处理照片</strong></div>
-              <span><ShieldCheck aria-hidden="true" size={15} />只生成副本</span>
-            </header>
-            {snapshot.photos.length > 0 ? (
-              <div className="watermark-source-rows">
-                {snapshot.photos.map((photo, index) => (
-                  <article key={photo.id}>
-                    <span className="watermark-source-index">{index + 1}</span>
-                    <FileImage aria-hidden="true" size={18} />
-                    <div><strong>{photo.fileName}</strong><small>{photo.relativePath}</small></div>
-                    <span>{photo.pixelWidth} x {photo.pixelHeight}</span>
-                    <span>{photo.orientation === "landscape" ? "横版" : photo.orientation === "portrait" ? "竖版" : "方形"}</span>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="watermark-source-no-jpeg">
-                <ImageOff aria-hidden="true" size={28} />
-                <strong>没有找到可用的 JPG/JPEG</strong>
-                <button className="secondary-command" type="button" onClick={onChooseDirectory}>重新选择</button>
-              </div>
-            )}
-          </section>
-        </div>
+          )}
+        </aside>
       )}
 
       {snapshot && (snapshot.skippedRawOnly > 0 || snapshot.skippedUnsupported > 0) ? (

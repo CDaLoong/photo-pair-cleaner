@@ -1,16 +1,36 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, Stamp } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../utils";
+import {
+  loadPhotoPreviewUrl,
+  preloadPreviewRequests,
+  type PreviewRequest,
+} from "../preview/previewCache";
+import { WatermarkCanvas } from "./WatermarkCanvas";
 import { WatermarkSourcePanel } from "./WatermarkSourcePanel";
 import type {
+  WatermarkRenderRequest,
+  WatermarkSourcePhoto,
   WatermarkSourceInput,
   WatermarkSourceOrigin,
   WatermarkSourceSnapshot,
   WatermarkTransferDraft,
 } from "./types";
+import { createDefaultWatermarkTemplate } from "./watermarkUtils";
+import {
+  loadWatermarkPreview,
+  watermarkPreviewRequestKey,
+  WatermarkPreviewCache,
+  type WatermarkPreviewDescriptor,
+  type WatermarkPreviewResult,
+} from "./watermarkPreviewCache";
 import "./watermark.css";
+
+const WATERMARK_PREVIEW_EDGE = 1400;
+const SOURCE_THUMBNAIL_EDGE = 220;
+const SOURCE_PRELOAD_CONCURRENCY = 4;
 
 interface WatermarkModuleProps {
   active: boolean;
@@ -22,8 +42,21 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
   const [busy, setBusy] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<WatermarkPreviewResult | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const busyRef = useRef(false);
   const processedTransferId = useRef<string | null>(null);
+  const previousPreviewPhotoId = useRef<string | null>(null);
+  const previewCacheRef = useRef<WatermarkPreviewCache | null>(null);
+  if (!previewCacheRef.current) {
+    previewCacheRef.current = new WatermarkPreviewCache((url) => URL.revokeObjectURL(url));
+  }
+  const template = useMemo(
+    () => createDefaultWatermarkTemplate("framepair-clean", "简洁白边"),
+    [],
+  );
 
   async function prepare(origin: WatermarkSourceOrigin, inputs: WatermarkSourceInput[]) {
     if (busyRef.current || inputs.length === 0) return;
@@ -39,6 +72,7 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
         request: { origin, inputs },
       });
       setSnapshot(result);
+      setSelectedPhotoId(result.photos[0]?.id ?? null);
     } catch (prepareError) {
       setError(errorMessage(prepareError));
     } finally {
@@ -92,6 +126,125 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
     };
   }, [active]);
 
+  useEffect(() => () => previewCacheRef.current?.clear(), []);
+
+  useEffect(() => {
+    previewCacheRef.current?.clear();
+    setPreview(null);
+    setPreviewError(null);
+    previousPreviewPhotoId.current = null;
+  }, [snapshot?.id]);
+
+  useEffect(() => {
+    if (!snapshot || snapshot.photos.length === 0) return;
+    const controller = new AbortController();
+    const requests: PreviewRequest[] = snapshot.photos.map((photo) => ({
+      root: photo.root,
+      relativePath: photo.relativePath,
+      maxEdge: SOURCE_THUMBNAIL_EDGE,
+      version: `${snapshot.id}:${photo.sizeBytes}:${photo.modifiedMs}`,
+    }));
+    void preloadPreviewRequests(requests, loadPhotoPreviewUrl, {
+      concurrency: SOURCE_PRELOAD_CONCURRENCY,
+      signal: controller.signal,
+    });
+    return () => controller.abort();
+  }, [snapshot]);
+
+  const selectedIndex = useMemo(
+    () => snapshot?.photos.findIndex((photo) => photo.id === selectedPhotoId) ?? -1,
+    [selectedPhotoId, snapshot],
+  );
+  const selectedPhoto = selectedIndex >= 0 ? snapshot?.photos[selectedIndex] ?? null : null;
+
+  function requestFor(photo: WatermarkSourcePhoto): WatermarkRenderRequest {
+    return {
+      schemaVersion: 1,
+      source: photo,
+      template,
+      photoOverride: null,
+      colorSpace: "srgb",
+      transparentBackground: false,
+      jpegFlattenColor: "#ffffff",
+    };
+  }
+
+  useEffect(() => {
+    if (!active || !snapshot || !selectedPhoto || selectedIndex < 0) return;
+    const cache = previewCacheRef.current;
+    if (!cache) return;
+    const keepPhotos = snapshot.photos.slice(
+      Math.max(0, selectedIndex - 2),
+      Math.min(snapshot.photos.length, selectedIndex + 3),
+    );
+    cache.retainPhotos(new Set(keepPhotos.map((photo) => photo.id)));
+
+    const request = requestFor(selectedPhoto);
+    const key = watermarkPreviewRequestKey(request, WATERMARK_PREVIEW_EDGE);
+    const descriptor: WatermarkPreviewDescriptor = {
+      key,
+      photoId: selectedPhoto.id,
+      root: selectedPhoto.root,
+      templateId: template.id,
+    };
+    const token = cache.begin(selectedPhoto.id, key);
+    const switchedPhoto = previousPreviewPhotoId.current !== selectedPhoto.id;
+    previousPreviewPhotoId.current = selectedPhoto.id;
+    let disposed = false;
+    setPreviewBusy(true);
+    setPreviewError(null);
+    const timeout = window.setTimeout(() => {
+      void cache.getOrLoad(
+        descriptor,
+        () => loadWatermarkPreview(request, WATERMARK_PREVIEW_EDGE),
+      ).then((result) => {
+        if (disposed || !cache.isCurrent(token)) return;
+        setPreview(result);
+        for (const neighbor of keepPhotos) {
+          if (neighbor.id === selectedPhoto.id) continue;
+          const neighborRequest = requestFor(neighbor);
+          const neighborKey = watermarkPreviewRequestKey(neighborRequest, WATERMARK_PREVIEW_EDGE);
+          void cache.getOrLoad({
+            key: neighborKey,
+            photoId: neighbor.id,
+            root: neighbor.root,
+            templateId: template.id,
+          }, () => loadWatermarkPreview(neighborRequest, WATERMARK_PREVIEW_EDGE)).catch(() => undefined);
+        }
+      }).catch((renderError) => {
+        if (!disposed && cache.isCurrent(token)) setPreviewError(errorMessage(renderError));
+      }).finally(() => {
+        if (!disposed && cache.isCurrent(token)) setPreviewBusy(false);
+      });
+    }, switchedPhoto ? 0 : 80);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timeout);
+    };
+  }, [active, selectedPhoto, selectedIndex, snapshot, template]);
+
+  function selectAt(index: number) {
+    const photo = snapshot?.photos[index];
+    if (photo) setSelectedPhotoId(photo.id);
+  }
+
+  useEffect(() => {
+    if (!active || !snapshot) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key === "ArrowLeft" && selectedIndex > 0) {
+        event.preventDefault();
+        selectAt(selectedIndex - 1);
+      } else if (event.key === "ArrowRight" && selectedIndex < snapshot.photos.length - 1) {
+        event.preventDefault();
+        selectAt(selectedIndex + 1);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [active, selectedIndex, snapshot]);
+
   async function chooseDirectory() {
     try {
       const selected = await open({
@@ -122,13 +275,39 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
         </div>
       </header>
       {busy ? <div className="activity-line" aria-hidden="true"><span /></div> : null}
-      <WatermarkSourcePanel
-        snapshot={snapshot}
-        busy={busy}
-        error={error}
-        onChooseDirectory={() => void chooseDirectory()}
-        onDismissError={() => setError(null)}
-      />
+      {snapshot && snapshot.photos.length > 0 ? (
+        <div className="watermark-live-workspace">
+          <WatermarkSourcePanel
+            snapshot={snapshot}
+            busy={busy}
+            error={error}
+            selectedPhotoId={selectedPhotoId}
+            onChooseDirectory={() => void chooseDirectory()}
+            onDismissError={() => setError(null)}
+            onSelectPhoto={setSelectedPhotoId}
+          />
+          <WatermarkCanvas
+            photo={selectedPhoto}
+            preview={preview}
+            loading={previewBusy}
+            error={previewError}
+            position={selectedIndex + 1}
+            total={snapshot.photos.length}
+            onPrevious={() => selectAt(selectedIndex - 1)}
+            onNext={() => selectAt(selectedIndex + 1)}
+          />
+        </div>
+      ) : (
+        <WatermarkSourcePanel
+          snapshot={snapshot}
+          busy={busy}
+          error={error}
+          selectedPhotoId={selectedPhotoId}
+          onChooseDirectory={() => void chooseDirectory()}
+          onDismissError={() => setError(null)}
+          onSelectPhoto={setSelectedPhotoId}
+        />
+      )}
       {dropActive ? (
         <div className="watermark-drop-overlay"><FolderOpen aria-hidden="true" size={30} /><strong>松开以添加 JPG 或照片目录</strong></div>
       ) : null}

@@ -27,7 +27,10 @@ use watermark_model::{
     WatermarkLayerBase, WatermarkOrientation, WatermarkRenderRequest, WatermarkSourcePhoto,
     WatermarkTemplate, default_template,
 };
-use watermark_render::{RenderTarget, render_base, render_base_with_resources, render_request};
+use watermark_render::{
+    RenderTarget, encode_preview_png, render_base, render_base_with_resources, render_request,
+    render_request_with_target,
+};
 use watermark_text::{FontCatalog, TextRenderRequest, draw_text, measure_text};
 
 fn save_jpeg(path: &Path, width: u32, height: u32, color: Rgb<u8>) {
@@ -626,4 +629,36 @@ fn corrupted_logo_and_missing_visible_layout_are_rejected() {
     let request = render_request_for(&source, template);
     let error = render_request(&source, &request, &resource_dir()).unwrap_err();
     assert!(error.contains("缺少图层") || error.contains("数量不一致"));
+}
+
+#[test]
+fn preview_target_bounds_the_final_canvas_and_encodes_lossless_png() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source.jpg");
+    save_jpeg(&source, 2400, 1200, Rgb([35, 80, 180]));
+    let mut template = default_template("preview", "预览");
+    for variant in template.variants.values_mut() {
+        variant.background = WatermarkBackground::Transparent;
+        variant.frame = FrameInsets {
+            top: 0.2,
+            right: 0.2,
+            bottom: 0.4,
+            left: 0.2,
+        };
+    }
+    let request = render_request_for(&source, template);
+    let rendered = render_request_with_target(
+        &source,
+        &request,
+        &resource_dir(),
+        RenderTarget::Preview { max_edge: 600 },
+    )
+    .unwrap();
+    assert!(rendered.image.width().max(rendered.image.height()) <= 600);
+
+    let png = encode_preview_png(&rendered).unwrap();
+    assert!(png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+    let decoded = image::load_from_memory(&png).unwrap().to_rgba8();
+    assert_eq!(decoded.dimensions(), rendered.image.dimensions());
+    assert_eq!(decoded.get_pixel(0, 0)[3], 0);
 }

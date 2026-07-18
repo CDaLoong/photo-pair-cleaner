@@ -42,7 +42,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use walkdir::WalkDir;
-use watermark_commands::{list_watermark_fonts, prepare_watermark_source};
+use watermark_commands::{
+    WatermarkRenderState, list_watermark_fonts, prepare_watermark_source, render_watermark_preview,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1379,6 +1381,7 @@ pub fn run() {
         .manage(RatingStore::default())
         .manage(rating_sync::RatingSyncPlanStore::default())
         .manage(operation_plan::OperationPlanStore::default())
+        .manage(WatermarkRenderState::default())
         .invoke_handler(tauri::generate_handler![
             validate_directory_path,
             scan_pairs,
@@ -1409,6 +1412,7 @@ pub fn run() {
             open_photo_in_editor,
             prepare_watermark_source,
             list_watermark_fonts,
+            render_watermark_preview,
             reveal_operation_log,
             open_system_trash
         ])

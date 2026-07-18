@@ -37,3 +37,12 @@ test("watermark source intake stays JPG-only and reports skipped files", () => {
   assert.match(panelSource, /skippedRawOnly/);
   assert.match(panelSource, /skippedUnsupported/);
 });
+
+test("watermark source list keeps the keyboard selection visible", () => {
+  const panelSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkSourcePanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panelSource, /selectedRowRef/);
+  assert.match(panelSource, /scrollIntoView\(\{ block: "nearest", inline: "nearest" \}\)/);
+});
