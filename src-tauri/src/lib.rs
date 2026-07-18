@@ -26,6 +26,8 @@ mod watermark_model;
 #[allow(dead_code)]
 mod watermark_render;
 mod watermark_source;
+#[allow(dead_code)]
+mod watermark_text;
 
 use chrono::Utc;
 use safety::{CleanupPlan, FileSnapshot, unique_keys};
@@ -40,7 +42,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use walkdir::WalkDir;
-use watermark_commands::prepare_watermark_source;
+use watermark_commands::{list_watermark_fonts, prepare_watermark_source};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1406,6 +1408,7 @@ pub fn run() {
             list_external_editors,
             open_photo_in_editor,
             prepare_watermark_source,
+            list_watermark_fonts,
             reveal_operation_log,
             open_system_trash
         ])

@@ -38,8 +38,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "resources/fonts/NotoSansCJKsc-Regular.otf",
+      "resources/fonts/OFL.txt"
+    ],
     "category": "Photography",
-    "shortDescription": "本地照片浏览、配对检查与安全 RAW 清理工具",
-    "longDescription": "在本机浏览 JPG/RAW 照片组合，并根据 JPG 目录、文件清单或 XMP 星级递归匹配 RAW，将未配对 RAW 与可选 XMP 伴随文件移入系统回收站或可恢复隔离区。"
+    "shortDescription": "本地照片浏览、评分、配对清理与水印导出工具",
+    "longDescription": "在本机浏览和评分 JPG/RAW 照片组合，安全同步评分与整理配对文件，并使用文字、EXIF、Logo 和装饰边框生成 JPG/PNG 水印副本。"
   }
 }

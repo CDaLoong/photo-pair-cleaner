@@ -33,7 +33,7 @@ pub(crate) fn source_to_linear_srgb(
     pixels: &[u8],
     source_icc: Option<&[u8]>,
 ) -> Result<Vec<f32>, String> {
-    if pixels.len() % 3 != 0 {
+    if !pixels.len().is_multiple_of(3) {
         return Err("RGB 像素数量必须是 3 的倍数".to_string());
     }
     let source_profile = match source_icc {
@@ -64,7 +64,7 @@ pub(crate) fn linear_srgb_to_output(
     pixels: &[f32],
     output: &OutputColorSpace,
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
-    if pixels.len() % 3 != 0 {
+    if !pixels.len().is_multiple_of(3) {
         return Err("线性 RGB 像素数量必须是 3 的倍数".to_string());
     }
     let (destination_profile, destination_icc) = match output {

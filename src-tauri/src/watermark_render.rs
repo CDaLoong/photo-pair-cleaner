@@ -1,11 +1,15 @@
 use crate::watermark_color::{parse_css_color_linear, source_to_linear_srgb};
 use crate::watermark_geometry::{
-    PixelRect, ResolvedLayout, ResolvedLayoutInput, resolve_layout, resolve_preview_layout,
+    PixelRect, ResolvedLayout, ResolvedLayoutInput, anchor_region, normalized_placement,
+    resolve_layout, resolve_preview_layout,
 };
+use crate::watermark_metadata::{ExifField, format_exif_fields, read_exif_values};
 use crate::watermark_model::{
     EmbeddedTemplateResource, GradientStop, ImageFit, LayoutVariant, MAX_RESOURCE_BYTES,
-    PhotoPlacementOverride, WatermarkBackground,
+    PhotoPlacementOverride, WATERMARK_SCHEMA_VERSION, WatermarkBackground, WatermarkLayer,
+    WatermarkOrientation, WatermarkRenderRequest, validate_template,
 };
+use crate::watermark_text::{FontCatalog, TextRenderRequest, rasterize_text};
 use base64::Engine;
 use image::imageops::{FilterType, resize};
 use image::{DynamicImage, ImageDecoder, ImageReader, Rgba, Rgba32FImage};
@@ -19,10 +23,19 @@ pub(crate) enum RenderTarget {
     Export { output_long_edge: Option<u32> },
 }
 
+#[derive(Debug)]
 pub(crate) struct RenderedCanvas {
     pub(crate) image: Rgba32FImage,
     pub(crate) layout: ResolvedLayout,
     pub(crate) source_icc: Option<Vec<u8>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RenderOutcome {
+    pub(crate) image: Rgba32FImage,
+    pub(crate) layout: ResolvedLayout,
+    pub(crate) source_icc: Option<Vec<u8>>,
+    pub(crate) warnings: Vec<String>,
 }
 
 struct DecodedImage {
@@ -628,4 +641,340 @@ pub(crate) fn render_base_with_resources(
         layout,
         source_icc: decoded.source_icc,
     })
+}
+
+pub(crate) fn render_request(
+    source: &Path,
+    request: &WatermarkRenderRequest,
+    resource_dir: &Path,
+) -> Result<RenderOutcome, String> {
+    if request.schema_version != WATERMARK_SCHEMA_VERSION {
+        return Err(format!("不支持水印渲染版本 {}", request.schema_version));
+    }
+    validate_template(&request.template)?;
+    let orientation = match request.source.orientation {
+        WatermarkOrientation::Landscape => "landscape",
+        WatermarkOrientation::Portrait => "portrait",
+        WatermarkOrientation::Square => "square",
+    };
+    let variant = request
+        .template
+        .variants
+        .get(orientation)
+        .ok_or_else(|| format!("模板缺少 {orientation} 布局"))?;
+    let mut rendered = render_base_with_resources(
+        source,
+        variant,
+        request.photo_override.as_ref(),
+        RenderTarget::Export {
+            output_long_edge: None,
+        },
+        &request.template.resources,
+    )?;
+    let mut layers = request
+        .template
+        .shared
+        .layers
+        .iter()
+        .filter(|layer| layer.base().visible)
+        .collect::<Vec<_>>();
+    layers.sort_by(|left, right| {
+        left.base()
+            .z_index
+            .cmp(&right.base().z_index)
+            .then_with(|| left.base().id.cmp(&right.base().id))
+    });
+
+    let requires_exif = layers
+        .iter()
+        .any(|layer| matches!(layer, WatermarkLayer::ExifText { .. }));
+    let exif_values = requires_exif
+        .then(|| read_exif_values(source))
+        .transpose()?;
+    let mut font_catalog = FontCatalog::new(resource_dir)?;
+    let canvas_short_edge = rendered
+        .layout
+        .canvas
+        .width
+        .min(rendered.layout.canvas.height) as f32;
+    let mut warnings = Vec::new();
+
+    for layer in layers {
+        let base = layer.base();
+        let layout = variant
+            .layer_layouts
+            .get(&base.id)
+            .ok_or_else(|| format!("{orientation} 布局缺少图层 {}", base.name))?;
+        let region = anchor_region(
+            &rendered.layout,
+            layout.placement.anchor_space,
+            layout.placement.frame_edge,
+        )?;
+        let placement = normalized_placement(region, &layout.placement)?;
+        let layer_image = match layer {
+            WatermarkLayer::Text {
+                text,
+                font_family,
+                font_weight,
+                color,
+                align,
+                letter_spacing_ratio,
+                line_height,
+                stroke_color,
+                stroke_width_ratio,
+                shadow_color,
+                shadow_blur_ratio,
+                shadow_offset_x_ratio,
+                shadow_offset_y_ratio,
+                ..
+            } => {
+                let font_size_ratio = layout
+                    .font_size_ratio
+                    .ok_or_else(|| format!("文字图层 {} 缺少字号", base.name))?;
+                let text_request = TextRenderRequest {
+                    text: text.clone(),
+                    font_family: font_family.clone(),
+                    font_weight: *font_weight,
+                    font_size_px: (font_size_ratio * canvas_short_edge).max(1.0),
+                    box_width: placement.width,
+                    line_height: *line_height,
+                    letter_spacing_ratio: *letter_spacing_ratio,
+                    align: *align,
+                    color: color.clone(),
+                    stroke_color: stroke_color.clone(),
+                    stroke_width_px: stroke_width_ratio * canvas_short_edge,
+                    shadow_color: shadow_color.clone(),
+                    shadow_blur_px: shadow_blur_ratio * canvas_short_edge,
+                    shadow_offset_x_px: shadow_offset_x_ratio * canvas_short_edge,
+                    shadow_offset_y_px: shadow_offset_y_ratio * canvas_short_edge,
+                };
+                let rasterized = rasterize_text(&text_request, &mut font_catalog)?;
+                if rasterized.resolved_font.used_fallback {
+                    warnings.push(format!(
+                        "字体“{}”不可用，已使用“{}”",
+                        rasterized.resolved_font.requested_family,
+                        rasterized.resolved_font.resolved_family
+                    ));
+                }
+                rasterized.image
+            }
+            WatermarkLayer::ExifText {
+                fields,
+                separator,
+                prefix,
+                suffix,
+                missing_value,
+                font_family,
+                font_weight,
+                color,
+                align,
+                letter_spacing_ratio,
+                line_height,
+                stroke_color,
+                stroke_width_ratio,
+                shadow_color,
+                shadow_blur_ratio,
+                shadow_offset_x_ratio,
+                shadow_offset_y_ratio,
+                ..
+            } => {
+                let parsed_fields = fields
+                    .iter()
+                    .map(|field| parse_exif_field(field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let resolved = format_exif_fields(
+                    &parsed_fields,
+                    separator,
+                    exif_values
+                        .as_ref()
+                        .ok_or_else(|| "EXIF 图层缺少来源元数据".to_string())?,
+                    missing_value.as_deref(),
+                );
+                let text = if resolved.is_empty() {
+                    String::new()
+                } else {
+                    format!("{prefix}{resolved}{suffix}")
+                };
+                let font_size_ratio = layout
+                    .font_size_ratio
+                    .ok_or_else(|| format!("EXIF 图层 {} 缺少字号", base.name))?;
+                let text_request = TextRenderRequest {
+                    text,
+                    font_family: font_family.clone(),
+                    font_weight: *font_weight,
+                    font_size_px: (font_size_ratio * canvas_short_edge).max(1.0),
+                    box_width: placement.width,
+                    line_height: *line_height,
+                    letter_spacing_ratio: *letter_spacing_ratio,
+                    align: *align,
+                    color: color.clone(),
+                    stroke_color: stroke_color.clone(),
+                    stroke_width_px: stroke_width_ratio * canvas_short_edge,
+                    shadow_color: shadow_color.clone(),
+                    shadow_blur_px: shadow_blur_ratio * canvas_short_edge,
+                    shadow_offset_x_px: shadow_offset_x_ratio * canvas_short_edge,
+                    shadow_offset_y_px: shadow_offset_y_ratio * canvas_short_edge,
+                };
+                let rasterized = rasterize_text(&text_request, &mut font_catalog)?;
+                if rasterized.resolved_font.used_fallback {
+                    warnings.push(format!(
+                        "字体“{}”不可用，已使用“{}”",
+                        rasterized.resolved_font.requested_family,
+                        rasterized.resolved_font.resolved_family
+                    ));
+                }
+                rasterized.image
+            }
+            WatermarkLayer::Image {
+                resource_id, fit, ..
+            } => {
+                if layout.font_size_ratio.is_some() {
+                    return Err(format!("图片图层 {} 不能设置字号", base.name));
+                }
+                let resource = request
+                    .template
+                    .resources
+                    .get(resource_id)
+                    .ok_or_else(|| format!("图层资源 {resource_id} 不存在"))?;
+                let decoded = decode_template_resource(resource)?;
+                fit_image(&decoded.image, placement.width, placement.width, *fit, 1.0)
+            }
+        };
+        let mut layer_image = rotate_layer(&layer_image, placement.rotation_deg);
+        apply_opacity(&mut layer_image, placement.opacity);
+        if composite_centered(
+            &mut rendered.image,
+            &layer_image,
+            placement.center_x,
+            placement.center_y,
+        ) {
+            warnings.push(format!("图层“{}”超出画布，已裁切", base.name));
+        }
+    }
+
+    warnings.sort();
+    warnings.dedup();
+    Ok(RenderOutcome {
+        image: rendered.image,
+        layout: rendered.layout,
+        source_icc: rendered.source_icc,
+        warnings,
+    })
+}
+
+fn parse_exif_field(field: &str) -> Result<ExifField, String> {
+    match field {
+        "cameraMake" => Ok(ExifField::CameraMake),
+        "cameraModel" => Ok(ExifField::CameraModel),
+        "lensModel" => Ok(ExifField::LensModel),
+        "focalLength" => Ok(ExifField::FocalLength),
+        "aperture" => Ok(ExifField::Aperture),
+        "shutterSpeed" => Ok(ExifField::ShutterSpeed),
+        "iso" => Ok(ExifField::Iso),
+        "dateTime" => Ok(ExifField::DateTime),
+        "author" => Ok(ExifField::Author),
+        "copyright" => Ok(ExifField::Copyright),
+        _ => Err(format!("不支持的 EXIF 字段 {field}")),
+    }
+}
+
+fn decode_template_resource(resource: &EmbeddedTemplateResource) -> Result<DecodedImage, String> {
+    if !matches!(resource.mime_type.as_str(), "image/png" | "image/jpeg") {
+        return Err(format!("模板图片资源 {} 不是 JPG 或 PNG", resource.id));
+    }
+    let maximum_encoded_resource = MAX_RESOURCE_BYTES.div_ceil(3) * 4 + 4;
+    if resource.data_base64.len() > maximum_encoded_resource {
+        return Err(format!("模板图片资源 {} 超过 32 MiB", resource.id));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&resource.data_base64)
+        .map_err(|_| format!("模板图片资源 {} 不是有效 Base64", resource.id))?;
+    if bytes.len() > MAX_RESOURCE_BYTES {
+        return Err(format!("模板图片资源 {} 超过 32 MiB", resource.id));
+    }
+    decode_bytes(&bytes)
+}
+
+fn rotate_layer(source: &Rgba32FImage, angle_deg: f32) -> Rgba32FImage {
+    let normalized = angle_deg.rem_euclid(360.0);
+    if normalized < 0.001 || (360.0 - normalized) < 0.001 {
+        return source.clone();
+    }
+    let angle = angle_deg.to_radians();
+    let cosine = angle.cos();
+    let sine = angle.sin();
+    let width = source.width() as f32;
+    let height = source.height() as f32;
+    let rotated_width = (width * cosine.abs() + height * sine.abs()).ceil().max(1.0) as u32;
+    let rotated_height = (width * sine.abs() + height * cosine.abs()).ceil().max(1.0) as u32;
+    let mut output = Rgba32FImage::new(rotated_width, rotated_height);
+    let source_center_x = width / 2.0;
+    let source_center_y = height / 2.0;
+    let destination_center_x = rotated_width as f32 / 2.0;
+    let destination_center_y = rotated_height as f32 / 2.0;
+    for (x, y, pixel) in output.enumerate_pixels_mut() {
+        let destination_x = x as f32 + 0.5 - destination_center_x;
+        let destination_y = y as f32 + 0.5 - destination_center_y;
+        let source_x = cosine * destination_x + sine * destination_y + source_center_x - 0.5;
+        let source_y = -sine * destination_x + cosine * destination_y + source_center_y - 0.5;
+        *pixel = Rgba(sample_bilinear(source, source_x, source_y));
+    }
+    output
+}
+
+fn sample_bilinear(source: &Rgba32FImage, x: f32, y: f32) -> [f32; 4] {
+    if x < -0.5 || y < -0.5 || x > source.width() as f32 - 0.5 || y > source.height() as f32 - 0.5 {
+        return [0.0; 4];
+    }
+    let x = x.clamp(0.0, source.width().saturating_sub(1) as f32);
+    let y = y.clamp(0.0, source.height().saturating_sub(1) as f32);
+    let left = x.floor() as u32;
+    let top = y.floor() as u32;
+    let right = left.saturating_add(1).min(source.width() - 1);
+    let bottom = top.saturating_add(1).min(source.height() - 1);
+    let amount_x = x - left as f32;
+    let amount_y = y - top as f32;
+    let top_left = source.get_pixel(left, top).0;
+    let top_right = source.get_pixel(right, top).0;
+    let bottom_left = source.get_pixel(left, bottom).0;
+    let bottom_right = source.get_pixel(right, bottom).0;
+    let mut output = [0.0; 4];
+    for channel in 0..4 {
+        let top_value = top_left[channel] + (top_right[channel] - top_left[channel]) * amount_x;
+        let bottom_value =
+            bottom_left[channel] + (bottom_right[channel] - bottom_left[channel]) * amount_x;
+        output[channel] = top_value + (bottom_value - top_value) * amount_y;
+    }
+    output
+}
+
+fn composite_centered(
+    destination: &mut Rgba32FImage,
+    source: &Rgba32FImage,
+    center_x: i64,
+    center_y: i64,
+) -> bool {
+    let left = center_x - i64::from(source.width()) / 2;
+    let top = center_y - i64::from(source.height()) / 2;
+    let clipped = left < 0
+        || top < 0
+        || left + i64::from(source.width()) > i64::from(destination.width())
+        || top + i64::from(source.height()) > i64::from(destination.height());
+    for y in 0..source.height() {
+        let destination_y = top + i64::from(y);
+        if destination_y < 0 || destination_y >= i64::from(destination.height()) {
+            continue;
+        }
+        for x in 0..source.width() {
+            let destination_x = left + i64::from(x);
+            if destination_x < 0 || destination_x >= i64::from(destination.width()) {
+                continue;
+            }
+            blend_pixel(
+                destination.get_pixel_mut(destination_x as u32, destination_y as u32),
+                source.get_pixel(x, y).0,
+            );
+        }
+    }
+    clipped
 }
