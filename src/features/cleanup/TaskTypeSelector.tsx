@@ -20,7 +20,7 @@ export function TaskTypeSelector({ value, busy, onChange }: TaskTypeSelectorProp
       </button>
       <button type="button" aria-pressed={value === "ratingRules"} disabled={busy} onClick={() => onChange("ratingRules")}>
         <ListFilter aria-hidden="true" size={16} />
-        <span><strong>评分整理</strong><small>按评分模拟移动、复制与待清理计划</small></span>
+        <span><strong>评分整理</strong><small>按评分执行移动、复制与安全清理</small></span>
       </button>
     </div>
   );

@@ -22,7 +22,7 @@ const GUIDE_STEPS: GuidedTourStep[] = [
     points: [
       { label: "配对清理", detail: "检查 JPG/RAW 配对，复核后可移入回收站或隔离区。" },
       { label: "评分同步", detail: "只更新启用的评分元数据，不会移动、复制或清理照片。" },
-      { label: "评分整理", detail: "按评分生成移动、复制、保留或待清理的只读模拟计划。" },
+      { label: "评分整理", detail: "按评分生成移动、复制、保留或待清理计划，复核后安全执行。" },
     ],
     tip: "任务可以随时切换，两边已经填写的内容会分别保留。",
   },
@@ -171,7 +171,7 @@ const RATING_RULES_GUIDE_STEPS: GuidedTourStep[] = [
   },
   {
     title: "按需叠加评分同步预览",
-    description: "评分同步与文件规则分开计算，只在你明确启用时进入模拟计划。",
+    description: "评分同步与文件规则分开计算，只在你明确启用时进入执行计划。",
     icon: RefreshCw,
     selector: "[data-tour='rating-rules-sync']",
     placement: "left",
@@ -183,8 +183,8 @@ const RATING_RULES_GUIDE_STEPS: GuidedTourStep[] = [
     tip: "这里仍然只是预览；自动模式也不会移动、复制或清理照片。",
   },
   {
-    title: "复核只读模拟计划",
-    description: "查看数量、空间、规则命中、每个源路径、模拟目标和冲突原因。",
+    title: "复核执行计划",
+    description: "查看数量、空间、规则命中、每个源路径、目标和冲突原因；待清理还需选择隔离区或系统回收站。",
     icon: ScanSearch,
     selector: "[data-tour='rating-rules-plan']",
     placement: "top",

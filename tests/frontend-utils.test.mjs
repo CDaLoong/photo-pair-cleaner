@@ -10,7 +10,7 @@ import * as ratingRuleUtils from "../src/features/rating-rules/ratingRuleUtils.t
 import * as ratingSyncUtils from "../src/features/rating-sync/ratingSyncUtils.ts";
 import * as utils from "../src/utils.ts";
 
-test("phase four registers rating organizer execution and recovery without cleanup execution", () => {
+test("phase five registers organizer execution and recovery without a path-based cleanup command", () => {
   const source = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   for (const command of [
     "get_rating_rules",

@@ -636,7 +636,7 @@ export function CleanupModule({ active }: CleanupModuleProps) {
     ? "检查配对并安全处理 RAW"
     : taskType === "ratingSync"
       ? "同步照片组评分元数据"
-      : "按评分生成文件处理模拟计划";
+      : "按评分生成并执行安全文件处理计划";
 
   return (
     <section className="cleanup-module" aria-label="照片处理工作台">

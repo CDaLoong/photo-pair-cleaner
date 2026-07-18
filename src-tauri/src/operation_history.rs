@@ -574,8 +574,7 @@ mod tests {
         )
         .expect("append quarantine recovery");
         assert_eq!(
-            list_operations(data.path()).expect("updated cleanup history")[0]
-                .recoverable_groups,
+            list_operations(data.path()).expect("updated cleanup history")[0].recoverable_groups,
             0
         );
 

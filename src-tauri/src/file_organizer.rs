@@ -232,7 +232,10 @@ fn validate_cleanup_sources(
         let metadata = fs::symlink_metadata(&source)
             .map_err(|error| format!("待清理文件不可访问 {}：{error}", display_path(&source)))?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(format!("待清理路径不是可信普通文件：{}", display_path(&source)));
+            return Err(format!(
+                "待清理路径不是可信普通文件：{}",
+                display_path(&source)
+            ));
         }
         let canonical_source = fs::canonicalize(&source)
             .map_err(|error| format!("无法校验待清理文件 {}：{error}", display_path(&source)))?;
@@ -929,7 +932,8 @@ fn execute_quarantine_group(
             format!("无法创建评分隔离操作目录：{error}"),
         );
     }
-    let canonical_operation_root = match canonical_directory(&operation_root, "评分隔离操作目录") {
+    let canonical_operation_root = match canonical_directory(&operation_root, "评分隔离操作目录")
+    {
         Ok(path) if path == operation_root => path,
         Ok(_) => {
             return failed_group(
@@ -995,8 +999,7 @@ fn execute_trash_group(
         let result = if options.fail_trash_at == Some(index) {
             Err("测试注入的系统回收站失败".to_string())
         } else if options.simulate_trash {
-            fs::remove_file(&member.source)
-                .map_err(|error| format!("模拟系统回收站失败：{error}"))
+            fs::remove_file(&member.source).map_err(|error| format!("模拟系统回收站失败：{error}"))
         } else {
             trash::delete(&member.source)
                 .map_err(|error| format!("移入系统回收站/废纸篓失败：{error}"))
@@ -1403,9 +1406,10 @@ fn execute_authorized_plan_with_options(
         };
         if matches!(group.action, OrganizerAction::Copy | OrganizerAction::Move)
             && matches!(
-            group.status,
-            OrganizerGroupStatus::Success | OrganizerGroupStatus::Partial
-        ) && let Err(error) = apply_destination_sync(&plan, item, &mut group)
+                group.status,
+                OrganizerGroupStatus::Success | OrganizerGroupStatus::Partial
+            )
+            && let Err(error) = apply_destination_sync(&plan, item, &mut group)
         {
             group.status = OrganizerGroupStatus::Partial;
             group.message = format!("{}；评分同步未完成：{error}", group.message);
@@ -1633,13 +1637,8 @@ fn restore_member(
     member: &OperationMemberRecord,
 ) -> RecoveryMemberResult {
     let source_result = trusted_history_source(root, &member.source_path);
-    let target_result = trusted_recovery_target(
-        root,
-        rules,
-        operation_id,
-        action,
-        &member.target_path,
-    );
+    let target_result =
+        trusted_recovery_target(root, rules, operation_id, action, &member.target_path);
     let result = source_result.and_then(|source| {
         let target = target_result?;
         let snapshot = member
@@ -1679,13 +1678,7 @@ fn preflight_restore_member(
     member: &OperationMemberRecord,
 ) -> Result<(), String> {
     let source = trusted_history_source(root, &member.source_path)?;
-    let target = trusted_recovery_target(
-        root,
-        rules,
-        operation_id,
-        action,
-        &member.target_path,
-    )?;
+    let target = trusted_recovery_target(root, rules, operation_id, action, &member.target_path)?;
     let snapshot = member
         .target_snapshot
         .as_ref()
@@ -1801,25 +1794,21 @@ fn recover_operation(
             recoverable_members
                 .iter()
                 .map(|member| match kind {
-                    RecoveryKind::RestoreMove => {
-                        restore_member(
-                            &root,
-                            &history.manifest.rules,
-                            operation_id,
-                            expected_action,
-                            member,
-                        )
-                    }
+                    RecoveryKind::RestoreMove => restore_member(
+                        &root,
+                        &history.manifest.rules,
+                        operation_id,
+                        expected_action,
+                        member,
+                    ),
                     RecoveryKind::UndoCopy => undo_copy_member(&history.manifest.rules, member),
-                    RecoveryKind::RestoreQuarantine => {
-                        restore_member(
-                            &root,
-                            &history.manifest.rules,
-                            operation_id,
-                            expected_action,
-                            member,
-                        )
-                    }
+                    RecoveryKind::RestoreQuarantine => restore_member(
+                        &root,
+                        &history.manifest.rules,
+                        operation_id,
+                        expected_action,
+                        member,
+                    ),
                 })
                 .collect::<Vec<_>>()
         };
@@ -2213,15 +2202,15 @@ mod tests {
         fs::write(source.path().join("album/photo.nef"), b"changed after plan")
             .expect("change source");
 
-        let summary = execute_authorized_plan(
-            app_data.path(),
-            "operation-1".to_string(),
-            100,
-            plan,
-        )
-        .expect("execute drifted cleanup");
+        let summary =
+            execute_authorized_plan(app_data.path(), "operation-1".to_string(), 100, plan)
+                .expect("execute drifted cleanup");
         assert_eq!(summary.failed, 1);
-        assert!(members.iter().all(|(relative, _)| source.path().join(relative).exists()));
+        assert!(
+            members
+                .iter()
+                .all(|(relative, _)| source.path().join(relative).exists())
+        );
 
         let second = tempdir().expect("second source");
         let second_data = tempdir().expect("second app data");
@@ -2241,7 +2230,11 @@ mod tests {
         )
         .expect("execute occupied cleanup");
         assert_eq!(summary.failed, 1);
-        assert!(members.iter().all(|(relative, _)| second.path().join(relative).exists()));
+        assert!(
+            members
+                .iter()
+                .all(|(relative, _)| second.path().join(relative).exists())
+        );
     }
 
     #[test]
@@ -2261,7 +2254,11 @@ mod tests {
         )
         .expect("execute injected failure");
         assert_eq!(summary.failed, 1);
-        assert!(members.iter().all(|(relative, _)| source.path().join(relative).exists()));
+        assert!(
+            members
+                .iter()
+                .all(|(relative, _)| source.path().join(relative).exists())
+        );
 
         let second = tempdir().expect("second source");
         let second_data = tempdir().expect("second app data");
@@ -2307,14 +2304,19 @@ mod tests {
         .expect("execute simulated trash cleanup");
         assert_eq!(summary.succeeded, 1);
         assert_eq!(summary.groups[0].action, OrganizerAction::Trash);
-        assert!(summary.groups[0]
-            .members
-            .iter()
-            .all(|member| member.target_snapshot.is_none()));
-        assert!(members.iter().all(|(relative, _)| !source.path().join(relative).exists()));
+        assert!(
+            summary.groups[0]
+                .members
+                .iter()
+                .all(|member| member.target_snapshot.is_none())
+        );
+        assert!(
+            members
+                .iter()
+                .all(|(relative, _)| !source.path().join(relative).exists())
+        );
         assert_eq!(
-            crate::operation_history::list_operations(app_data.path())
-                .expect("trash history")[0]
+            crate::operation_history::list_operations(app_data.path()).expect("trash history")[0]
                 .recoverable_groups,
             0
         );
@@ -2323,8 +2325,7 @@ mod tests {
         let drifted_data = tempdir().expect("drifted app data");
         let drifted_members = create_cleanup_group(drifted.path());
         let drifted_plan = trash_plan(drifted.path(), "cleanup", &drifted_members);
-        fs::write(drifted.path().join("album/photo.xmp"), b"changed")
-            .expect("change later member");
+        fs::write(drifted.path().join("album/photo.xmp"), b"changed").expect("change later member");
         let summary = execute_authorized_plan_with_options(
             drifted_data.path(),
             "operation-2".to_string(),
@@ -2395,13 +2396,9 @@ mod tests {
             timing: SyncTiming::BeforeCleanup,
         }];
 
-        let summary = execute_authorized_plan(
-            app_data.path(),
-            "operation-1".to_string(),
-            100,
-            plan,
-        )
-        .expect("execute cleanup sync");
+        let summary =
+            execute_authorized_plan(app_data.path(), "operation-1".to_string(), 100, plan)
+                .expect("execute cleanup sync");
         assert_eq!(summary.succeeded, 1, "{:?}", summary.groups);
         let quarantined_xmp = source
             .path()
@@ -2445,13 +2442,9 @@ mod tests {
             timing: SyncTiming::BeforeCleanup,
         }];
 
-        let summary = execute_authorized_plan(
-            app_data.path(),
-            "operation-1".to_string(),
-            100,
-            plan,
-        )
-        .expect("execute failed sync cleanup");
+        let summary =
+            execute_authorized_plan(app_data.path(), "operation-1".to_string(), 100, plan)
+                .expect("execute failed sync cleanup");
         assert_eq!(summary.failed, 1);
         assert!(source.path().join("album/photo.jpg").exists());
     }
