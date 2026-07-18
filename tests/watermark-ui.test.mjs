@@ -179,3 +179,42 @@ test("watermark templates are portable local assets with immutable builtins", ()
   assert.match(moduleSource, /当前模板包含未保存的调整/);
   assert.match(moduleSource, /Array\.isArray\(entries\)/);
 });
+
+test("watermark export dialog confirms settings streams progress and retries failures", () => {
+  const dialogSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkExportDialog.tsx", import.meta.url),
+    "utf8",
+  );
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  const headerSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkHeader.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const label of [
+    "导出设置",
+    "文件格式",
+    "输出尺寸",
+    "元数据",
+    "同名文件",
+    "预计空间",
+    "已完成的副本会保留",
+    "重试失败项",
+    "在文件管理器中显示",
+  ]) {
+    assert.match(dialogSource, new RegExp(label));
+  }
+  for (const command of [
+    "start_watermark_export",
+    "cancel_watermark_export",
+    "retry_watermark_export_failures",
+    "reveal_watermark_export",
+    "acknowledge_watermark_export",
+  ]) {
+    assert.match(moduleSource, new RegExp(command));
+  }
+  assert.match(headerSource, /data-watermark-tour="export"/);
+  assert.match(headerSource, /导出副本/);
+});

@@ -2,6 +2,7 @@ import {
   ArrowDown,
   ArrowUp,
   Copy,
+  Download,
   Eye,
   EyeOff,
   Image,
@@ -27,6 +28,7 @@ import type {
   WatermarkFontSummary,
   WatermarkLayer,
   WatermarkOrientation,
+  WatermarkOutputSettings,
   WatermarkTemplate,
 } from "./types";
 import { clampWatermarkNumber, normalizeWatermarkRotation } from "./watermarkUtils";
@@ -94,6 +96,9 @@ interface WatermarkInspectorProps {
   onAddText: () => void;
   onAddExif: () => void;
   onAddImage: () => void;
+  outputSettings: WatermarkOutputSettings;
+  exportDisabled: boolean;
+  onOpenExport: () => void;
 }
 
 export function WatermarkInspector({
@@ -108,6 +113,9 @@ export function WatermarkInspector({
   onAddText,
   onAddExif,
   onAddImage,
+  outputSettings,
+  exportDisabled,
+  onOpenExport,
 }: WatermarkInspectorProps) {
   const [linkFrame, setLinkFrame] = useState(false);
   const [newExifField, setNewExifField] = useState("cameraModel");
@@ -277,6 +285,16 @@ export function WatermarkInspector({
           <button className="watermark-clear-override" type="button" onClick={() => dispatch({ type: "clearPhotoOverride", photoId })} disabled={!photoOverride}>清除单张调整</button>
         </div>
       ) : null}
+
+      <div className="watermark-inspector-section watermark-export-shortcut">
+        <div className="watermark-section-heading"><Download aria-hidden="true" size={15} /><strong>导出设置</strong></div>
+        <dl>
+          <div><dt>格式</dt><dd>{outputSettings.format === "jpeg" ? `JPEG ${outputSettings.jpegQuality}` : outputSettings.transparentBackground ? "PNG 透明" : "PNG"}</dd></div>
+          <div><dt>尺寸</dt><dd>{outputSettings.sizing.kind === "original" ? "原始尺寸" : `长边 ${outputSettings.sizing.pixels}px`}</dd></div>
+          <div><dt>元数据</dt><dd>{outputSettings.metadataPolicy === "privacy" ? "隐私模式" : outputSettings.metadataPolicy === "preserve" ? "完整保留" : "全部移除"}</dd></div>
+        </dl>
+        <button type="button" className="primary-command" onClick={onOpenExport} disabled={exportDisabled}><Download aria-hidden="true" size={15} />确认并导出</button>
+      </div>
     </section>
   );
 }

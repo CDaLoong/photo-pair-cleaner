@@ -5,12 +5,19 @@ import {
   clampWatermarkNumber,
   classifyWatermarkOrientation,
   createDefaultWatermarkTemplate,
+  createWatermarkExportProgress,
+  DEFAULT_WATERMARK_OUTPUT,
+  defaultWatermarkOutputDirectory,
+  failedWatermarkPhotoIds,
   keyboardNudgeNormalized,
   normalizeWatermarkRotation,
   outputExtension,
+  reduceWatermarkExportProgress,
   selectedLayoutVariant,
   snapNormalizedPosition,
+  validateWatermarkOutputSettings,
   viewportDeltaToNormalized,
+  watermarkFilenameExamples,
 } from "../src/features/watermark/watermarkUtils.ts";
 import {
   WatermarkPreviewCache,
@@ -80,6 +87,60 @@ test("output extension follows the selected format", () => {
   assert.equal(outputExtension("jpeg"), "jpg");
   assert.equal(outputExtension("png"), "png");
   assert.equal(selectedLayoutVariant(1000, 960), "square");
+});
+
+test("watermark export defaults are safe and filename previews are deterministic", () => {
+  assert.deepEqual(DEFAULT_WATERMARK_OUTPUT, {
+    format: "jpeg",
+    jpegQuality: 90,
+    sizing: { kind: "original", allowUpscale: false },
+    colorSpace: "srgb",
+    transparentBackground: false,
+    jpegFlattenColor: "#ffffff",
+    metadataPolicy: "privacy",
+    outputDirectory: null,
+    suffix: "_FramePair",
+    collisionPolicy: "sequence",
+  });
+  const snapshot = {
+    rootPaths: ["/photos/session"],
+    photos: [{ fileName: "DSC_0001.JPG" }, { fileName: "portrait.jpeg" }],
+  };
+  assert.equal(defaultWatermarkOutputDirectory(snapshot), "/photos/FramePair-Watermarked");
+  assert.deepEqual(watermarkFilenameExamples(snapshot, DEFAULT_WATERMARK_OUTPUT), [
+    "DSC_0001_FramePair.jpg",
+    "portrait_FramePair.jpg",
+  ]);
+  assert.equal(validateWatermarkOutputSettings(DEFAULT_WATERMARK_OUTPUT, snapshot), null);
+});
+
+test("watermark export validation covers multi-root suffix quality size and PNG alpha", () => {
+  const snapshot = { rootPaths: ["/one", "/two"], photos: [{ fileName: "one.jpg" }] };
+  assert.match(validateWatermarkOutputSettings(DEFAULT_WATERMARK_OUTPUT, snapshot), /输出目录/);
+  assert.match(validateWatermarkOutputSettings({ ...DEFAULT_WATERMARK_OUTPUT, jpegQuality: 0 }, snapshot), /质量/);
+  assert.match(validateWatermarkOutputSettings({ ...DEFAULT_WATERMARK_OUTPUT, suffix: "../bad" }, snapshot), /后缀/);
+  assert.match(validateWatermarkOutputSettings({ ...DEFAULT_WATERMARK_OUTPUT, sizing: { kind: "longEdge", pixels: 32, allowUpscale: false } }, snapshot), /长边/);
+  const png = {
+    ...DEFAULT_WATERMARK_OUTPUT,
+    format: "png",
+    transparentBackground: true,
+    outputDirectory: "/output",
+  };
+  assert.equal(validateWatermarkOutputSettings(png, snapshot), null);
+  assert.equal(watermarkFilenameExamples(snapshot, png)[0], "one_FramePair.png");
+});
+
+test("watermark export events reduce progress and expose failed-only retry IDs", () => {
+  let progress = createWatermarkExportProgress();
+  progress = reduceWatermarkExportProgress(progress, { type: "started", taskId: "task-1", total: 3 });
+  progress = reduceWatermarkExportProgress(progress, { type: "itemStarted", taskId: "task-1", photoId: "a", index: 0 });
+  progress = reduceWatermarkExportProgress(progress, { type: "itemFinished", taskId: "task-1", result: { photoId: "a", targetPath: "/a.jpg", status: "succeeded", message: "完成", sizeBytes: 100 } });
+  progress = reduceWatermarkExportProgress(progress, { type: "itemFinished", taskId: "task-1", result: { photoId: "b", targetPath: "/b.jpg", status: "failed", message: "失败", sizeBytes: null } });
+  progress = reduceWatermarkExportProgress(progress, { type: "finished", taskId: "task-1", summary: { total: 3, succeeded: 1, skipped: 0, failed: 1, cancelled: 1 } });
+  assert.equal(progress.phase, "results");
+  assert.equal(progress.results.length, 2);
+  assert.deepEqual(failedWatermarkPhotoIds(progress), ["b"]);
+  assert.deepEqual(progress.summary, { total: 3, succeeded: 1, skipped: 0, failed: 1, cancelled: 1 });
 });
 
 test("watermark preview keys use stable recursive property ordering", () => {

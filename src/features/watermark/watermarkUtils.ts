@@ -6,7 +6,11 @@ import type {
   VariantLayerLayout,
   WatermarkLayer,
   WatermarkOrientation,
+  WatermarkExportEvent,
+  WatermarkExportSummary,
+  WatermarkOutputResult,
   WatermarkOutputFormat,
+  WatermarkOutputSettings,
   WatermarkTemplate,
 } from "./types";
 
@@ -165,6 +169,175 @@ export function selectedLayoutVariant(width: number, height: number): WatermarkO
 
 export function outputExtension(format: WatermarkOutputFormat): "jpg" | "png" {
   return format === "jpeg" ? "jpg" : "png";
+}
+
+export const DEFAULT_WATERMARK_OUTPUT: WatermarkOutputSettings = {
+  format: "jpeg",
+  jpegQuality: 90,
+  sizing: { kind: "original", allowUpscale: false },
+  colorSpace: "srgb",
+  transparentBackground: false,
+  jpegFlattenColor: "#ffffff",
+  metadataPolicy: "privacy",
+  outputDirectory: null,
+  suffix: "_FramePair",
+  collisionPolicy: "sequence",
+};
+
+interface WatermarkOutputSnapshotLike {
+  rootPaths: string[];
+  photos: Array<{
+    fileName: string;
+    sizeBytes?: number;
+    pixelWidth?: number;
+    pixelHeight?: number;
+  }>;
+}
+
+export function defaultWatermarkOutputDirectory(
+  snapshot: WatermarkOutputSnapshotLike,
+): string | null {
+  if (snapshot.rootPaths.length !== 1) return null;
+  const root = snapshot.rootPaths[0].replace(/[\\/]+$/, "");
+  const separator = root.includes("\\") ? "\\" : "/";
+  const splitAt = Math.max(root.lastIndexOf("/"), root.lastIndexOf("\\"));
+  const parent = splitAt > 0 ? root.slice(0, splitAt) : splitAt === 0 ? separator : ".";
+  return `${parent}${parent.endsWith(separator) ? "" : separator}FramePair-Watermarked`;
+}
+
+function outputName(fileName: string, settings: WatermarkOutputSettings): string {
+  const extensionAt = fileName.lastIndexOf(".");
+  const stem = extensionAt > 0 ? fileName.slice(0, extensionAt) : fileName;
+  return `${stem}${settings.suffix}.${outputExtension(settings.format)}`;
+}
+
+export function watermarkFilenameExamples(
+  snapshot: WatermarkOutputSnapshotLike,
+  settings: WatermarkOutputSettings,
+): string[] {
+  return snapshot.photos.slice(0, 2).map((photo) => outputName(photo.fileName, settings));
+}
+
+export function validateWatermarkOutputSettings(
+  settings: WatermarkOutputSettings,
+  snapshot: WatermarkOutputSnapshotLike,
+): string | null {
+  if (!Number.isInteger(settings.jpegQuality) || settings.jpegQuality < 1 || settings.jpegQuality > 100) {
+    return "JPEG 质量必须在 1 到 100 之间";
+  }
+  if (settings.sizing.kind === "longEdge"
+    && (!Number.isInteger(settings.sizing.pixels)
+      || settings.sizing.pixels < 64
+      || settings.sizing.pixels > 32768)) {
+    return "输出长边必须在 64 到 32768 像素之间";
+  }
+  if (/[\x00-\x1f<>:"/\\|?*]/.test(settings.suffix)
+    || /[ .]$/.test(settings.suffix)
+    || settings.suffix.length > 120) {
+    return "文件名后缀包含系统不允许的字符";
+  }
+  if (!/^#[0-9a-f]{6}$/i.test(settings.jpegFlattenColor)) {
+    return "JPEG 铺底颜色必须使用六位十六进制颜色";
+  }
+  if (settings.format === "jpeg" && settings.transparentBackground) {
+    return "JPEG 不支持透明背景，请关闭透明或改用 PNG";
+  }
+  if (snapshot.photos.length === 0) return "没有可导出的 JPG/JPEG 照片";
+  if (!settings.outputDirectory && snapshot.rootPaths.length !== 1) {
+    return "照片来自多个目录，请选择统一的输出目录";
+  }
+  return null;
+}
+
+export function estimateWatermarkOutputBytes(
+  snapshot: WatermarkOutputSnapshotLike,
+  settings: WatermarkOutputSettings,
+): { minimum: number; maximum: number } {
+  const sourceBytes = snapshot.photos.reduce((total, photo) => total + (photo.sizeBytes ?? 0), 0);
+  const sizing = settings.sizing;
+  const scale = sizing.kind === "longEdge"
+    ? snapshot.photos.reduce((total, photo) => {
+      const edge = Math.max(photo.pixelWidth ?? sizing.pixels, photo.pixelHeight ?? sizing.pixels);
+      const ratio = sizing.allowUpscale
+        ? sizing.pixels / Math.max(edge, 1)
+        : Math.min(1, sizing.pixels / Math.max(edge, 1));
+      return total + ratio * ratio;
+    }, 0) / Math.max(snapshot.photos.length, 1)
+    : 1;
+  const formatRange = settings.format === "jpeg" ? [0.45, 1.8] : [1, 4] as const;
+  return {
+    minimum: Math.max(1, Math.round(sourceBytes * scale * formatRange[0])),
+    maximum: Math.max(1, Math.round(sourceBytes * scale * formatRange[1])),
+  };
+}
+
+export interface WatermarkExportProgress {
+  phase: "idle" | "running" | "results";
+  taskId: string | null;
+  total: number;
+  currentPhotoId: string | null;
+  currentIndex: number | null;
+  attemptResults: WatermarkOutputResult[];
+  results: WatermarkOutputResult[];
+  summary: WatermarkExportSummary | null;
+  cancelRequested: boolean;
+}
+
+export function createWatermarkExportProgress(): WatermarkExportProgress {
+  return {
+    phase: "idle",
+    taskId: null,
+    total: 0,
+    currentPhotoId: null,
+    currentIndex: null,
+    attemptResults: [],
+    results: [],
+    summary: null,
+    cancelRequested: false,
+  };
+}
+
+export function reduceWatermarkExportProgress(
+  state: WatermarkExportProgress,
+  event: WatermarkExportEvent,
+): WatermarkExportProgress {
+  switch (event.type) {
+    case "started":
+      return {
+        ...state,
+        phase: "running",
+        taskId: event.taskId,
+        total: event.total,
+        currentPhotoId: null,
+        currentIndex: null,
+        attemptResults: [],
+        summary: null,
+        cancelRequested: false,
+      };
+    case "itemStarted":
+      return { ...state, currentPhotoId: event.photoId, currentIndex: event.index };
+    case "itemFinished": {
+      const existing = state.results.findIndex((result) => result.photoId === event.result.photoId);
+      const results = [...state.results];
+      if (existing >= 0) results[existing] = event.result;
+      else results.push(event.result);
+      return { ...state, results, attemptResults: [...state.attemptResults, event.result] };
+    }
+    case "finished":
+      return {
+        ...state,
+        phase: "results",
+        currentPhotoId: null,
+        currentIndex: null,
+        summary: event.summary,
+      };
+  }
+}
+
+export function failedWatermarkPhotoIds(progress: WatermarkExportProgress): string[] {
+  return progress.results
+    .filter((result) => result.status === "failed")
+    .map((result) => result.photoId);
 }
 
 function placementLayout(

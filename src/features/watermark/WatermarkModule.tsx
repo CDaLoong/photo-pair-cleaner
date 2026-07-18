@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { confirm as confirmDialog, open, save } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, Images, LayoutTemplate } from "lucide-react";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -11,6 +11,7 @@ import {
   type PreviewRequest,
 } from "../preview/previewCache";
 import { WatermarkCanvas } from "./WatermarkCanvas";
+import { WatermarkExportDialog } from "./WatermarkExportDialog";
 import { WatermarkFilmstrip } from "./WatermarkFilmstrip";
 import { WatermarkHeader } from "./WatermarkHeader";
 import { WatermarkInspector } from "./WatermarkInspector";
@@ -23,6 +24,9 @@ import { WatermarkSourcePanel } from "./WatermarkSourcePanel";
 import { WatermarkTemplatePanel } from "./WatermarkTemplatePanel";
 import type {
   WatermarkRenderRequest,
+  WatermarkExportEvent,
+  WatermarkExportRequest,
+  WatermarkOutputSettings,
   EmbeddedTemplateResource,
   WatermarkFontSummary,
   WatermarkSourcePhoto,
@@ -37,7 +41,12 @@ import {
   createWatermarkExifLayer,
   createWatermarkImageLayer,
   createWatermarkTextLayer,
+  createWatermarkExportProgress,
+  defaultWatermarkOutputDirectory,
+  DEFAULT_WATERMARK_OUTPUT,
   defaultWatermarkLayerLayouts,
+  reduceWatermarkExportProgress,
+  validateWatermarkOutputSettings,
 } from "./watermarkUtils";
 import {
   loadWatermarkPreview,
@@ -115,6 +124,10 @@ export function WatermarkModule({
   const [templateEntries, setTemplateEntries] = useState<WatermarkTemplateEntry[]>([]);
   const [templateBusy, setTemplateBusy] = useState(false);
   const [templateError, setTemplateError] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [outputSettings, setOutputSettings] = useState<WatermarkOutputSettings>(DEFAULT_WATERMARK_OUTPUT);
+  const [exportProgress, setExportProgress] = useState(createWatermarkExportProgress);
+  const [exportError, setExportError] = useState<string | null>(null);
   const busyRef = useRef(false);
   const processedTransferId = useRef<string | null>(null);
   const previousPreviewPhotoId = useRef<string | null>(null);
@@ -123,6 +136,9 @@ export function WatermarkModule({
   const wasImmersiveRef = useRef(immersive);
   const templatesRequestedRef = useRef(false);
   const previewCacheRef = useRef<WatermarkPreviewCache | null>(null);
+  const exportTaskIdRef = useRef<string | null>(null);
+  const exportChannelRef = useRef<Channel<WatermarkExportEvent> | null>(null);
+  const cancelAfterExportStartRef = useRef(false);
   if (!previewCacheRef.current) {
     previewCacheRef.current = new WatermarkPreviewCache((url) => URL.revokeObjectURL(url));
   }
@@ -154,6 +170,10 @@ export function WatermarkModule({
 
   async function prepare(origin: WatermarkSourceOrigin, inputs: WatermarkSourceInput[]) {
     if (busyRef.current || inputs.length === 0) return;
+    if (exportProgress.phase === "running") {
+      setError("请先等待水印导出结束或取消后续任务");
+      return;
+    }
     if (!isTauri()) {
       setError("请在 FramePair 桌面应用中载入本地照片");
       return;
@@ -161,6 +181,16 @@ export function WatermarkModule({
     busyRef.current = true;
     setBusy(true);
     setError(null);
+    const exportTaskId = exportTaskIdRef.current;
+    if (exportTaskId && exportProgress.phase === "results") {
+      await invoke("acknowledge_watermark_export", { taskId: exportTaskId }).catch(() => undefined);
+    }
+    exportTaskIdRef.current = null;
+    exportChannelRef.current = null;
+    setExportOpen(false);
+    setExportProgress(createWatermarkExportProgress());
+    setExportError(null);
+    setOutputSettings(DEFAULT_WATERMARK_OUTPUT);
     try {
       const result = await invoke<WatermarkSourceSnapshot>("prepare_watermark_source", {
         request: { origin, inputs },
@@ -178,10 +208,10 @@ export function WatermarkModule({
 
   useEffect(() => {
     if (!active || !transfer || processedTransferId.current === transfer.transferId) return;
-    if (busyRef.current) return;
+    if (busyRef.current || exportProgress.phase === "running") return;
     processedTransferId.current = transfer.transferId;
     void prepare(transfer.origin, transfer.inputs);
-  }, [active, busy, transfer]);
+  }, [active, busy, exportProgress.phase, transfer]);
 
   useEffect(() => {
     if (!active || !isTauri()) return;
@@ -278,9 +308,28 @@ export function WatermarkModule({
     setCompareOriginal(false);
     setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
     setError(null);
+    const exportTaskId = exportTaskIdRef.current;
+    if (exportProgress.phase === "running") {
+      if (exportTaskId) {
+        void invoke("cancel_watermark_export", { taskId: exportTaskId }).catch(() => undefined);
+      } else {
+        cancelAfterExportStartRef.current = true;
+      }
+      setExportOpen(false);
+    } else {
+      if (exportTaskId) {
+        void invoke("acknowledge_watermark_export", { taskId: exportTaskId }).catch(() => undefined);
+      }
+      exportTaskIdRef.current = null;
+      exportChannelRef.current = null;
+      setExportProgress(createWatermarkExportProgress());
+      setExportOpen(false);
+    }
+    setExportError(null);
+    setOutputSettings(DEFAULT_WATERMARK_OUTPUT);
     onImmersiveChange(false);
     dispatchEditor({ type: "resetEditor", template: initialTemplate });
-  }, [discardToken, initialTemplate, onImmersiveChange]);
+  }, [discardToken, exportProgress.phase, initialTemplate, onImmersiveChange]);
 
   useEffect(() => {
     previewCacheRef.current?.clear();
@@ -288,6 +337,30 @@ export function WatermarkModule({
     setPreviewError(null);
     previousPreviewPhotoId.current = null;
   }, [snapshot?.id]);
+
+  useEffect(() => {
+    if (!snapshot?.photos.length) return;
+    setOutputSettings({
+      ...DEFAULT_WATERMARK_OUTPUT,
+      outputDirectory: defaultWatermarkOutputDirectory(snapshot),
+    });
+    setExportProgress(createWatermarkExportProgress());
+    setExportError(null);
+    setExportOpen(false);
+    exportTaskIdRef.current = null;
+    exportChannelRef.current = null;
+  }, [snapshot?.id]);
+
+  useEffect(() => {
+    if (exportOpen || exportProgress.phase !== "results") return;
+    const taskId = exportTaskIdRef.current;
+    exportTaskIdRef.current = null;
+    exportChannelRef.current = null;
+    if (taskId) {
+      void invoke("acknowledge_watermark_export", { taskId }).catch(() => undefined);
+    }
+    setExportProgress(createWatermarkExportProgress());
+  }, [exportOpen, exportProgress.phase]);
 
   useEffect(() => {
     if (!snapshot || snapshot.photos.length === 0) {
@@ -607,6 +680,10 @@ export function WatermarkModule({
   }
 
   async function chooseDirectory() {
+    if (exportProgress.phase === "running") {
+      setError("请先等待水印导出结束或取消后续任务");
+      return;
+    }
     try {
       const selected = await open({
         directory: true,
@@ -621,6 +698,150 @@ export function WatermarkModule({
     }
   }
 
+  function exportBlockingError(): string | null {
+    if (previewError) return `当前照片预览失败：${previewError}`;
+    const missingResource = template.shared.layers.find((layer) => (
+      layer.kind === "image" && !template.resources[layer.resourceId]
+    ));
+    if (missingResource) return `图片图层“${missingResource.name}”缺少本地资源`;
+    const fontWarning = preview?.warnings.find((warning) => warning.includes("字体"));
+    return fontWarning ? `请先处理字体警告：${fontWarning}` : null;
+  }
+
+  function receiveExportEvent(event: WatermarkExportEvent) {
+    if (event.type === "started") exportTaskIdRef.current = event.taskId;
+    setExportProgress((current) => reduceWatermarkExportProgress(current, event));
+    if (event.type === "finished" && event.summary.failed === 0 && event.summary.cancelled === 0) {
+      dispatchEditor({ type: "markExported" });
+    }
+  }
+
+  async function chooseOutputDirectory() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择或创建水印副本输出目录",
+      });
+      if (typeof selected === "string") {
+        setOutputSettings((current) => ({ ...current, outputDirectory: selected }));
+        setExportError(null);
+      }
+    } catch (directoryError) {
+      setExportError(errorMessage(directoryError));
+    }
+  }
+
+  async function startExport() {
+    if (!snapshot || exportProgress.phase === "running") return;
+    const validation = exportBlockingError()
+      ?? validateWatermarkOutputSettings(outputSettings, snapshot);
+    if (validation) {
+      setExportError(validation);
+      return;
+    }
+    if (!isTauri()) {
+      setExportError("请在 FramePair 桌面应用中导出本地副本");
+      return;
+    }
+    const channel = new Channel<WatermarkExportEvent>();
+    channel.onmessage = receiveExportEvent;
+    exportChannelRef.current = channel;
+    cancelAfterExportStartRef.current = false;
+    setExportError(null);
+    setExportProgress({
+      ...createWatermarkExportProgress(),
+      phase: "running",
+      total: snapshot.photos.length,
+    });
+    const request: WatermarkExportRequest = {
+      snapshot,
+      settings: outputSettings,
+      template,
+      photoOverrides: editor.present.photoOverrides,
+    };
+    try {
+      const taskId = await invoke<string>("start_watermark_export", { request, onEvent: channel });
+      exportTaskIdRef.current = taskId;
+      setExportProgress((current) => ({ ...current, taskId: current.taskId ?? taskId }));
+      if (cancelAfterExportStartRef.current) {
+        await invoke("cancel_watermark_export", { taskId });
+      }
+    } catch (startError) {
+      exportTaskIdRef.current = null;
+      exportChannelRef.current = null;
+      setExportProgress(createWatermarkExportProgress());
+      setExportError(errorMessage(startError));
+    }
+  }
+
+  async function cancelExport() {
+    const taskId = exportTaskIdRef.current ?? exportProgress.taskId;
+    setExportProgress((current) => ({ ...current, cancelRequested: true }));
+    if (!taskId) {
+      cancelAfterExportStartRef.current = true;
+      return;
+    }
+    try {
+      await invoke("cancel_watermark_export", { taskId });
+    } catch (cancelError) {
+      setExportError(errorMessage(cancelError));
+    }
+  }
+
+  async function retryExportFailures() {
+    const taskId = exportTaskIdRef.current ?? exportProgress.taskId;
+    if (!taskId) return;
+    const failedCount = exportProgress.results.filter((item) => item.status === "failed").length;
+    if (failedCount === 0) return;
+    const channel = new Channel<WatermarkExportEvent>();
+    channel.onmessage = receiveExportEvent;
+    exportChannelRef.current = channel;
+    setExportError(null);
+    setExportProgress((current) => ({
+      ...current,
+      phase: "running",
+      total: failedCount,
+      attemptResults: [],
+      summary: null,
+      cancelRequested: false,
+    }));
+    try {
+      await invoke("retry_watermark_export_failures", { taskId, onEvent: channel });
+    } catch (retryError) {
+      setExportProgress((current) => ({ ...current, phase: "results" }));
+      setExportError(errorMessage(retryError));
+    }
+  }
+
+  async function revealExport() {
+    const taskId = exportTaskIdRef.current ?? exportProgress.taskId;
+    if (!taskId) return;
+    try {
+      await invoke("reveal_watermark_export", { taskId });
+    } catch (revealError) {
+      setExportError(errorMessage(revealError));
+    }
+  }
+
+  async function closeExportDialog() {
+    if (exportProgress.phase === "running") {
+      const accepted = await confirmDialog(
+        "关闭后将停止尚未开始的照片；已完成的副本会保留。",
+        {
+          title: "停止水印导出？",
+          kind: "warning",
+          okLabel: "停止并关闭",
+          cancelLabel: "继续导出",
+        },
+      );
+      if (!accepted) return;
+      await cancelExport();
+    }
+    setExportOpen(false);
+    setExportError(null);
+  }
+
   const previewWarnings = useMemo(() => new Set(
     selectedPhotoId && (previewError || preview?.warnings.length) ? [selectedPhotoId] : [],
   ), [preview?.warnings.length, previewError, selectedPhotoId]);
@@ -630,6 +851,8 @@ export function WatermarkModule({
     rightCollapsed ? "is-right-collapsed" : "",
     immersive ? "is-immersive" : "",
   ].filter(Boolean).join(" ");
+  const outputBlockingError = exportBlockingError();
+  const exportCommandDisabled = !snapshot?.photos.length || exportProgress.phase === "running";
 
   return (
     <section className={dropActive ? "watermark-module is-drop-target" : "watermark-module"} aria-label="水印导出">
@@ -646,6 +869,7 @@ export function WatermarkModule({
         rightCollapsed={rightCollapsed}
         immersive={immersive}
         workspaceReady={Boolean(snapshot?.photos.length)}
+        exportDisabled={exportCommandDisabled}
         onChooseDirectory={() => void chooseDirectory()}
         onUndo={() => dispatchEditor({ type: "undo" })}
         onRedo={() => dispatchEditor({ type: "redo" })}
@@ -653,6 +877,10 @@ export function WatermarkModule({
         onToggleLeft={() => toggleStoredPanel("left")}
         onToggleRight={() => toggleStoredPanel("right")}
         onToggleImmersive={toggleImmersive}
+        onExport={() => {
+          setExportError(null);
+          setExportOpen(true);
+        }}
       />
       {busy ? <div className="activity-line" aria-hidden="true"><span /></div> : null}
       {snapshot && snapshot.photos.length > 0 ? (
@@ -727,6 +955,12 @@ export function WatermarkModule({
                 onAddText={addTextLayer}
                 onAddExif={addExifLayer}
                 onAddImage={() => void addImageLayer()}
+                outputSettings={outputSettings}
+                exportDisabled={exportCommandDisabled}
+                onOpenExport={() => {
+                  setExportError(null);
+                  setExportOpen(true);
+                }}
               />
             </aside>
           </div>
@@ -753,6 +987,26 @@ export function WatermarkModule({
       )}
       {dropActive ? (
         <div className="watermark-drop-overlay"><FolderOpen aria-hidden="true" size={30} /><strong>松开以添加 JPG 或照片目录</strong></div>
+      ) : null}
+      {snapshot?.photos.length ? (
+        <WatermarkExportDialog
+          open={exportOpen}
+          snapshot={snapshot}
+          settings={outputSettings}
+          progress={exportProgress}
+          error={exportError}
+          blockingError={outputBlockingError}
+          onSettingsChange={(settings) => {
+            setOutputSettings(settings);
+            setExportError(null);
+          }}
+          onChooseDirectory={() => void chooseOutputDirectory()}
+          onStart={() => void startExport()}
+          onCancel={() => void cancelExport()}
+          onRetry={() => void retryExportFailures()}
+          onReveal={() => void revealExport()}
+          onClose={() => void closeExportDialog()}
+        />
       ) : null}
     </section>
   );

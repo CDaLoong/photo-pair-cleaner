@@ -1,5 +1,6 @@
 import {
   Eye,
+  Download,
   FolderOpen,
   Maximize2,
   Minimize2,
@@ -32,6 +33,7 @@ interface WatermarkHeaderProps {
   rightCollapsed: boolean;
   immersive: boolean;
   workspaceReady: boolean;
+  exportDisabled: boolean;
   onChooseDirectory: () => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -39,6 +41,7 @@ interface WatermarkHeaderProps {
   onToggleLeft: () => void;
   onToggleRight: () => void;
   onToggleImmersive: () => void;
+  onExport: () => void;
 }
 
 export function WatermarkHeader({
@@ -54,6 +57,7 @@ export function WatermarkHeader({
   rightCollapsed,
   immersive,
   workspaceReady,
+  exportDisabled,
   onChooseDirectory,
   onUndo,
   onRedo,
@@ -61,6 +65,7 @@ export function WatermarkHeader({
   onToggleLeft,
   onToggleRight,
   onToggleImmersive,
+  onExport,
 }: WatermarkHeaderProps) {
   return (
     <header className="watermark-studio-header">
@@ -96,6 +101,9 @@ export function WatermarkHeader({
         </button>
         <button className="secondary-command watermark-choose-command" type="button" aria-label="选择照片目录" onClick={onChooseDirectory} disabled={busy}>
           <FolderOpen aria-hidden="true" size={17} /><span>{busy ? "正在载入" : "选择目录"}</span>
+        </button>
+        <button className="primary-command watermark-export-command" data-watermark-tour="export" type="button" onClick={onExport} disabled={exportDisabled}>
+          <Download aria-hidden="true" size={17} /><span>导出副本</span>
         </button>
       </div>
     </header>
