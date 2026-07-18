@@ -1,4 +1,4 @@
-import { RefreshCw, ScanSearch } from "lucide-react";
+import { ListFilter, RefreshCw, ScanSearch } from "lucide-react";
 import type { CleanupTaskType } from "../rating-sync/types";
 
 interface TaskTypeSelectorProps {
@@ -17,6 +17,10 @@ export function TaskTypeSelector({ value, busy, onChange }: TaskTypeSelectorProp
       <button type="button" aria-pressed={value === "ratingSync"} disabled={busy} onClick={() => onChange("ratingSync")}>
         <RefreshCw aria-hidden="true" size={16} />
         <span><strong>评分同步</strong><small>同步 FramePair、XMP 与 JPG 评分</small></span>
+      </button>
+      <button type="button" aria-pressed={value === "ratingRules"} disabled={busy} onClick={() => onChange("ratingRules")}>
+        <ListFilter aria-hidden="true" size={16} />
+        <span><strong>评分整理</strong><small>按评分模拟移动、复制与待清理计划</small></span>
       </button>
     </div>
   );

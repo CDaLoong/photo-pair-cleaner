@@ -21,6 +21,10 @@ import {
 } from "../rating-sync/RatingSyncWorkspace";
 import { defaultCleanupTaskType } from "../rating-sync/ratingSyncUtils";
 import type { CleanupTaskType } from "../rating-sync/types";
+import {
+  RatingRulesWorkspace,
+  type RatingRulesWorkspaceState,
+} from "../rating-rules/RatingRulesWorkspace";
 import type {
   CleanupDestination,
   CleanupSummary,
@@ -51,6 +55,11 @@ const GUIDE_STORAGE_KEY = "framepair.guide.completed.v1";
 const INITIAL_SYNC_WORKSPACE_STATE: RatingSyncWorkspaceState = {
   busy: false,
   executing: false,
+  hasPlan: false,
+  detail: "等待选择照片目录",
+};
+const INITIAL_RULES_WORKSPACE_STATE: RatingRulesWorkspaceState = {
+  busy: false,
   hasPlan: false,
   detail: "等待选择照片目录",
 };
@@ -143,10 +152,15 @@ export function CleanupModule({ active }: CleanupModuleProps) {
   const [guideOpen, setGuideOpen] = useState(shouldOpenGuide);
   const [taskType, setTaskType] = useState<CleanupTaskType>(defaultCleanupTaskType);
   const [syncWorkspaceState, setSyncWorkspaceState] = useState(INITIAL_SYNC_WORKSPACE_STATE);
+  const [rulesWorkspaceState, setRulesWorkspaceState] = useState(INITIAL_RULES_WORKSPACE_STATE);
   const confirmDialog = useRef<HTMLDialogElement>(null);
 
   const busy = phase !== "idle";
-  const activeBusy = taskType === "pairCleanup" ? busy : syncWorkspaceState.busy || syncWorkspaceState.executing;
+  const activeBusy = taskType === "pairCleanup"
+    ? busy
+    : taskType === "ratingSync"
+      ? syncWorkspaceState.busy || syncWorkspaceState.executing
+      : rulesWorkspaceState.busy;
   const blocked = scanHasBlockingIssues(scan);
   const deleteItems = useMemo(
     () => cleanableItems(scan?.items ?? [], includeSidecars, scan?.mode ?? scanMode),
@@ -615,14 +629,21 @@ export function CleanupModule({ active }: CleanupModuleProps) {
 
   const currentStep = taskType === "pairCleanup"
     ? phase === "executing" ? 3 : scan ? 2 : 1
-    : syncWorkspaceState.executing ? 3 : syncWorkspaceState.hasPlan ? 2 : 1;
+    : taskType === "ratingSync"
+      ? syncWorkspaceState.executing ? 3 : syncWorkspaceState.hasPlan ? 2 : 1
+      : rulesWorkspaceState.hasPlan ? 2 : 1;
+  const taskSubtitle = taskType === "pairCleanup"
+    ? "检查配对并安全处理 RAW"
+    : taskType === "ratingSync"
+      ? "同步照片组评分元数据"
+      : "按评分生成文件处理模拟计划";
 
   return (
     <section className="cleanup-module" aria-label="照片处理工作台">
       <header className="app-header">
         <div className="module-heading">
           <ListChecks aria-hidden="true" size={20} />
-          <div><strong>配对清理</strong><span>{taskType === "pairCleanup" ? "检查配对并安全处理 RAW" : "同步照片组评分元数据"}</span></div>
+          <div><strong>配对清理</strong><span>{taskSubtitle}</span></div>
         </div>
         <ol className="workflow-progress" aria-label="照片处理流程" data-tour="workflow-progress">
           {["配置任务", "复核计划", "安全执行"].map((label, index) => {
@@ -644,7 +665,7 @@ export function CleanupModule({ active }: CleanupModuleProps) {
               {phase === "executing" && <><LoaderCircle className="spin" aria-hidden="true" size={16} />正在安全移动文件</>}
               {phase === "idle" && scan && <>扫描于 {formatDate(scan.scannedAtMs)}</>}
               {phase === "idle" && !scan && <>等待选择目录</>}
-            </> : <>{activeBusy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : null}{syncWorkspaceState.detail}</>}
+            </> : taskType === "ratingSync" ? <>{activeBusy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : null}{syncWorkspaceState.detail}</> : <>{activeBusy ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : null}{rulesWorkspaceState.detail}</>}
           </div>
         </div>
       </header>
@@ -665,6 +686,11 @@ export function CleanupModule({ active }: CleanupModuleProps) {
         <RatingSyncWorkspace
           active={active && taskType === "ratingSync" && !guideOpen}
           onStateChange={setSyncWorkspaceState}
+        />
+      ) : taskType === "ratingRules" ? (
+        <RatingRulesWorkspace
+          active={active && taskType === "ratingRules" && !guideOpen}
+          onStateChange={setRulesWorkspaceState}
         />
       ) : scan && !guideOpen ? (
         <ResultsWorkspace

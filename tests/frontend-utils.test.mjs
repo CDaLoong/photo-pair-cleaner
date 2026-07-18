@@ -94,6 +94,17 @@ test("operation plan filters and Chinese labels remain stable", () => {
   assert.equal(ratingRuleUtils.isReadOnlyPlanItem({ status: "ready" }), true);
 });
 
+test("rating organization UI is a third read-only cleanup task", () => {
+  const selector = fs.readFileSync(new URL("../src/features/cleanup/TaskTypeSelector.tsx", import.meta.url), "utf8");
+  const workspacePath = new URL("../src/features/rating-rules/RatingRulesWorkspace.tsx", import.meta.url);
+  assert.equal(fs.existsSync(workspacePath), true);
+  const workspace = fs.readFileSync(workspacePath, "utf8");
+  assert.match(selector, /评分整理/);
+  assert.match(workspace, /当前仅生成只读模拟计划，不会移动、复制或清理照片/);
+  assert.doesNotMatch(workspace, /execute_operation_plan/);
+  assert.doesNotMatch(workspace, /执行所选|开始执行/);
+});
+
 test("sidebar preferences collapse only when storage explicitly says true", () => {
   assert.equal(utils.storedBooleanPreference("true"), true);
   assert.equal(utils.storedBooleanPreference("false"), false);

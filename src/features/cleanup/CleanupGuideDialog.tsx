@@ -3,6 +3,7 @@ import {
   CircleHelp,
   FileCheck2,
   FolderInput,
+  ListFilter,
   RefreshCw,
   ScanSearch,
   Settings2,
@@ -14,13 +15,14 @@ import type { CleanupTaskType } from "../rating-sync/types";
 const GUIDE_STEPS: GuidedTourStep[] = [
   {
     title: "先选择本次要处理的任务",
-    description: "配对清理和评分同步共享三阶段流程，但不会互相执行文件操作。",
+    description: "配对清理、评分同步和评分整理共享三阶段流程，但各自状态互不混用。",
     icon: CircleHelp,
     selector: "[data-tour='task-type']",
     placement: "bottom",
     points: [
       { label: "配对清理", detail: "检查 JPG/RAW 配对，复核后可移入回收站或隔离区。" },
       { label: "评分同步", detail: "只更新启用的评分元数据，不会移动、复制或清理照片。" },
+      { label: "评分整理", detail: "按评分生成移动、复制、保留或待清理的只读模拟计划。" },
     ],
     tip: "任务可以随时切换，两边已经填写的内容会分别保留。",
   },
@@ -140,6 +142,60 @@ const RATING_SYNC_GUIDE_STEPS: GuidedTourStep[] = [
   },
 ];
 
+const RATING_RULES_GUIDE_STEPS: GuidedTourStep[] = [
+  GUIDE_STEPS[0],
+  {
+    title: "选择照片根目录和规则模板",
+    description: "模板只填充可编辑草稿，不会创建目录或自动扫描。",
+    icon: FolderInput,
+    selector: "[data-tour='rating-rules-root']",
+    placement: "bottom",
+    points: [
+      { label: "照片根目录", detail: "点击选择或直接拖入包含 JPG、RAW 与 XMP 的共同目录。" },
+      { label: "四种模板", detail: "精选归档、低分清理、保留全部备份和完全自定义都可以继续修改。" },
+    ],
+    tip: "复制和移动模板不会替你创建目标文件夹，目标位置始终由你选择。",
+  },
+  {
+    title: "逐条编辑评分处理规则",
+    description: "每条规则独立设置评分、格式、最终操作和目录结构。",
+    icon: ListFilter,
+    selector: "[data-tour='rating-rules-editor']",
+    placement: "left",
+    points: [
+      { label: "评分与格式", detail: "支持未评分、单星级、上下限和闭区间，以及 JPG/RAW/XMP 任意组合。" },
+      { label: "最终操作", detail: "保留、复制、移动或待清理；移动是新增规则的默认值。" },
+      { label: "冲突不会按顺序覆盖", detail: "同一照片命中多条规则时会标为冲突，而不是第一条胜出。" },
+    ],
+    tip: "默认处理整个照片组并保留相对目录结构，避免拆散 JPG、RAW 和 XMP。",
+  },
+  {
+    title: "按需叠加评分同步预览",
+    description: "评分同步与文件规则分开计算，只在你明确启用时进入模拟计划。",
+    icon: RefreshCw,
+    selector: "[data-tour='rating-rules-sync']",
+    placement: "left",
+    points: [
+      { label: "RAW XMP", detail: "永远不会修改 RAW 原文件。" },
+      { label: "JPG 元数据", detail: "默认关闭，启用后仍需明确确认。" },
+      { label: "待清理照片", detail: "只有勾选清理前同步后才会显示同步动作。" },
+    ],
+    tip: "这里仍然只是预览；自动模式也不会移动、复制或清理照片。",
+  },
+  {
+    title: "复核只读模拟计划",
+    description: "查看数量、空间、规则命中、每个源路径、模拟目标和冲突原因。",
+    icon: ScanSearch,
+    selector: "[data-tour='rating-rules-plan']",
+    placement: "top",
+    points: [
+      { label: "展开照片组", detail: "核对每个 JPG、RAW、XMP 的源路径、目标、大小和修改时间。" },
+      { label: "处理冲突", detail: "目标已存在、平铺重名、目录嵌套和多规则命中都会阻止该照片组。" },
+    ],
+    tip: "阶段三没有文件操作按钮；修改配置后必须重新生成计划。",
+  },
+];
+
 interface CleanupGuideDialogProps {
   taskType: CleanupTaskType;
   open: boolean;
@@ -147,12 +203,22 @@ interface CleanupGuideDialogProps {
 }
 
 export function CleanupGuideDialog({ taskType, open, onDismiss }: CleanupGuideDialogProps) {
+  const steps = taskType === "ratingSync"
+    ? RATING_SYNC_GUIDE_STEPS
+    : taskType === "ratingRules"
+      ? RATING_RULES_GUIDE_STEPS
+      : GUIDE_STEPS;
+  const label = taskType === "ratingSync"
+    ? "评分同步引导"
+    : taskType === "ratingRules"
+      ? "评分整理引导"
+      : "配对清理引导";
   return (
     <GuidedTourDialog
       open={open}
       onDismiss={onDismiss}
-      steps={taskType === "ratingSync" ? RATING_SYNC_GUIDE_STEPS : GUIDE_STEPS}
-      label={taskType === "ratingSync" ? "评分同步引导" : "配对清理引导"}
+      steps={steps}
+      label={label}
     />
   );
 }
