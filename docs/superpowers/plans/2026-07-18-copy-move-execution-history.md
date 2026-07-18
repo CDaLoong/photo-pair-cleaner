@@ -286,7 +286,7 @@ Expected: all commands PASS.
 
 Start the current Tauri app, generate a plan against disposable fixtures, verify copy, move, history, restore, undo, keyboard/focus behavior, and narrow/wide layouts. Keep the final app process running. If the desktop is locked, record that native visual QA remains blocked rather than claiming it passed.
 
-- [ ] **Step 4: Commit and push**
+- [x] **Step 4: Commit and push**
 
 ```bash
 git add README.md docs/superpowers/specs/2026-07-18-rating-driven-photo-workflow-design.md docs/superpowers/plans/2026-07-18-copy-move-execution-history.md
@@ -294,10 +294,10 @@ git commit -m "docs: document rating organizer execution"
 git push origin main
 ```
 
-- [ ] **Step 5: Watch CI to completion**
+- [x] **Step 5: Watch CI to completion**
 
 Run: `gh run watch --exit-status`
 
 Expected: the pushed `main` workflow completes successfully.
 
-**Verification note (2026-07-18):** Rust formatting, Clippy, all 150 backend tests, all 42 frontend tests, and the production build passed. The rating organizer was opened in the browser runtime and checked at 1440x900 and 960x720 without horizontal overflow. The current Vite server and Tauri desktop process were started successfully; macOS remained screen-locked, so native window interaction with disposable copy/move fixtures is recorded as blocked rather than claimed as passed.
+**Verification note (2026-07-18):** Rust formatting, Clippy, all 150 backend tests, all 42 frontend tests, and the production build passed. The rating organizer was opened in the browser runtime and checked at 1440x900 and 960x720 without horizontal overflow. The current Vite server and Tauri desktop process were started successfully; macOS remained screen-locked, so native window interaction with disposable copy/move fixtures is recorded as blocked rather than claimed as passed. GitHub Actions CI run `29637289402` completed successfully on the pushed `main` branch.
