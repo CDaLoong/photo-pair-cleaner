@@ -12,6 +12,50 @@ import {
   stableWatermarkStringify,
   watermarkPreviewRequestKey,
 } from "../src/features/watermark/watermarkPreviewCache.ts";
+import {
+  createWatermarkEditorState,
+  watermarkEditorReducer,
+} from "../src/features/watermark/watermarkEditorState.ts";
+
+function templateWithOneLayer() {
+  const template = createDefaultWatermarkTemplate("editor", "编辑测试");
+  template.shared.layers.push({
+    kind: "text",
+    id: "signature",
+    name: "署名",
+    zIndex: 0,
+    visible: true,
+    locked: false,
+    text: "FramePair",
+    fontFamily: "Noto Sans CJK SC",
+    fontWeight: 500,
+    color: "#111111",
+    align: "center",
+    letterSpacingRatio: 0,
+    lineHeight: 1.2,
+    strokeColor: "#ffffff",
+    strokeWidthRatio: 0,
+    shadowColor: "#000000",
+    shadowBlurRatio: 0,
+    shadowOffsetXRatio: 0,
+    shadowOffsetYRatio: 0,
+  });
+  for (const variant of Object.values(template.variants)) {
+    variant.layerLayouts.signature = {
+      placement: {
+        anchorSpace: "frame",
+        frameEdge: "bottom",
+        x: 0.5,
+        y: 0.5,
+        width: 0.28,
+        rotationDeg: 0,
+        opacity: 1,
+      },
+      fontSizeRatio: 0.035,
+    };
+  }
+  return template;
+}
 
 test("watermark orientation uses the agreed near-square band", () => {
   assert.equal(classifyWatermarkOrientation(1200, 800), "landscape");
@@ -145,4 +189,151 @@ test("watermark preview binary envelope validates header bounds", () => {
     const invalid = Uint8Array.from([0, 0, 1, 0, 123]);
     decodeWatermarkPreviewEnvelope(invalid);
   });
+});
+
+test("variant placement edits do not leak into portrait", () => {
+  const initial = createWatermarkEditorState(templateWithOneLayer());
+  const next = watermarkEditorReducer(initial, {
+    type: "setLayerPlacement",
+    orientation: "landscape",
+    layerId: "signature",
+    patch: { x: 0.8 },
+    historyGroup: null,
+  });
+  assert.equal(next.present.template.variants.landscape.layerLayouts.signature.placement.x, 0.8);
+  assert.equal(next.present.template.variants.portrait.layerLayouts.signature.placement.x, 0.5);
+  assert.equal(next.present.dirtyTemplate, true);
+  assert.equal(next.present.unexportedChanges, true);
+});
+
+test("shared layer content updates every orientation without changing placements", () => {
+  const initial = createWatermarkEditorState(templateWithOneLayer());
+  const next = watermarkEditorReducer(initial, {
+    type: "updateLayer",
+    layerId: "signature",
+    patch: { text: "新的署名" },
+    historyGroup: null,
+  });
+  assert.equal(next.present.template.shared.layers[0].text, "新的署名");
+  assert.equal(next.present.template.variants.landscape.layerLayouts.signature.placement.x, 0.5);
+  assert.equal(next.present.template.variants.portrait.layerLayouts.signature.placement.x, 0.5);
+});
+
+test("one drag history group is one undo step", () => {
+  let state = createWatermarkEditorState(templateWithOneLayer());
+  for (const x of [0.55, 0.62, 0.74]) {
+    state = watermarkEditorReducer(state, {
+      type: "setLayerPlacement",
+      orientation: "landscape",
+      layerId: "signature",
+      patch: { x },
+      historyGroup: "drag-signature",
+    });
+  }
+  assert.equal(state.past.length, 1);
+  state = watermarkEditorReducer(state, { type: "closeHistoryGroup" });
+  state = watermarkEditorReducer(state, { type: "undo" });
+  assert.equal(state.present.template.variants.landscape.layerLayouts.signature.placement.x, 0.5);
+  state = watermarkEditorReducer(state, { type: "redo" });
+  assert.equal(state.present.template.variants.landscape.layerLayouts.signature.placement.x, 0.74);
+});
+
+test("layer lifecycle stays synchronized with all variants", () => {
+  let state = createWatermarkEditorState(templateWithOneLayer());
+  state = watermarkEditorReducer(state, {
+    type: "duplicateLayer",
+    layerId: "signature",
+    newLayerId: "signature-copy",
+  });
+  assert.equal(state.present.template.shared.layers.length, 2);
+  for (const variant of Object.values(state.present.template.variants)) {
+    assert.ok(variant.layerLayouts["signature-copy"]);
+  }
+  state = watermarkEditorReducer(state, {
+    type: "setLayerLocked",
+    layerId: "signature-copy",
+    locked: true,
+  });
+  state = watermarkEditorReducer(state, {
+    type: "setLayerVisible",
+    layerId: "signature-copy",
+    visible: false,
+  });
+  state = watermarkEditorReducer(state, {
+    type: "reorderLayer",
+    layerId: "signature-copy",
+    toIndex: 0,
+  });
+  assert.equal(state.present.template.shared.layers[0].id, "signature-copy");
+  assert.equal(state.present.template.shared.layers[0].zIndex, 0);
+  assert.equal(state.present.template.shared.layers[0].locked, true);
+  assert.equal(state.present.template.shared.layers[0].visible, false);
+  state = watermarkEditorReducer(state, { type: "deleteLayer", layerId: "signature-copy" });
+  assert.equal(state.present.template.shared.layers.length, 1);
+  for (const variant of Object.values(state.present.template.variants)) {
+    assert.equal(variant.layerLayouts["signature-copy"], undefined);
+  }
+});
+
+test("per-photo placement overrides are independent and clearable", () => {
+  let state = createWatermarkEditorState(templateWithOneLayer());
+  state = watermarkEditorReducer(state, {
+    type: "setPhotoOverride",
+    photoId: "photo-a",
+    patch: { alignX: 0.7, scale: 0.92 },
+    historyGroup: null,
+  });
+  assert.deepEqual(state.present.photoOverrides["photo-a"], {
+    alignX: 0.7,
+    alignY: 0.5,
+    scale: 0.92,
+  });
+  assert.equal(state.present.dirtyTemplate, false);
+  assert.equal(state.present.unexportedChanges, true);
+  state = watermarkEditorReducer(state, { type: "clearPhotoOverride", photoId: "photo-a" });
+  assert.equal(state.present.photoOverrides["photo-a"], undefined);
+});
+
+test("orientation and active layer are view state outside undo history", () => {
+  let state = createWatermarkEditorState(templateWithOneLayer());
+  state = watermarkEditorReducer(state, { type: "setActiveOrientation", orientation: "portrait" });
+  state = watermarkEditorReducer(state, { type: "setActiveLayer", layerId: "signature" });
+  assert.equal(state.activeOrientation, "portrait");
+  assert.equal(state.activeLayerId, "signature");
+  assert.equal(state.past.length, 0);
+});
+
+test("template replacement clears undo history and starts a fresh export boundary", () => {
+  let state = createWatermarkEditorState(templateWithOneLayer());
+  state = watermarkEditorReducer(state, {
+    type: "setLayerPlacement",
+    orientation: "landscape",
+    layerId: "signature",
+    patch: { x: 0.8 },
+    historyGroup: null,
+  });
+  state = watermarkEditorReducer(state, {
+    type: "replaceTemplate",
+    template: createDefaultWatermarkTemplate("replacement", "替换模板"),
+  });
+  assert.equal(state.past.length, 0);
+  assert.equal(state.future.length, 0);
+  assert.equal(state.present.template.id, "replacement");
+  assert.equal(state.present.dirtyTemplate, false);
+  assert.equal(state.present.unexportedChanges, true);
+  assert.equal(watermarkEditorReducer(state, { type: "undo" }), state);
+});
+
+test("watermark history remains bounded to one hundred documents", () => {
+  let state = createWatermarkEditorState(templateWithOneLayer());
+  for (let index = 0; index < 120; index += 1) {
+    state = watermarkEditorReducer(state, {
+      type: "setLayerPlacement",
+      orientation: "landscape",
+      layerId: "signature",
+      patch: { x: index / 120 },
+      historyGroup: null,
+    });
+  }
+  assert.equal(state.past.length, 100);
 });

@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, Stamp } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { errorMessage } from "../../utils";
 import {
   loadPhotoPreviewUrl,
@@ -9,6 +9,11 @@ import {
   type PreviewRequest,
 } from "../preview/previewCache";
 import { WatermarkCanvas } from "./WatermarkCanvas";
+import {
+  createWatermarkEditorState,
+  watermarkEditorReducer,
+} from "./watermarkEditorState";
+import type { WatermarkUnsavedWork } from "./WatermarkLeaveDialog";
 import { WatermarkSourcePanel } from "./WatermarkSourcePanel";
 import type {
   WatermarkRenderRequest,
@@ -35,9 +40,25 @@ const SOURCE_PRELOAD_CONCURRENCY = 4;
 interface WatermarkModuleProps {
   active: boolean;
   transfer: WatermarkTransferDraft | null;
+  discardToken: number;
+  onUnsavedWorkChange: (work: WatermarkUnsavedWork) => void;
 }
 
-export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
+export function WatermarkModule({
+  active,
+  transfer,
+  discardToken,
+  onUnsavedWorkChange,
+}: WatermarkModuleProps) {
+  const initialTemplate = useMemo(
+    () => createDefaultWatermarkTemplate("framepair-clean", "简洁白边"),
+    [],
+  );
+  const [editor, dispatchEditor] = useReducer(
+    watermarkEditorReducer,
+    initialTemplate,
+    createWatermarkEditorState,
+  );
   const [snapshot, setSnapshot] = useState<WatermarkSourceSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [dropActive, setDropActive] = useState(false);
@@ -49,14 +70,12 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
   const busyRef = useRef(false);
   const processedTransferId = useRef<string | null>(null);
   const previousPreviewPhotoId = useRef<string | null>(null);
+  const handledDiscardToken = useRef(discardToken);
   const previewCacheRef = useRef<WatermarkPreviewCache | null>(null);
   if (!previewCacheRef.current) {
     previewCacheRef.current = new WatermarkPreviewCache((url) => URL.revokeObjectURL(url));
   }
-  const template = useMemo(
-    () => createDefaultWatermarkTemplate("framepair-clean", "简洁白边"),
-    [],
-  );
+  const template = editor.present.template;
 
   async function prepare(origin: WatermarkSourceOrigin, inputs: WatermarkSourceInput[]) {
     if (busyRef.current || inputs.length === 0) return;
@@ -73,6 +92,7 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
       });
       setSnapshot(result);
       setSelectedPhotoId(result.photos[0]?.id ?? null);
+      if (result.photos.length > 0) dispatchEditor({ type: "markSourceChanged" });
     } catch (prepareError) {
       setError(errorMessage(prepareError));
     } finally {
@@ -129,6 +149,26 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
   useEffect(() => () => previewCacheRef.current?.clear(), []);
 
   useEffect(() => {
+    onUnsavedWorkChange({
+      dirtyTemplate: editor.present.dirtyTemplate,
+      unexportedChanges: editor.present.unexportedChanges,
+    });
+  }, [editor.present.dirtyTemplate, editor.present.unexportedChanges, onUnsavedWorkChange]);
+
+  useEffect(() => {
+    if (handledDiscardToken.current === discardToken) return;
+    handledDiscardToken.current = discardToken;
+    previewCacheRef.current?.clear();
+    previousPreviewPhotoId.current = null;
+    setSnapshot(null);
+    setSelectedPhotoId(null);
+    setPreview(null);
+    setPreviewError(null);
+    setError(null);
+    dispatchEditor({ type: "resetEditor", template: initialTemplate });
+  }, [discardToken, initialTemplate]);
+
+  useEffect(() => {
     previewCacheRef.current?.clear();
     setPreview(null);
     setPreviewError(null);
@@ -157,12 +197,17 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
   );
   const selectedPhoto = selectedIndex >= 0 ? snapshot?.photos[selectedIndex] ?? null : null;
 
+  useEffect(() => {
+    if (!selectedPhoto) return;
+    dispatchEditor({ type: "setActiveOrientation", orientation: selectedPhoto.orientation });
+  }, [selectedPhoto]);
+
   function requestFor(photo: WatermarkSourcePhoto): WatermarkRenderRequest {
     return {
       schemaVersion: 1,
       source: photo,
       template,
-      photoOverride: null,
+      photoOverride: editor.present.photoOverrides[photo.id] ?? null,
       colorSpace: "srgb",
       transparentBackground: false,
       jpegFlattenColor: "#ffffff",
@@ -221,7 +266,7 @@ export function WatermarkModule({ active, transfer }: WatermarkModuleProps) {
       disposed = true;
       window.clearTimeout(timeout);
     };
-  }, [active, selectedPhoto, selectedIndex, snapshot, template]);
+  }, [active, editor.present.photoOverrides, selectedPhoto, selectedIndex, snapshot, template]);
 
   function selectAt(index: number) {
     const photo = snapshot?.photos[index];

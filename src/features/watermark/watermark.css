@@ -271,6 +271,37 @@
   font-size: 9px;
 }
 
+.watermark-leave-dialog { width: min(500px, calc(100vw - 40px)); }
+
+.watermark-leave-status {
+  display: grid;
+  gap: 1px;
+  padding: 12px 16px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--line);
+}
+
+.watermark-leave-status > span {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+}
+
+.watermark-leave-status strong { font-size: 12px; }
+.watermark-leave-status small { color: var(--muted); font-size: 10px; text-align: right; }
+
+.watermark-leave-note {
+  margin: 0;
+  padding: 13px 16px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .watermark-live-workspace {
   display: grid;
   grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
