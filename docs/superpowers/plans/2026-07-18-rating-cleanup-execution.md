@@ -271,21 +271,21 @@ git commit -m "feat: confirm rating cleanup destination"
 - Modify: `src/styles.css`
 - Test: `tests/frontend-utils.test.mjs`
 
-- [ ] **Step 1: Write failing history UI tests**
+- [x] **Step 1: Write failing history UI tests**
 
 Require quarantine groups to expose “恢复隔离”, trash groups to expose “打开系统回收站” but no recovery action, completed quarantine recovery to disappear, and mixed histories to retain move restore and copy undo.
 
-- [ ] **Step 2: Run frontend tests and verify RED**
+- [x] **Step 2: Run frontend tests and verify RED**
 
 Run: `npm run test:frontend`
 
 Expected: FAIL because the history UI knows only copy and move.
 
-- [ ] **Step 3: Implement action-specific history controls**
+- [x] **Step 3: Implement action-specific history controls**
 
 Map `restoreQuarantine` to `restore_rating_quarantine`, keep the historical root refresh behavior, and invoke `open_system_trash` only from an explicit history button. Use Chinese action/status labels and do not show a recoverable count for trash groups.
 
-- [ ] **Step 4: Run frontend tests and build**
+- [x] **Step 4: Run frontend tests and build**
 
 Run: `npm run test:frontend`
 
@@ -293,7 +293,7 @@ Run: `npm run build`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/features/rating-rules src/styles.css tests/frontend-utils.test.mjs

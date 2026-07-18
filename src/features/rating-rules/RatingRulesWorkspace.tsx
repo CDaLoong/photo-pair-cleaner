@@ -381,13 +381,21 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
     setMessage(null);
     const changedRoot = history.find((entry) => entry.manifest.operationId === operationId)?.manifest.root ?? root;
     try {
-      const command = kind === "restoreMove" ? "restore_rating_move" : "undo_rating_copy";
+      const command = kind === "restoreMove"
+        ? "restore_rating_move"
+        : kind === "restoreQuarantine"
+          ? "restore_rating_quarantine"
+          : "undo_rating_copy";
       const summary = await invoke<OrganizerRecoverySummary>(command, {
         request: { operationId, groupIds },
       });
       notifyPhotosChanged(changedRoot);
       await refreshHistory();
-      const action = kind === "restoreMove" ? "恢复移动" : "撤销复制";
+      const action = kind === "restoreMove"
+        ? "恢复移动"
+        : kind === "restoreQuarantine"
+          ? "恢复隔离"
+          : "撤销复制";
       setMessage(summary.failed > 0 || summary.partial > 0
         ? { tone: "warning", title: `${action}：${summary.succeeded} 组完成，${summary.partial} 组部分完成，${summary.failed} 组失败`, detail: "已变化或原位置被占用的文件不会被覆盖。" }
         : { tone: "success", title: `${summary.succeeded} 个照片组已完成${action}` });
@@ -398,6 +406,19 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
       } catch {
         // Preserve the recovery error as the actionable message.
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openSystemTrash() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await invoke("open_system_trash");
+      setMessage({ tone: "success", title: "已打开系统回收站", detail: "FramePair 仅记录回收站操作，不提供应用内恢复。" });
+    } catch (trashError) {
+      setMessage({ tone: "error", title: "无法打开系统回收站", detail: errorMessage(trashError) });
     } finally {
       setBusy(false);
     }
@@ -469,7 +490,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
       </section>
 
       {plan ? <OperationPlanReview plan={plan} busy={busy} onRequestExecute={setPendingGroupIds} /> : null}
-      <OperationHistoryPanel history={history} latest={lastExecution} busy={busy} onRecover={(kind, operationId, groupIds) => void recoverOperation(kind, operationId, groupIds)} />
+      <OperationHistoryPanel history={history} latest={lastExecution} busy={busy} onRecover={(kind, operationId, groupIds) => void recoverOperation(kind, operationId, groupIds)} onOpenTrash={() => void openSystemTrash()} />
     </div>
   );
 }

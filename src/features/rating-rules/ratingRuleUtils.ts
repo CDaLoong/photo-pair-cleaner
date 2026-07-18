@@ -2,6 +2,7 @@ import type {
   OperationPlanFilter,
   OperationPlanItem,
   OperationPlanStatus,
+  OrganizerAction,
   OrganizerGroupStatus,
   RatingCondition,
   RatingRule,
@@ -200,4 +201,11 @@ export function organizerGroupStatusLabel(status: OrganizerGroupStatus): string 
   if (status === "failed") return "失败";
   if (status === "partial") return "部分完成";
   return "已跳过";
+}
+
+export function organizerActionLabel(action: OrganizerAction): string {
+  if (action === "copy") return "复制";
+  if (action === "move") return "移动";
+  if (action === "quarantine") return "隔离";
+  return "系统回收站";
 }

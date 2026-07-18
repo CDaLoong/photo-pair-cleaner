@@ -167,6 +167,17 @@ test("rating organization UI confirms copy move and cleanup plans", () => {
   assert.match(dialog, /useState<CleanupExecutionDestination>\("quarantine"\)/);
 });
 
+test("rating cleanup history restores quarantine and only opens system trash", () => {
+  const history = fs.readFileSync(new URL("../src/features/rating-rules/OperationHistoryPanel.tsx", import.meta.url), "utf8");
+  const workspace = fs.readFileSync(new URL("../src/features/rating-rules/RatingRulesWorkspace.tsx", import.meta.url), "utf8");
+  assert.match(history, /恢复隔离/);
+  assert.match(history, /打开系统回收站/);
+  assert.match(history, /restoreQuarantine/);
+  assert.match(workspace, /restore_rating_quarantine/);
+  assert.match(workspace, /open_system_trash/);
+  assert.doesNotMatch(workspace, /restore_rating_trash/);
+});
+
 test("sidebar preferences collapse only when storage explicitly says true", () => {
   assert.equal(utils.storedBooleanPreference("true"), true);
   assert.equal(utils.storedBooleanPreference("false"), false);

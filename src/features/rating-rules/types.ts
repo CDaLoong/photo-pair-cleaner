@@ -115,7 +115,7 @@ export interface OperationPlanSummary {
 export type CleanupExecutionDestination = "quarantine" | "trash";
 export type OrganizerAction = "copy" | "move" | "quarantine" | "trash";
 export type OrganizerGroupStatus = "success" | "failed" | "partial" | "skipped";
-export type RecoveryKind = "restoreMove" | "undoCopy";
+export type RecoveryKind = "restoreMove" | "undoCopy" | "restoreQuarantine";
 
 export interface FileFingerprint {
   sizeBytes: number;
