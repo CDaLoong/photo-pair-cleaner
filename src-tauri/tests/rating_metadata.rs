@@ -9,8 +9,7 @@ fn reads_attribute_and_element_ratings() {
         Some(5),
     );
     assert_eq!(
-        rating_metadata::xmp_rating(br#"<xmp:Rating>4</xmp:Rating>"#)
-            .expect("element rating"),
+        rating_metadata::xmp_rating(br#"<xmp:Rating>4</xmp:Rating>"#).expect("element rating"),
         Some(4),
     );
 }
@@ -18,8 +17,7 @@ fn reads_attribute_and_element_ratings() {
 #[test]
 fn accepts_rejected_and_absent_external_states() {
     assert_eq!(
-        rating_metadata::xmp_rating(br#"<xmp:Rating>-1</xmp:Rating>"#)
-            .expect("rejected rating"),
+        rating_metadata::xmp_rating(br#"<xmp:Rating>-1</xmp:Rating>"#).expect("rejected rating"),
         Some(-1),
     );
     assert_eq!(

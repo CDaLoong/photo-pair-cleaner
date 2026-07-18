@@ -1,6 +1,8 @@
 #[path = "../src/formats.rs"]
 #[allow(dead_code)]
 mod formats;
+#[path = "../src/photo_groups.rs"]
+mod photo_groups;
 #[path = "../src/preview.rs"]
 mod preview;
 
@@ -54,7 +56,7 @@ fn index_groups_jpeg_and_raw_files_into_logical_photos() {
     fs::write(root.join("day-one/DSC_0001.NEF"), b"raw").expect("raw");
     fs::write(root.join("day-one/DSC_0002.CR3"), b"raw").expect("raw");
 
-    let index = preview::index_directory(&root).expect("photo index");
+    let index = photo_groups::index_directory(&root).expect("photo index");
 
     assert_eq!(index.total_assets, 2);
     assert_eq!(index.paired_assets, 1);
@@ -88,7 +90,7 @@ fn index_ignores_unrelated_files_and_framepair_quarantine() {
     )
     .expect("quarantined raw");
 
-    let index = preview::index_directory(&root).expect("photo index");
+    let index = photo_groups::index_directory(&root).expect("photo index");
 
     assert_eq!(index.total_assets, 1);
     assert_eq!(index.assets[0].relative_stem, "visible");

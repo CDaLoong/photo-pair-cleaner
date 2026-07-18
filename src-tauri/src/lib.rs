@@ -1,5 +1,6 @@
 mod editors;
 mod formats;
+mod photo_groups;
 mod preview;
 mod quarantine;
 mod rating_metadata;
@@ -886,7 +887,7 @@ async fn index_photo_directory(
     app: tauri::AppHandle,
     state: tauri::State<'_, RatingStore>,
     root: String,
-) -> Result<preview::PhotoIndex, String> {
+) -> Result<photo_groups::PhotoIndex, String> {
     let database_path = app
         .path()
         .app_data_dir()
@@ -897,7 +898,7 @@ async fn index_photo_directory(
         let _guard = access
             .lock()
             .map_err(|_| "无法锁定评分数据库".to_string())?;
-        let mut index = preview::index_directory(Path::new(&root))?;
+        let mut index = photo_groups::index_directory(Path::new(&root))?;
         let ratings = ratings::load_ratings(&database_path, Path::new(&root))?;
         for asset in &mut index.assets {
             asset.rating = ratings.get(&asset.id).copied().unwrap_or_default();
