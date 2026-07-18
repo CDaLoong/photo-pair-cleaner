@@ -17,6 +17,7 @@ mod safety;
 #[allow(dead_code)]
 mod watermark_color;
 mod watermark_commands;
+mod watermark_export;
 #[allow(dead_code)]
 mod watermark_geometry;
 #[allow(dead_code)]
@@ -47,10 +48,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use walkdir::WalkDir;
 use watermark_commands::{
-    WatermarkRenderState, delete_watermark_template, export_watermark_template,
-    import_watermark_resource, import_watermark_template, list_watermark_fonts,
-    list_watermark_templates, prepare_watermark_source, render_watermark_preview,
-    save_watermark_template,
+    WatermarkRenderState, acknowledge_watermark_export, cancel_watermark_export,
+    delete_watermark_template, export_watermark_template, import_watermark_resource,
+    import_watermark_template, list_watermark_fonts, list_watermark_templates,
+    prepare_watermark_source, render_watermark_preview, retry_watermark_export_failures,
+    reveal_watermark_export, save_watermark_template, start_watermark_export,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1389,6 +1391,7 @@ pub fn run() {
         .manage(rating_sync::RatingSyncPlanStore::default())
         .manage(operation_plan::OperationPlanStore::default())
         .manage(WatermarkRenderState::default())
+        .manage(watermark_export::WatermarkExportStore::default())
         .invoke_handler(tauri::generate_handler![
             validate_directory_path,
             scan_pairs,
@@ -1426,6 +1429,11 @@ pub fn run() {
             import_watermark_template,
             export_watermark_template,
             render_watermark_preview,
+            start_watermark_export,
+            cancel_watermark_export,
+            retry_watermark_export_failures,
+            reveal_watermark_export,
+            acknowledge_watermark_export,
             reveal_operation_log,
             open_system_trash
         ])

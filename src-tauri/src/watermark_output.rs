@@ -38,6 +38,18 @@ pub(crate) struct PlannedWatermarkOutput {
     settings: WatermarkOutputSettings,
 }
 
+impl PlannedWatermarkOutput {
+    pub(crate) fn output_directory(&self) -> &Path {
+        &self.output_directory
+    }
+
+    pub(crate) fn estimated_max_bytes(&self) -> u64 {
+        u64::from(self.target_width)
+            .saturating_mul(u64::from(self.target_height))
+            .saturating_mul(16)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum WatermarkOutputStatus {

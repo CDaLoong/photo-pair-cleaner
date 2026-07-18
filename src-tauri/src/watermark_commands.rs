@@ -1,7 +1,10 @@
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
+
+static WATERMARK_EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 pub(crate) struct WatermarkRenderState {
@@ -243,6 +246,114 @@ pub(crate) async fn render_watermark_preview(
     .await
     .map_err(|error| format!("渲染水印预览任务异常结束：{error}"))??;
     Ok(tauri::ipc::Response::new(envelope))
+}
+
+fn next_watermark_export_id() -> String {
+    let sequence = WATERMARK_EXPORT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    format!("watermark-{now:x}-{sequence:x}")
+}
+
+#[tauri::command]
+pub(crate) fn start_watermark_export(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, crate::watermark_export::WatermarkExportStore>,
+    request: crate::watermark_export::WatermarkExportRequest,
+    on_event: tauri::ipc::Channel<crate::watermark_export::WatermarkExportEvent>,
+) -> Result<String, String> {
+    let items = crate::watermark_export::build_export_items(&request)?;
+    crate::watermark_export::preflight_disk_space(&items)?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("无法定位应用资源目录：{error}"))?;
+    let task_id = next_watermark_export_id();
+    let task = store.insert(&task_id, items)?;
+    let indices = (0..task.item_count()).collect();
+    let executor = Arc::new(crate::watermark_export::RealOutputExecutor::new(
+        resource_dir,
+    ));
+    let event_channel = on_event.clone();
+    std::thread::spawn(move || {
+        let _ = crate::watermark_export::run_export_task(
+            task,
+            indices,
+            executor,
+            Arc::new(move |event| {
+                let _ = event_channel.send(event);
+            }),
+            crate::watermark_export::default_export_concurrency(),
+        );
+    });
+    Ok(task_id)
+}
+
+#[tauri::command]
+pub(crate) fn cancel_watermark_export(
+    store: tauri::State<'_, crate::watermark_export::WatermarkExportStore>,
+    task_id: String,
+) -> Result<(), String> {
+    store.get(&task_id)?.cancel();
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn retry_watermark_export_failures(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, crate::watermark_export::WatermarkExportStore>,
+    task_id: String,
+    on_event: tauri::ipc::Channel<crate::watermark_export::WatermarkExportEvent>,
+) -> Result<(), String> {
+    let task = store.get(&task_id)?;
+    if task.is_running() || !task.is_completed() {
+        return Err("水印导出任务尚未结束".into());
+    }
+    let indices = task.failed_indices();
+    if indices.is_empty() {
+        return Err("当前任务没有可重试的失败项".into());
+    }
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("无法定位应用资源目录：{error}"))?;
+    let executor = Arc::new(crate::watermark_export::RealOutputExecutor::new(
+        resource_dir,
+    ));
+    let event_channel = on_event.clone();
+    std::thread::spawn(move || {
+        let _ = crate::watermark_export::run_export_task(
+            task,
+            indices,
+            executor,
+            Arc::new(move |event| {
+                let _ = event_channel.send(event);
+            }),
+            crate::watermark_export::default_export_concurrency(),
+        );
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn reveal_watermark_export(
+    store: tauri::State<'_, crate::watermark_export::WatermarkExportStore>,
+    task_id: String,
+) -> Result<(), String> {
+    let output_directory = store.completed_output_directory(&task_id)?;
+    tauri::async_runtime::spawn_blocking(move || crate::reveal_path(&output_directory))
+        .await
+        .map_err(|error| format!("打开水印输出目录任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) fn acknowledge_watermark_export(
+    store: tauri::State<'_, crate::watermark_export::WatermarkExportStore>,
+    task_id: String,
+) -> Result<(), String> {
+    store.acknowledge(&task_id)
 }
 
 #[cfg(test)]

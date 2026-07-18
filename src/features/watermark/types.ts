@@ -231,3 +231,34 @@ export interface WatermarkTemplateEntry {
   template: WatermarkTemplate;
   builtIn: boolean;
 }
+
+export interface WatermarkExportRequest {
+  snapshot: WatermarkSourceSnapshot;
+  settings: WatermarkOutputSettings;
+  template: WatermarkTemplate;
+  photoOverrides: Record<string, PhotoPlacementOverride>;
+}
+
+export type WatermarkOutputStatus = "succeeded" | "skipped" | "failed";
+
+export interface WatermarkOutputResult {
+  photoId: string;
+  targetPath: string;
+  status: WatermarkOutputStatus;
+  message: string;
+  sizeBytes: number | null;
+}
+
+export interface WatermarkExportSummary {
+  total: number;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  cancelled: number;
+}
+
+export type WatermarkExportEvent =
+  | { type: "started"; taskId: string; total: number }
+  | { type: "itemStarted"; taskId: string; photoId: string; index: number }
+  | { type: "itemFinished"; taskId: string; result: WatermarkOutputResult }
+  | { type: "finished"; taskId: string; summary: WatermarkExportSummary };
