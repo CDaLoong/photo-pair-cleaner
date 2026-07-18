@@ -55,7 +55,7 @@ pub(crate) enum CollisionPolicy {
     OverwriteOutput,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct NormalizedPlacement {
     pub(crate) anchor_space: WatermarkAnchorSpace,
@@ -155,7 +155,7 @@ pub(crate) enum ImageFit {
     Cover,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FrameInsets {
     pub(crate) top: f32,

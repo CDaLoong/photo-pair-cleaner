@@ -16,6 +16,8 @@ mod reference;
 mod safety;
 mod watermark_commands;
 #[allow(dead_code)]
+mod watermark_geometry;
+#[allow(dead_code)]
 mod watermark_model;
 mod watermark_source;
 
