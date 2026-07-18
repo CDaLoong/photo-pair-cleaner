@@ -1,4 +1,5 @@
 mod editors;
+mod file_organizer;
 mod formats;
 mod operation_history;
 #[allow(dead_code)]
