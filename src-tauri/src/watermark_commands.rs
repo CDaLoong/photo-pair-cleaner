@@ -95,6 +95,76 @@ pub(crate) async fn import_watermark_resource(
     .map_err(|error| format!("导入图片水印任务异常结束：{error}"))?
 }
 
+fn watermark_template_database(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?
+        .join("watermark-templates.json"))
+}
+
+#[tauri::command]
+pub(crate) async fn list_watermark_templates(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::watermark_templates::WatermarkTemplateEntry>, String> {
+    let path = watermark_template_database(&app)?;
+    tauri::async_runtime::spawn_blocking(move || crate::watermark_templates::list_templates(&path))
+        .await
+        .map_err(|error| format!("读取水印模板任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn save_watermark_template(
+    app: tauri::AppHandle,
+    template: crate::watermark_model::WatermarkTemplate,
+    save_as: bool,
+) -> Result<crate::watermark_templates::WatermarkTemplateEntry, String> {
+    let path = watermark_template_database(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::watermark_templates::save_template(&path, template, save_as)
+    })
+    .await
+    .map_err(|error| format!("保存水印模板任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn delete_watermark_template(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    let path = watermark_template_database(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::watermark_templates::delete_template(&path, &id)
+    })
+    .await
+    .map_err(|error| format!("删除水印模板任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn import_watermark_template(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<crate::watermark_templates::WatermarkTemplateEntry, String> {
+    let database = watermark_template_database(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::watermark_templates::import_template(&database, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("导入水印模板任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn export_watermark_template(
+    path: String,
+    template: crate::watermark_model::WatermarkTemplate,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::watermark_templates::export_template(std::path::Path::new(&path), &template)
+    })
+    .await
+    .map_err(|error| format!("导出水印模板任务异常结束：{error}"))?
+}
+
 #[tauri::command]
 pub(crate) async fn render_watermark_preview(
     app: tauri::AppHandle,

@@ -226,3 +226,8 @@ export interface WatermarkFontSummary {
   weights: number[];
   bundled: boolean;
 }
+
+export interface WatermarkTemplateEntry {
+  template: WatermarkTemplate;
+  builtIn: boolean;
+}

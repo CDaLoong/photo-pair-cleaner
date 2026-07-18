@@ -73,6 +73,7 @@ export type WatermarkEditorAction =
   | { type: "undo" }
   | { type: "redo" }
   | { type: "replaceTemplate"; template: WatermarkTemplate }
+  | { type: "hydrateTemplate"; template: WatermarkTemplate }
   | { type: "markTemplateSaved" }
   | { type: "markExported" }
   | { type: "markSourceChanged" }
@@ -345,6 +346,16 @@ export function watermarkEditorReducer(
           unexportedChanges: true,
         },
       };
+    case "hydrateTemplate": {
+      const next = createWatermarkEditorState(action.template);
+      return {
+        ...next,
+        present: {
+          ...next.present,
+          unexportedChanges: state.present.unexportedChanges,
+        },
+      };
+    }
     case "markTemplateSaved":
       return state.present.dirtyTemplate
         ? { ...state, present: { ...state.present, dirtyTemplate: false } }

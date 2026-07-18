@@ -27,6 +27,7 @@ mod watermark_model;
 mod watermark_render;
 mod watermark_resource;
 mod watermark_source;
+mod watermark_templates;
 #[allow(dead_code)]
 mod watermark_text;
 
@@ -44,8 +45,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use walkdir::WalkDir;
 use watermark_commands::{
-    WatermarkRenderState, import_watermark_resource, list_watermark_fonts,
-    prepare_watermark_source, render_watermark_preview,
+    WatermarkRenderState, delete_watermark_template, export_watermark_template,
+    import_watermark_resource, import_watermark_template, list_watermark_fonts,
+    list_watermark_templates, prepare_watermark_source, render_watermark_preview,
+    save_watermark_template,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1415,6 +1418,11 @@ pub fn run() {
             prepare_watermark_source,
             list_watermark_fonts,
             import_watermark_resource,
+            list_watermark_templates,
+            save_watermark_template,
+            delete_watermark_template,
+            import_watermark_template,
+            export_watermark_template,
             render_watermark_preview,
             reveal_operation_log,
             open_system_trash

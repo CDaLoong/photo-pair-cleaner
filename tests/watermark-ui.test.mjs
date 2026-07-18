@@ -157,3 +157,25 @@ test("watermark inspector exposes complete local editing controls", () => {
   const backend = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   assert.match(backend, /import_watermark_resource/);
 });
+
+test("watermark templates are portable local assets with immutable builtins", () => {
+  const panelSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkTemplatePanel.tsx", import.meta.url),
+    "utf8",
+  );
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const label of ["保存本地模板", "另存为本地模板", "导入模板", "导出模板", "删除本地模板"]) {
+    assert.match(panelSource, new RegExp(label));
+  }
+  assert.match(panelSource, /active\.builtIn/);
+  assert.match(moduleSource, /list_watermark_templates/);
+  assert.match(moduleSource, /save_watermark_template/);
+  assert.match(moduleSource, /delete_watermark_template/);
+  assert.match(moduleSource, /import_watermark_template/);
+  assert.match(moduleSource, /export_watermark_template/);
+  assert.match(moduleSource, /当前模板包含未保存的调整/);
+  assert.match(moduleSource, /Array\.isArray\(entries\)/);
+});

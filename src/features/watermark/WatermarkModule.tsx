@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm as confirmDialog, open, save } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, Images, LayoutTemplate } from "lucide-react";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { errorMessage, storedBooleanPreference } from "../../utils";
@@ -29,6 +29,7 @@ import type {
   WatermarkSourceInput,
   WatermarkSourceOrigin,
   WatermarkSourceSnapshot,
+  WatermarkTemplateEntry,
   WatermarkTransferDraft,
 } from "./types";
 import {
@@ -88,7 +89,7 @@ export function WatermarkModule({
   onImmersiveChange,
 }: WatermarkModuleProps) {
   const initialTemplate = useMemo(
-    () => createDefaultWatermarkTemplate("framepair-clean", "简洁白边"),
+    () => createDefaultWatermarkTemplate("minimal-signature", "极简署名"),
     [],
   );
   const [editor, dispatchEditor] = useReducer(
@@ -111,12 +112,16 @@ export function WatermarkModule({
   const [leftCollapsed, setLeftCollapsed] = useState(() => storedPanelPreference(LEFT_PANEL_STORAGE_KEY));
   const [rightCollapsed, setRightCollapsed] = useState(() => storedPanelPreference(RIGHT_PANEL_STORAGE_KEY));
   const [fonts, setFonts] = useState<WatermarkFontSummary[]>([]);
+  const [templateEntries, setTemplateEntries] = useState<WatermarkTemplateEntry[]>([]);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateError, setTemplateError] = useState<string | null>(null);
   const busyRef = useRef(false);
   const processedTransferId = useRef<string | null>(null);
   const previousPreviewPhotoId = useRef<string | null>(null);
   const handledDiscardToken = useRef(discardToken);
   const immersiveRestoreRef = useRef({ left: leftCollapsed, right: rightCollapsed });
   const wasImmersiveRef = useRef(immersive);
+  const templatesRequestedRef = useRef(false);
   const previewCacheRef = useRef<WatermarkPreviewCache | null>(null);
   if (!previewCacheRef.current) {
     previewCacheRef.current = new WatermarkPreviewCache((url) => URL.revokeObjectURL(url));
@@ -226,6 +231,32 @@ export function WatermarkModule({
       .catch(() => undefined);
     return () => { disposed = true; };
   }, [active, fonts.length]);
+
+  useEffect(() => {
+    if (!active || !isTauri() || templatesRequestedRef.current) return;
+    templatesRequestedRef.current = true;
+    let disposed = false;
+    setTemplateBusy(true);
+    setTemplateError(null);
+    void invoke<unknown>("list_watermark_templates")
+      .then((entries) => {
+        if (disposed) return;
+        if (!Array.isArray(entries)) throw new Error("无法读取水印模板列表");
+        const templateItems = entries as WatermarkTemplateEntry[];
+        setTemplateEntries(templateItems);
+        const current = templateItems.find((entry) => entry.template.id === template.id) ?? templateItems[0];
+        if (current && !editor.present.dirtyTemplate) {
+          dispatchEditor({ type: "hydrateTemplate", template: current.template });
+        }
+      })
+      .catch((loadError) => {
+        if (disposed) return;
+        templatesRequestedRef.current = false;
+        setTemplateError(errorMessage(loadError));
+      })
+      .finally(() => { if (!disposed) setTemplateBusy(false); });
+    return () => { disposed = true; };
+  }, [active, editor.present.dirtyTemplate, template.id]);
 
   useEffect(() => {
     onUnsavedWorkChange({
@@ -451,6 +482,125 @@ export function WatermarkModule({
     }
   }
 
+  async function refreshTemplates(): Promise<WatermarkTemplateEntry[]> {
+    const entries = await invoke<unknown>("list_watermark_templates");
+    if (!Array.isArray(entries)) throw new Error("无法读取水印模板列表");
+    const templateItems = entries as WatermarkTemplateEntry[];
+    setTemplateEntries(templateItems);
+    return templateItems;
+  }
+
+  async function selectTemplate(entry: WatermarkTemplateEntry) {
+    if (entry.template.id === template.id) return;
+    if (editor.present.dirtyTemplate) {
+      const accepted = await confirmDialog("当前模板包含未保存的调整，切换后这些调整将被放弃。", {
+        title: "切换水印模板",
+        kind: "warning",
+        okLabel: "放弃并切换",
+        cancelLabel: "继续编辑",
+      });
+      if (!accepted) return;
+    }
+    dispatchEditor({ type: "replaceTemplate", template: entry.template });
+    if (!snapshot?.photos.length) dispatchEditor({ type: "markExported" });
+  }
+
+  async function saveTemplate(name: string, saveAs: boolean) {
+    setTemplateBusy(true);
+    setTemplateError(null);
+    try {
+      const next = structuredClone(template);
+      next.name = name.trim();
+      const entry = await invoke<WatermarkTemplateEntry>("save_watermark_template", {
+        template: next,
+        saveAs,
+      });
+      await refreshTemplates();
+      dispatchEditor({ type: "hydrateTemplate", template: entry.template });
+    } catch (saveError) {
+      setTemplateError(errorMessage(saveError));
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
+
+  async function deleteTemplate() {
+    const entry = templateEntries.find((candidate) => candidate.template.id === template.id);
+    if (!entry || entry.builtIn) return;
+    const accepted = await confirmDialog(`删除本地模板“${entry.template.name}”？此操作不会删除已导出的照片。`, {
+      title: "删除水印模板",
+      kind: "warning",
+      okLabel: "删除模板",
+      cancelLabel: "取消",
+    });
+    if (!accepted) return;
+    setTemplateBusy(true);
+    setTemplateError(null);
+    try {
+      await invoke("delete_watermark_template", { id: entry.template.id });
+      const entries = await refreshTemplates();
+      const fallback = entries[0];
+      if (fallback) {
+        dispatchEditor({ type: "replaceTemplate", template: fallback.template });
+        if (!snapshot?.photos.length) dispatchEditor({ type: "markExported" });
+      }
+    } catch (deleteError) {
+      setTemplateError(errorMessage(deleteError));
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
+
+  async function importTemplate() {
+    if (editor.present.dirtyTemplate) {
+      const accepted = await confirmDialog("导入后将切换到新模板，当前未保存的模板调整会被放弃。", {
+        title: "导入水印模板",
+        kind: "warning",
+        okLabel: "继续导入",
+        cancelLabel: "取消",
+      });
+      if (!accepted) return;
+    }
+    const path = await open({
+      multiple: false,
+      directory: false,
+      title: "导入 FramePair 水印模板",
+      filters: [{ name: "FramePair 水印模板", extensions: ["json"] }],
+    });
+    if (typeof path !== "string") return;
+    setTemplateBusy(true);
+    setTemplateError(null);
+    try {
+      const entry = await invoke<WatermarkTemplateEntry>("import_watermark_template", { path });
+      await refreshTemplates();
+      dispatchEditor({ type: "replaceTemplate", template: entry.template });
+      if (!snapshot?.photos.length) dispatchEditor({ type: "markExported" });
+    } catch (importError) {
+      setTemplateError(errorMessage(importError));
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
+
+  async function exportTemplate() {
+    const safeName = template.name.replace(/[\\/:*?"<>|]/g, "-").trim() || "FramePair-Template";
+    const path = await save({
+      title: "导出 FramePair 水印模板",
+      defaultPath: `${safeName}.framepair-watermark.json`,
+      filters: [{ name: "FramePair 水印模板", extensions: ["json"] }],
+    });
+    if (typeof path !== "string") return;
+    setTemplateBusy(true);
+    setTemplateError(null);
+    try {
+      await invoke("export_watermark_template", { path, template });
+    } catch (exportError) {
+      setTemplateError(errorMessage(exportError));
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
+
   function changeOrientation(orientation: WatermarkSourcePhoto["orientation"]) {
     const target = snapshot?.photos.find((photo) => photo.orientation === orientation);
     if (target) setSelectedPhotoId(target.id);
@@ -523,7 +673,20 @@ export function WatermarkModule({
                   onDismissError={() => setError(null)}
                   onSelectPhoto={setSelectedPhotoId}
                 />
-              ) : <WatermarkTemplatePanel template={template} orientation={editor.activeOrientation} />}
+              ) : (
+                <WatermarkTemplatePanel
+                  entries={templateEntries}
+                  activeTemplateId={template.id}
+                  orientation={editor.activeOrientation}
+                  busy={templateBusy}
+                  error={templateError}
+                  onSelect={(entry) => void selectTemplate(entry)}
+                  onSave={(name, saveAs) => void saveTemplate(name, saveAs)}
+                  onDelete={() => void deleteTemplate()}
+                  onImport={() => void importTemplate()}
+                  onExport={() => void exportTemplate()}
+                />
+              )}
             </aside>
             <main className="watermark-stage" data-watermark-tour="canvas">
               <WatermarkCanvas
