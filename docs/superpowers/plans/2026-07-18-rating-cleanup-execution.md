@@ -307,11 +307,11 @@ git commit -m "feat: recover quarantined rating groups"
 - Modify: `docs/superpowers/specs/2026-07-18-rating-driven-photo-workflow-design.md`
 - Modify: `docs/superpowers/plans/2026-07-18-rating-cleanup-execution.md`
 
-- [ ] **Step 1: Document the shipped phase-five boundary**
+- [x] **Step 1: Document the shipped phase-five boundary**
 
 Document default quarantine, explicit trash selection, full-group preflight, cleanup-before sync, quarantine recovery, non-recoverable system trash, and the remaining phase-six onboarding/polish scope.
 
-- [ ] **Step 2: Run all automated checks**
+- [x] **Step 2: Run all automated checks**
 
 Run: `rustfmt --edition 2024 --check $(rg --files src-tauri/src src-tauri/tests | rg '\.rs$')`
 
@@ -325,7 +325,7 @@ Run: `npm run build`
 
 Expected: all checks PASS.
 
-- [ ] **Step 3: Run desktop/browser smoke testing**
+- [x] **Step 3: Run desktop/browser smoke testing**
 
 Start the current Tauri app and verify cleanup selection, default quarantine, trash warning, confirmation gating, history controls, narrow/wide layouts, and preview refresh. Use disposable fixtures for real quarantine/restore and system trash only when native desktop interaction is available; if macOS is locked, record the native limitation instead of claiming it passed.
 
@@ -337,3 +337,5 @@ git commit -m "docs: document rating cleanup execution"
 git push origin main
 gh run watch --exit-status
 ```
+
+**Verification note (2026-07-18):** Rust formatting, Clippy with warnings denied, all 163 backend tests, all 44 frontend tests, and the production build passed. The rating cleanup workspace was opened in the browser runtime and checked at 1440x900 and 960x720 without horizontal overflow; phase-five copy and default-quarantine guidance were visible and the key commands remained in view. The latest Vite server and Tauri desktop process were started successfully. macOS remained screen-locked, so native confirmation-dialog interaction and real system-trash QA are recorded as blocked rather than claimed as passed; disposable backend tests covered quarantine execution/restore and simulated trash success/partial failure without touching the machine's real trash.
