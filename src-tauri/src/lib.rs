@@ -2,6 +2,7 @@ mod editors;
 mod formats;
 mod preview;
 mod quarantine;
+mod rating_metadata;
 mod ratings;
 mod reference;
 mod safety;
