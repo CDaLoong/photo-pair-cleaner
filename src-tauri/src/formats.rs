@@ -24,7 +24,7 @@ pub(crate) fn is_sidecar(path: &Path) -> bool {
     SIDECAR_EXTENSIONS.contains(&extension_of(path).as_str())
 }
 
-fn normalized_key(path: &Path, case_sensitive: bool) -> String {
+pub(crate) fn normalized_path_key(path: &Path, case_sensitive: bool) -> String {
     let value = path.to_string_lossy().replace('\\', "/");
     if case_sensitive {
         value
@@ -33,11 +33,15 @@ fn normalized_key(path: &Path, case_sensitive: bool) -> String {
     }
 }
 
+pub(crate) fn photo_group_key(path: &Path, case_sensitive: bool) -> String {
+    normalized_path_key(&path.with_extension(""), case_sensitive)
+}
+
 pub(crate) fn sidecar_match_keys(path: &Path, case_sensitive: bool) -> Vec<String> {
     let without_xmp = path.with_extension("");
-    let mut keys = vec![normalized_key(&without_xmp, case_sensitive)];
+    let mut keys = vec![normalized_path_key(&without_xmp, case_sensitive)];
     if RAW_EXTENSIONS.contains(&extension_of(&without_xmp).as_str()) {
-        keys.push(normalized_key(
+        keys.push(normalized_path_key(
             &without_xmp.with_extension(""),
             case_sensitive,
         ));
@@ -60,6 +64,13 @@ mod tests {
         }
         assert!(!is_raw(Path::new("a.tiff")));
         assert!(!is_raw(Path::new("a.exe")));
+    }
+
+    #[test]
+    fn photo_group_keys_are_stable_and_optionally_case_sensitive() {
+        assert_eq!(photo_group_key(Path::new("Day/A.NEF"), false), "day/a");
+        assert_eq!(photo_group_key(Path::new("Day/A.JPG"), false), "day/a");
+        assert_eq!(photo_group_key(Path::new("Day/A.NEF"), true), "Day/A");
     }
 
     #[test]

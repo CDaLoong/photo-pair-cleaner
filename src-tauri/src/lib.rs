@@ -201,15 +201,6 @@ fn display_relative(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn match_key(relative: &Path, case_sensitive: bool) -> String {
-    let key = display_relative(&relative.with_extension(""));
-    if case_sensitive {
-        key
-    } else {
-        key.to_lowercase()
-    }
-}
-
 fn collect_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root)
@@ -289,7 +280,7 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
             .strip_prefix(&raw_root)
             .map_err(|_| "RAW 文件超出了源目录".to_string())?;
         if formats::is_raw(&path) {
-            raws.entry(match_key(relative, request.case_sensitive))
+            raws.entry(formats::photo_group_key(relative, request.case_sensitive))
                 .or_default()
                 .push(display_relative(relative));
             raw_paths.push(path);
@@ -312,7 +303,7 @@ pub fn scan_pairs_impl(request: &ScanRequest) -> Result<ScanSummary, String> {
                 let relative = path
                     .strip_prefix(&raw_root)
                     .map_err(|_| "RAW 文件超出了源目录".to_string())?;
-                let key = match_key(relative, request.case_sensitive);
+                let key = formats::photo_group_key(relative, request.case_sensitive);
                 let matched_path = reference_index
                     .entries
                     .get(&key)
