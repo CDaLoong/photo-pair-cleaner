@@ -220,6 +220,15 @@ test("rating organizer header exposes history count and a real jump target", () 
   assert.match(history, /执行完成后，操作回执与可恢复入口会显示在这里/);
 });
 
+test("rating organizer defines a compact reflow for narrow and zoomed layouts", () => {
+  const workspace = fs.readFileSync(new URL("../src/features/rating-rules/RatingRulesWorkspace.tsx", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  assert.match(workspace, /rating-rules-history-link/);
+  assert.match(styles, /@media \(max-width: 560px\)[\s\S]*\.rating-rules-file-actions[\s\S]*grid-template-columns: 38px 38px repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /@media \(max-width: 560px\)[\s\S]*\.rating-rule-name[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(styles, /@media \(max-width: 420px\)[\s\S]*\.operation-plan-summary[\s\S]*repeat\(2, minmax\(0, 1fr\)\)/);
+});
+
 test("sidebar preferences collapse only when storage explicitly says true", () => {
   assert.equal(utils.storedBooleanPreference("true"), true);
   assert.equal(utils.storedBooleanPreference("false"), false);

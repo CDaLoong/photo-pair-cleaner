@@ -456,7 +456,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
         <header className="rating-rules-heading">
           <div><h1>评分整理与清理规则</h1><p>用评分和格式生成计划，复核后执行复制、移动或安全清理。</p></div>
           <div className="rating-rules-file-actions">
-            <button className="secondary-command" type="button" onClick={scrollToHistory} aria-controls="rating-rules-history">
+            <button className="secondary-command rating-rules-history-link" type="button" onClick={scrollToHistory} aria-controls="rating-rules-history">
               <History aria-hidden="true" size={16} />{history.length > 0 ? `操作历史 ${history.length}` : "操作历史"}
             </button>
             <button className="icon-button" type="button" disabled={busy} onClick={() => void importRules()} aria-label="导入规则" title="导入规则"><FileDown aria-hidden="true" size={16} /></button>

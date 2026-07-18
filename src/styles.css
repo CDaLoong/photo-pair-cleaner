@@ -4607,6 +4607,105 @@ dd {
   }
 }
 
+@media (max-width: 560px) {
+  .rating-rules-setup {
+    padding: 14px 10px 16px;
+  }
+
+  .rating-rules-heading {
+    gap: 12px;
+  }
+
+  .rating-rules-heading p,
+  .rating-rules-root-picker small,
+  .rating-rules-empty > span,
+  .rating-rules-safety {
+    line-height: 1.5;
+  }
+
+  .rating-rules-file-actions {
+    display: grid;
+    grid-template-columns: 38px 38px repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .rating-rules-history-link {
+    grid-column: 1 / -1;
+  }
+
+  .rating-rules-file-actions .secondary-command {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .rating-rules-template {
+    padding-block: 10px;
+  }
+
+  .rating-rules-empty {
+    min-height: 0;
+    padding: 18px 10px;
+    text-align: center;
+  }
+
+  .rating-rules-template-shortcuts {
+    width: 100%;
+  }
+
+  .rating-rule-card > header {
+    grid-template-columns: auto minmax(0, 1fr) 30px 30px 30px;
+  }
+
+  .rating-rule-name {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    background: var(--surface);
+    border-color: var(--line);
+  }
+
+  .rating-rule-order {
+    justify-self: end;
+  }
+
+  .rating-rule-condition > div {
+    grid-template-columns: minmax(0, 1fr) 48px auto 48px;
+  }
+
+  .rating-rule-condition input {
+    width: 100%;
+  }
+
+  .rating-rule-actions > div {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rating-rules-sync > header {
+    align-items: flex-start;
+  }
+
+  .rating-rules-safety {
+    align-items: flex-start;
+  }
+
+  .rating-rules-command .primary-command,
+  .organizer-history-actions > button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .operation-plan-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rating-rules-root-picker strong {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
 /* Confirmation */
 
 .confirm-dialog {
