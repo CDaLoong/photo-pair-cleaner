@@ -1,10 +1,12 @@
 #[path = "../src/formats.rs"]
 #[allow(dead_code)]
 mod formats;
+#[allow(dead_code)]
 #[path = "../src/photo_groups.rs"]
 mod photo_groups;
 #[path = "../src/preview.rs"]
 mod preview;
+#[allow(dead_code)]
 #[path = "../src/rating_metadata.rs"]
 mod rating_metadata;
 

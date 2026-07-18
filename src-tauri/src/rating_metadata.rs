@@ -145,7 +145,6 @@ pub(crate) fn read_jpeg_rating(path: &Path) -> Result<Option<i8>, String> {
     xmp_rating(&input)
 }
 
-#[allow(dead_code)]
 fn rewritten_description(
     element: &BytesStart<'_>,
     decoder: Decoder,
@@ -180,7 +179,6 @@ fn rewritten_description(
     Ok((updated, replaced))
 }
 
-#[allow(dead_code)]
 pub(crate) fn rewrite_xmp_rating(input: Option<&[u8]>, rating: u8) -> Result<Vec<u8>, String> {
     if rating > 5 {
         return Err("照片评分必须在 0 到 5 星之间".to_string());
@@ -384,7 +382,6 @@ fn jpeg_xmp_app1(xml: &[u8]) -> Result<Vec<u8>, String> {
     Ok(segment)
 }
 
-#[allow(dead_code)]
 pub(crate) fn rewrite_jpeg_rating(input: &[u8], rating: u8) -> Result<Vec<u8>, String> {
     let existing = jpeg_xmp_segment(input)?;
     let xml = rewrite_xmp_rating(existing.map(|(_, _, xml)| xml), rating)?;

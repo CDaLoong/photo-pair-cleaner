@@ -10,8 +10,8 @@ mod rating_sync;
 
 use photo_groups::RatingState;
 use rating_sync::{
-    RatingConflictPolicy, RatingResolution, RatingSyncPlanRequest, RatingSyncStatus,
-    RatingSyncTarget, RatingSyncTargets,
+    RatingConflictPolicy, RatingResolution, RatingSyncExecuteRequest, RatingSyncPlanRequest,
+    RatingSyncPlanStore, RatingSyncStatus, RatingSyncTarget, RatingSyncTargets,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -226,5 +226,241 @@ fn duplicate_xmp_targets_are_reported_inside_the_group() {
             .issues
             .iter()
             .any(|issue| issue.contains("多个 XMP")),
+    );
+}
+
+fn indexed_plan(
+    root: &std::path::Path,
+    ratings: HashMap<String, u8>,
+    mut request: RatingSyncPlanRequest,
+    plan_id: &str,
+) -> rating_sync::RatingSyncPlan {
+    let mut index = photo_groups::index_directory(root).expect("photo index");
+    photo_groups::apply_framepair_ratings(&mut index, &ratings);
+    request.root = root.to_string_lossy().into_owned();
+    rating_sync::build_plan(&index, &request, plan_id.to_string()).expect("rating sync plan")
+}
+
+fn execute_request(
+    root: &std::path::Path,
+    plan_id: &str,
+    asset_ids: &[&str],
+) -> RatingSyncExecuteRequest {
+    RatingSyncExecuteRequest {
+        plan_id: plan_id.to_string(),
+        root: root.to_string_lossy().into_owned(),
+        asset_ids: asset_ids.iter().map(|value| (*value).to_string()).collect(),
+    }
+}
+
+#[test]
+fn executes_new_and_existing_raw_xmp_writes_without_touching_raw_files() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw-a-original").expect("first raw");
+    fs::write(root.join("B.NEF"), b"raw-b-original").expect("second raw");
+    fs::write(
+        root.join("B.xmp"),
+        br#"<rdf:Description xmlns:rdf='rdf' xmlns:xmp='xmp' xmp:Label='Green'><xmp:CreatorTool>Keep me</xmp:CreatorTool><xmp:Rating>2</xmp:Rating></rdf:Description>"#,
+    )
+    .expect("existing xmp");
+    let mut request = raw_sync_request(&root);
+    request.conflict_policy = RatingConflictPolicy::FramePair;
+    let plan = indexed_plan(
+        &root,
+        HashMap::from([("a".to_string(), 4), ("b".to_string(), 5)]),
+        request,
+        "execute-raw",
+    );
+
+    let summary =
+        rating_sync::execute_plan(&plan, &execute_request(&root, "execute-raw", &["a", "b"]))
+            .expect("execution summary");
+
+    assert_eq!(summary.succeeded, 2);
+    assert_eq!(summary.failed, 0);
+    assert_eq!(
+        rating_metadata::read_sidecar_rating(&root.join("A.xmp")).expect("first rating"),
+        Some(4),
+    );
+    assert_eq!(
+        rating_metadata::read_sidecar_rating(&root.join("B.xmp")).expect("second rating"),
+        Some(5),
+    );
+    assert!(
+        fs::read_to_string(root.join("B.xmp"))
+            .expect("xmp text")
+            .contains("Keep me")
+    );
+    assert_eq!(
+        fs::read(root.join("A.NEF")).expect("first raw bytes"),
+        b"raw-a-original"
+    );
+    assert_eq!(
+        fs::read(root.join("B.NEF")).expect("second raw bytes"),
+        b"raw-b-original"
+    );
+}
+
+#[test]
+fn executes_confirmed_jpeg_metadata_write_without_reencoding_pixels() {
+    use image::{GenericImageView, Rgb, RgbImage};
+
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    fs::create_dir_all(&root).expect("photo directory");
+    let jpeg_path = root.join("A.JPG");
+    RgbImage::from_pixel(8, 8, Rgb([20, 40, 60]))
+        .save_with_format(&jpeg_path, image::ImageFormat::Jpeg)
+        .expect("jpeg");
+    let before = image::open(&jpeg_path).expect("before jpeg").dimensions();
+    let request = RatingSyncPlanRequest {
+        root: root.to_string_lossy().into_owned(),
+        minimum_rating: 1,
+        maximum_rating: 5,
+        asset_ids: vec!["a".to_string()],
+        targets: RatingSyncTargets {
+            raw_xmp: false,
+            jpeg_metadata: true,
+        },
+        conflict_policy: RatingConflictPolicy::FramePair,
+        jpeg_write_confirmed: true,
+    };
+    let plan = indexed_plan(
+        &root,
+        HashMap::from([("a".to_string(), 4)]),
+        request,
+        "execute-jpeg",
+    );
+
+    let summary = rating_sync::execute_plan(&plan, &execute_request(&root, "execute-jpeg", &["a"]))
+        .expect("execution summary");
+
+    assert_eq!(summary.succeeded, 1);
+    assert_eq!(summary.failed, 0);
+    assert_eq!(
+        rating_metadata::read_jpeg_rating(&jpeg_path).expect("jpeg rating"),
+        Some(4)
+    );
+    assert_eq!(
+        image::open(&jpeg_path).expect("after jpeg").dimensions(),
+        before
+    );
+}
+
+#[test]
+fn stale_or_new_targets_fail_without_stopping_independent_groups() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw-a").expect("first raw");
+    fs::write(root.join("B.NEF"), b"raw-b").expect("second raw");
+    let plan = indexed_plan(
+        &root,
+        HashMap::from([("a".to_string(), 4), ("b".to_string(), 5)]),
+        raw_sync_request(&root),
+        "stale",
+    );
+    fs::write(root.join("A.xmp"), br#"<xmp:Rating>1</xmp:Rating>"#).expect("appeared sidecar");
+
+    let summary = rating_sync::execute_plan(&plan, &execute_request(&root, "stale", &["a", "b"]))
+        .expect("partial execution summary");
+
+    assert_eq!(summary.succeeded, 1);
+    assert_eq!(summary.failed, 1);
+    assert_eq!(
+        rating_metadata::read_sidecar_rating(&root.join("A.xmp")).expect("unchanged first"),
+        Some(1),
+    );
+    assert_eq!(
+        rating_metadata::read_sidecar_rating(&root.join("B.xmp")).expect("second written"),
+        Some(5),
+    );
+    assert!(summary.results.iter().any(|result| {
+        result.asset_id == "a" && !result.success && result.message.contains("发生变化")
+    }));
+}
+
+#[test]
+fn execution_rejects_wrong_authorization_and_consumes_stored_plans_once() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw").expect("raw");
+    let plan = indexed_plan(
+        &root,
+        HashMap::from([("a".to_string(), 4)]),
+        raw_sync_request(&root),
+        "authorized",
+    );
+
+    assert!(
+        rating_sync::execute_plan(&plan, &execute_request(&root, "wrong-plan", &["a"]),).is_err(),
+    );
+    assert!(
+        rating_sync::execute_plan(&plan, &execute_request(temp.path(), "authorized", &["a"]),)
+            .is_err(),
+    );
+    assert!(
+        rating_sync::execute_plan(&plan, &execute_request(&root, "authorized", &["missing"]),)
+            .is_err(),
+    );
+
+    let store = RatingSyncPlanStore::default();
+    store.replace(plan).expect("stored plan");
+    assert!(store.take("wrong-plan", &root).is_err());
+    assert!(store.take("authorized", &root).is_ok());
+    assert!(store.take("authorized", &root).is_err());
+}
+
+#[test]
+fn execution_rejects_a_tampered_relative_path() {
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw").expect("raw");
+    let mut plan = indexed_plan(
+        &root,
+        HashMap::from([("a".to_string(), 4)]),
+        raw_sync_request(&root),
+        "tampered",
+    );
+    plan.writes[0].relative_path = "../outside.xmp".to_string();
+
+    let summary = rating_sync::execute_plan(&plan, &execute_request(&root, "tampered", &["a"]))
+        .expect("execution summary");
+
+    assert_eq!(summary.succeeded, 0);
+    assert_eq!(summary.failed, 1);
+    assert!(!temp.path().join("outside.xmp").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn execution_rejects_a_sidecar_that_became_a_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().expect("temp directory");
+    let root = temp.path().join("photos");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::write(root.join("A.NEF"), b"raw").expect("raw");
+    let plan = indexed_plan(
+        &root,
+        HashMap::from([("a".to_string(), 4)]),
+        raw_sync_request(&root),
+        "symlink",
+    );
+    let outside = temp.path().join("outside.xmp");
+    fs::write(&outside, br#"<xmp:Rating>1</xmp:Rating>"#).expect("outside xmp");
+    symlink(&outside, root.join("A.xmp")).expect("sidecar symlink");
+
+    let summary = rating_sync::execute_plan(&plan, &execute_request(&root, "symlink", &["a"]))
+        .expect("execution summary");
+
+    assert_eq!(summary.failed, 1);
+    assert_eq!(
+        rating_metadata::read_sidecar_rating(&outside).expect("outside unchanged"),
+        Some(1),
     );
 }

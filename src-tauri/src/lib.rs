@@ -4,6 +4,7 @@ mod photo_groups;
 mod preview;
 mod quarantine;
 mod rating_metadata;
+mod rating_sync;
 mod ratings;
 mod reference;
 mod safety;
@@ -932,6 +933,54 @@ async fn set_photo_rating(
 }
 
 #[tauri::command]
+async fn generate_rating_sync_plan(
+    app: tauri::AppHandle,
+    rating_state: tauri::State<'_, RatingStore>,
+    plan_state: tauri::State<'_, rating_sync::RatingSyncPlanStore>,
+    request: rating_sync::RatingSyncPlanRequest,
+) -> Result<rating_sync::RatingSyncPlanSummary, String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分数据目录：{error}"))?
+        .join("photo-ratings.json");
+    let access = Arc::clone(&rating_state.access);
+    let plan_id = next_plan_id();
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access
+            .lock()
+            .map_err(|_| "无法锁定评分数据库".to_string())?;
+        let mut index = photo_groups::index_directory(Path::new(&request.root))?;
+        let ratings = ratings::load_ratings(&database_path, Path::new(&request.root))?;
+        photo_groups::apply_framepair_ratings(&mut index, &ratings);
+        rating_sync::build_plan(&index, &request, plan_id)
+    })
+    .await
+    .map_err(|error| format!("评分同步计划任务异常结束：{error}"))??;
+    let summary = plan.summary().clone();
+    plan_state.replace(plan)?;
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn execute_rating_sync_plan(
+    rating_state: tauri::State<'_, RatingStore>,
+    plan_state: tauri::State<'_, rating_sync::RatingSyncPlanStore>,
+    request: rating_sync::RatingSyncExecuteRequest,
+) -> Result<rating_sync::RatingSyncExecutionSummary, String> {
+    let plan = plan_state.take(&request.plan_id, Path::new(&request.root))?;
+    let access = Arc::clone(&rating_state.access);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access
+            .lock()
+            .map_err(|_| "无法锁定评分同步任务".to_string())?;
+        rating_sync::execute_plan(&plan, &request)
+    })
+    .await
+    .map_err(|error| format!("评分同步执行任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 async fn list_external_editors() -> Result<Vec<editors::ExternalEditor>, String> {
     tauri::async_runtime::spawn_blocking(editors::discover_installed)
         .await
@@ -1003,6 +1052,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(ScanPlanStore::default())
         .manage(RatingStore::default())
+        .manage(rating_sync::RatingSyncPlanStore::default())
         .invoke_handler(tauri::generate_handler![
             validate_directory_path,
             scan_pairs,
@@ -1014,6 +1064,8 @@ pub fn run() {
             reveal_scan_item,
             index_photo_directory,
             set_photo_rating,
+            generate_rating_sync_plan,
+            execute_rating_sync_plan,
             load_photo_thumbnail,
             list_external_editors,
             open_photo_in_editor,
