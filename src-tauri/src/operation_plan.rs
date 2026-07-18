@@ -4,7 +4,7 @@ use crate::rating_sync::{
     RatingConflictPolicy, RatingResolution, RatingSyncTarget, RatingSyncTargets, resolve_rating,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -123,6 +123,22 @@ pub(crate) struct OperationPlan {
     pub(crate) sync: OperationSyncPreference,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExecutionSelection {
+    pub(crate) plan_id: String,
+    pub(crate) root: String,
+    pub(crate) group_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AuthorizedOperationPlan {
+    pub(crate) summary: OperationPlanSummary,
+    pub(crate) items: Vec<OperationPlanItem>,
+    pub(crate) rules: Vec<RatingRule>,
+    pub(crate) sync: OperationSyncPreference,
+}
+
 impl OperationPlan {
     pub(crate) fn summary(&self) -> &OperationPlanSummary {
         &self.summary
@@ -150,6 +166,70 @@ impl OperationPlanStore {
             .map_err(|_| "无法锁定评分整理计划".to_string())?
             .as_ref()
             .map(|plan| plan.summary.clone()))
+    }
+
+    pub(crate) fn take_for_execution(
+        &self,
+        selection: &ExecutionSelection,
+    ) -> Result<AuthorizedOperationPlan, String> {
+        if selection.group_ids.is_empty() {
+            return Err("请至少选择一个可执行照片组".to_string());
+        }
+        let mut selected_ids = HashSet::with_capacity(selection.group_ids.len());
+        if selection
+            .group_ids
+            .iter()
+            .any(|group_id| group_id.trim().is_empty() || !selected_ids.insert(group_id.as_str()))
+        {
+            return Err("执行照片组不能为空或重复".to_string());
+        }
+        let requested_root = fs::canonicalize(&selection.root)
+            .map_err(|error| format!("评分整理目录不可访问：{error}"))?;
+        let mut current = self
+            .current
+            .lock()
+            .map_err(|_| "无法锁定评分整理计划".to_string())?;
+        let plan = current
+            .as_ref()
+            .ok_or_else(|| "评分整理计划不存在或已经执行，请重新生成".to_string())?;
+        if plan.summary.plan_id != selection.plan_id {
+            return Err("评分整理计划已变化，请重新生成".to_string());
+        }
+        let planned_root = fs::canonicalize(&plan.summary.root)
+            .map_err(|error| format!("计划中的评分整理目录不可访问：{error}"))?;
+        if requested_root != planned_root {
+            return Err("执行目录与评分整理计划不一致".to_string());
+        }
+        let mut items = Vec::with_capacity(selection.group_ids.len());
+        for group_id in &selection.group_ids {
+            let item = plan
+                .summary
+                .items
+                .iter()
+                .find(|item| item.group_id == *group_id)
+                .ok_or_else(|| format!("评分整理计划中不存在照片组：{group_id}"))?;
+            if item.status != OperationPlanStatus::Ready
+                || !matches!(
+                    item.terminal_action,
+                    Some(RuleAction::Copy | RuleAction::Move)
+                )
+            {
+                return Err(format!(
+                    "照片组“{}”当前不可执行复制或移动",
+                    item.relative_stem
+                ));
+            }
+            items.push(item.clone());
+        }
+        let plan = current
+            .take()
+            .expect("validated operation plan must remain available");
+        Ok(AuthorizedOperationPlan {
+            summary: plan.summary,
+            items,
+            rules: plan.rules,
+            sync: plan.sync,
+        })
     }
 }
 
@@ -668,4 +748,114 @@ pub(crate) fn build_operation_plan(
         rules,
         sync: request.sync,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn item(group_id: &str, action: RuleAction, status: OperationPlanStatus) -> OperationPlanItem {
+        OperationPlanItem {
+            group_id: group_id.to_string(),
+            relative_stem: group_id.to_string(),
+            rating: Some(3),
+            frame_pair: 3,
+            jpeg_metadata: None,
+            raw_xmp: None,
+            matched_rule_ids: vec!["rule-1".to_string()],
+            matched_rule_names: vec!["测试规则".to_string()],
+            terminal_action: Some(action),
+            status,
+            members: Vec::new(),
+            missing_kinds: Vec::new(),
+            sync_actions: Vec::new(),
+            issues: Vec::new(),
+        }
+    }
+
+    fn plan(root: &Path) -> OperationPlan {
+        OperationPlan {
+            summary: summarize(
+                "plan-1".to_string(),
+                display_path(root),
+                vec![
+                    item("copy", RuleAction::Copy, OperationPlanStatus::Ready),
+                    item("move", RuleAction::Move, OperationPlanStatus::Ready),
+                    item("cleanup", RuleAction::Cleanup, OperationPlanStatus::Ready),
+                    item("conflict", RuleAction::Copy, OperationPlanStatus::Conflict),
+                ],
+            ),
+            rules: Vec::new(),
+            sync: OperationSyncPreference::default(),
+        }
+    }
+
+    fn selection(root: &Path, groups: &[&str]) -> ExecutionSelection {
+        ExecutionSelection {
+            plan_id: "plan-1".to_string(),
+            root: display_path(root),
+            group_ids: groups.iter().map(|group| (*group).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn execution_selection_is_authorized_once() {
+        let directory = tempdir().expect("tempdir");
+        let root = fs::canonicalize(directory.path()).expect("canonical root");
+        let store = OperationPlanStore::default();
+        store.replace(plan(&root)).expect("store plan");
+
+        let authorized = store
+            .take_for_execution(&selection(&root, &["copy", "move"]))
+            .expect("authorized selection");
+
+        assert_eq!(authorized.summary.plan_id, "plan-1");
+        assert_eq!(authorized.items.len(), 2);
+        assert_eq!(authorized.items[0].group_id, "copy");
+        assert!(store.current_summary().expect("summary").is_none());
+        assert!(
+            store
+                .take_for_execution(&selection(&root, &["copy"]))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn execution_rejects_invalid_groups_without_consuming_the_plan() {
+        let directory = tempdir().expect("tempdir");
+        let root = fs::canonicalize(directory.path()).expect("canonical root");
+        for groups in [
+            vec!["copy", "copy"],
+            vec!["cleanup"],
+            vec!["conflict"],
+            vec!["missing"],
+        ] {
+            let store = OperationPlanStore::default();
+            store.replace(plan(&root)).expect("store plan");
+            assert!(
+                store
+                    .take_for_execution(&selection(&root, &groups))
+                    .is_err()
+            );
+            assert!(store.current_summary().expect("summary").is_some());
+        }
+    }
+
+    #[test]
+    fn execution_rejects_a_changed_root_without_consuming_the_plan() {
+        let source = tempdir().expect("source");
+        let other = tempdir().expect("other");
+        let root = fs::canonicalize(source.path()).expect("canonical source");
+        let other_root = fs::canonicalize(other.path()).expect("canonical other");
+        let store = OperationPlanStore::default();
+        store.replace(plan(&root)).expect("store plan");
+
+        assert!(
+            store
+                .take_for_execution(&selection(&other_root, &["copy"]))
+                .is_err()
+        );
+        assert!(store.current_summary().expect("summary").is_some());
+    }
 }
