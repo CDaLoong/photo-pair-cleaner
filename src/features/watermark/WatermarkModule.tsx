@@ -1,20 +1,26 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpen, Stamp } from "lucide-react";
+import { FolderOpen, Images, LayoutTemplate } from "lucide-react";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { errorMessage } from "../../utils";
+import { errorMessage, storedBooleanPreference } from "../../utils";
 import {
   loadPhotoPreviewUrl,
+  peekPhotoPreviewUrl,
   preloadPreviewRequests,
+  type PreloadProgress,
   type PreviewRequest,
 } from "../preview/previewCache";
 import { WatermarkCanvas } from "./WatermarkCanvas";
+import { WatermarkFilmstrip } from "./WatermarkFilmstrip";
+import { WatermarkHeader } from "./WatermarkHeader";
+import { WatermarkInspector } from "./WatermarkInspector";
 import {
   createWatermarkEditorState,
   watermarkEditorReducer,
 } from "./watermarkEditorState";
 import type { WatermarkUnsavedWork } from "./WatermarkLeaveDialog";
 import { WatermarkSourcePanel } from "./WatermarkSourcePanel";
+import { WatermarkTemplatePanel } from "./WatermarkTemplatePanel";
 import type {
   WatermarkRenderRequest,
   WatermarkSourcePhoto,
@@ -36,12 +42,33 @@ import "./watermark.css";
 const WATERMARK_PREVIEW_EDGE = 1400;
 const SOURCE_THUMBNAIL_EDGE = 220;
 const SOURCE_PRELOAD_CONCURRENCY = 4;
+const LEFT_PANEL_STORAGE_KEY = "framepair.watermark.left-panel-collapsed.v1";
+const RIGHT_PANEL_STORAGE_KEY = "framepair.watermark.right-panel-collapsed.v1";
+const EMPTY_PRELOAD_PROGRESS: PreloadProgress = { total: 0, completed: 0, failed: 0 };
+
+function storedPanelPreference(key: string): boolean {
+  try {
+    return storedBooleanPreference(localStorage.getItem(key));
+  } catch {
+    return false;
+  }
+}
+
+function persistPanelPreference(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // The current layout remains usable if preferences cannot be stored.
+  }
+}
 
 interface WatermarkModuleProps {
   active: boolean;
   transfer: WatermarkTransferDraft | null;
   discardToken: number;
   onUnsavedWorkChange: (work: WatermarkUnsavedWork) => void;
+  immersive: boolean;
+  onImmersiveChange: (immersive: boolean) => void;
 }
 
 export function WatermarkModule({
@@ -49,6 +76,8 @@ export function WatermarkModule({
   transfer,
   discardToken,
   onUnsavedWorkChange,
+  immersive,
+  onImmersiveChange,
 }: WatermarkModuleProps) {
   const initialTemplate = useMemo(
     () => createDefaultWatermarkTemplate("framepair-clean", "简洁白边"),
@@ -67,15 +96,47 @@ export function WatermarkModule({
   const [preview, setPreview] = useState<WatermarkPreviewResult | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [originalUrl, setOriginalUrl] = useState<string | null>(null);
+  const [compareOriginal, setCompareOriginal] = useState(false);
+  const [preloadProgress, setPreloadProgress] = useState<PreloadProgress>(EMPTY_PRELOAD_PROGRESS);
+  const [leftTab, setLeftTab] = useState<"photos" | "templates">("photos");
+  const [leftCollapsed, setLeftCollapsed] = useState(() => storedPanelPreference(LEFT_PANEL_STORAGE_KEY));
+  const [rightCollapsed, setRightCollapsed] = useState(() => storedPanelPreference(RIGHT_PANEL_STORAGE_KEY));
   const busyRef = useRef(false);
   const processedTransferId = useRef<string | null>(null);
   const previousPreviewPhotoId = useRef<string | null>(null);
   const handledDiscardToken = useRef(discardToken);
+  const immersiveRestoreRef = useRef({ left: leftCollapsed, right: rightCollapsed });
+  const wasImmersiveRef = useRef(immersive);
   const previewCacheRef = useRef<WatermarkPreviewCache | null>(null);
   if (!previewCacheRef.current) {
     previewCacheRef.current = new WatermarkPreviewCache((url) => URL.revokeObjectURL(url));
   }
   const template = editor.present.template;
+
+  useEffect(() => {
+    if (wasImmersiveRef.current && !immersive) {
+      setLeftCollapsed(immersiveRestoreRef.current.left);
+      setRightCollapsed(immersiveRestoreRef.current.right);
+    }
+    wasImmersiveRef.current = immersive;
+  }, [immersive]);
+
+  useEffect(() => {
+    const leftQuery = window.matchMedia("(max-width: 999px)");
+    const rightQuery = window.matchMedia("(max-width: 880px)");
+    const syncResponsivePanels = () => {
+      setLeftCollapsed(leftQuery.matches ? true : storedPanelPreference(LEFT_PANEL_STORAGE_KEY));
+      setRightCollapsed(rightQuery.matches ? true : storedPanelPreference(RIGHT_PANEL_STORAGE_KEY));
+    };
+    syncResponsivePanels();
+    leftQuery.addEventListener("change", syncResponsivePanels);
+    rightQuery.addEventListener("change", syncResponsivePanels);
+    return () => {
+      leftQuery.removeEventListener("change", syncResponsivePanels);
+      rightQuery.removeEventListener("change", syncResponsivePanels);
+    };
+  }, []);
 
   async function prepare(origin: WatermarkSourceOrigin, inputs: WatermarkSourceInput[]) {
     if (busyRef.current || inputs.length === 0) return;
@@ -164,9 +225,13 @@ export function WatermarkModule({
     setSelectedPhotoId(null);
     setPreview(null);
     setPreviewError(null);
+    setOriginalUrl(null);
+    setCompareOriginal(false);
+    setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
     setError(null);
+    onImmersiveChange(false);
     dispatchEditor({ type: "resetEditor", template: initialTemplate });
-  }, [discardToken, initialTemplate]);
+  }, [discardToken, initialTemplate, onImmersiveChange]);
 
   useEffect(() => {
     previewCacheRef.current?.clear();
@@ -176,7 +241,10 @@ export function WatermarkModule({
   }, [snapshot?.id]);
 
   useEffect(() => {
-    if (!snapshot || snapshot.photos.length === 0) return;
+    if (!snapshot || snapshot.photos.length === 0) {
+      setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
+      return;
+    }
     const controller = new AbortController();
     const requests: PreviewRequest[] = snapshot.photos.map((photo) => ({
       root: photo.root,
@@ -187,6 +255,7 @@ export function WatermarkModule({
     void preloadPreviewRequests(requests, loadPhotoPreviewUrl, {
       concurrency: SOURCE_PRELOAD_CONCURRENCY,
       signal: controller.signal,
+      onProgress: setPreloadProgress,
     });
     return () => controller.abort();
   }, [snapshot]);
@@ -201,6 +270,25 @@ export function WatermarkModule({
     if (!selectedPhoto) return;
     dispatchEditor({ type: "setActiveOrientation", orientation: selectedPhoto.orientation });
   }, [selectedPhoto]);
+
+  useEffect(() => {
+    if (!selectedPhoto || !snapshot) {
+      setOriginalUrl(null);
+      return;
+    }
+    const request: PreviewRequest = {
+      root: selectedPhoto.root,
+      relativePath: selectedPhoto.relativePath,
+      maxEdge: WATERMARK_PREVIEW_EDGE,
+      version: `${snapshot.id}:${selectedPhoto.sizeBytes}:${selectedPhoto.modifiedMs}`,
+    };
+    let disposed = false;
+    setOriginalUrl(peekPhotoPreviewUrl(request));
+    void loadPhotoPreviewUrl(request)
+      .then((url) => { if (!disposed) setOriginalUrl(url); })
+      .catch(() => { if (!disposed) setOriginalUrl(null); });
+    return () => { disposed = true; };
+  }, [selectedPhoto, snapshot]);
 
   function requestFor(photo: WatermarkSourcePhoto): WatermarkRenderRequest {
     return {
@@ -290,6 +378,33 @@ export function WatermarkModule({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [active, selectedIndex, snapshot]);
 
+  function toggleStoredPanel(side: "left" | "right") {
+    if (side === "left") {
+      setLeftCollapsed((current) => {
+        const next = !current;
+        persistPanelPreference(LEFT_PANEL_STORAGE_KEY, next);
+        return next;
+      });
+    } else {
+      setRightCollapsed((current) => {
+        const next = !current;
+        persistPanelPreference(RIGHT_PANEL_STORAGE_KEY, next);
+        return next;
+      });
+    }
+  }
+
+  function toggleImmersive() {
+    if (!immersive) {
+      immersiveRestoreRef.current = { left: leftCollapsed, right: rightCollapsed };
+      setLeftCollapsed(true);
+      setRightCollapsed(true);
+      onImmersiveChange(true);
+      return;
+    }
+    onImmersiveChange(false);
+  }
+
   async function chooseDirectory() {
     try {
       const selected = await open({
@@ -305,43 +420,96 @@ export function WatermarkModule({
     }
   }
 
+  const previewWarnings = useMemo(() => new Set(
+    selectedPhotoId && (previewError || preview?.warnings.length) ? [selectedPhotoId] : [],
+  ), [preview?.warnings.length, previewError, selectedPhotoId]);
+  const workspaceClass = [
+    "watermark-studio",
+    leftCollapsed ? "is-left-collapsed" : "",
+    rightCollapsed ? "is-right-collapsed" : "",
+    immersive ? "is-immersive" : "",
+  ].filter(Boolean).join(" ");
+
   return (
     <section className={dropActive ? "watermark-module is-drop-target" : "watermark-module"} aria-label="水印导出">
-      <header className="watermark-header">
-        <div className="module-heading">
-          <Stamp aria-hidden="true" size={20} />
-          <div><strong>水印导出</strong><span>边框、署名与发布副本</span></div>
-        </div>
-        <div className="watermark-header-state">
-          {snapshot ? <span>{snapshot.photos.length} 张 JPG/JPEG</span> : <span>尚未添加照片</span>}
-          <button className="secondary-command" type="button" onClick={() => void chooseDirectory()} disabled={busy}>
-            <FolderOpen aria-hidden="true" size={17} />选择目录
-          </button>
-        </div>
-      </header>
+      <WatermarkHeader
+        photoCount={snapshot?.photos.length ?? 0}
+        templateName={template.name}
+        orientation={editor.activeOrientation}
+        busy={busy}
+        canUndo={editor.past.length > 0}
+        canRedo={editor.future.length > 0}
+        compareOriginal={compareOriginal}
+        compareAvailable={Boolean(originalUrl)}
+        leftCollapsed={leftCollapsed}
+        rightCollapsed={rightCollapsed}
+        immersive={immersive}
+        workspaceReady={Boolean(snapshot?.photos.length)}
+        onChooseDirectory={() => void chooseDirectory()}
+        onUndo={() => dispatchEditor({ type: "undo" })}
+        onRedo={() => dispatchEditor({ type: "redo" })}
+        onCompare={() => setCompareOriginal((current) => !current)}
+        onToggleLeft={() => toggleStoredPanel("left")}
+        onToggleRight={() => toggleStoredPanel("right")}
+        onToggleImmersive={toggleImmersive}
+      />
       {busy ? <div className="activity-line" aria-hidden="true"><span /></div> : null}
       {snapshot && snapshot.photos.length > 0 ? (
-        <div className="watermark-live-workspace">
-          <WatermarkSourcePanel
-            snapshot={snapshot}
-            busy={busy}
-            error={error}
+        <section className={workspaceClass}>
+          <div className="watermark-workspace">
+            <aside className="watermark-left-panel" data-watermark-tour="sources-templates" aria-label="照片与模板">
+              <div className="watermark-left-tabs" role="tablist" aria-label="照片和模板">
+                <button type="button" role="tab" aria-selected={leftTab === "photos"} onClick={() => setLeftTab("photos")}><Images aria-hidden="true" size={15} />照片</button>
+                <button type="button" role="tab" aria-selected={leftTab === "templates"} onClick={() => setLeftTab("templates")}><LayoutTemplate aria-hidden="true" size={15} />模板</button>
+              </div>
+              {leftTab === "photos" ? (
+                <WatermarkSourcePanel
+                  snapshot={snapshot}
+                  busy={busy}
+                  error={error}
+                  selectedPhotoId={selectedPhotoId}
+                  onChooseDirectory={() => void chooseDirectory()}
+                  onDismissError={() => setError(null)}
+                  onSelectPhoto={setSelectedPhotoId}
+                />
+              ) : <WatermarkTemplatePanel template={template} orientation={editor.activeOrientation} />}
+            </aside>
+            <main className="watermark-stage" data-watermark-tour="canvas">
+              <WatermarkCanvas
+                photo={selectedPhoto}
+                preview={preview}
+                loading={previewBusy}
+                error={previewError}
+                originalUrl={originalUrl}
+                compareOriginal={compareOriginal}
+                position={selectedIndex + 1}
+                total={snapshot.photos.length}
+                onPrevious={() => selectAt(selectedIndex - 1)}
+                onNext={() => selectAt(selectedIndex + 1)}
+              />
+            </main>
+            <aside className="watermark-inspector-panel" data-watermark-tour="inspector">
+              <WatermarkInspector
+                template={template}
+                orientation={editor.activeOrientation}
+                activeLayerId={editor.activeLayerId}
+                onOrientationChange={(orientation) => dispatchEditor({ type: "setActiveOrientation", orientation })}
+                onSelectLayer={(layerId) => dispatchEditor({ type: "setActiveLayer", layerId })}
+                onSetLayerVisible={(layerId, visible) => dispatchEditor({ type: "setLayerVisible", layerId, visible })}
+                onSetLayerLocked={(layerId, locked) => dispatchEditor({ type: "setLayerLocked", layerId, locked })}
+              />
+            </aside>
+          </div>
+          <WatermarkFilmstrip
+            data-watermark-tour="filmstrip"
+            photos={snapshot.photos}
+            snapshotId={snapshot.id}
             selectedPhotoId={selectedPhotoId}
-            onChooseDirectory={() => void chooseDirectory()}
-            onDismissError={() => setError(null)}
+            preloadProgress={preloadProgress}
+            warningPhotoIds={previewWarnings}
             onSelectPhoto={setSelectedPhotoId}
           />
-          <WatermarkCanvas
-            photo={selectedPhoto}
-            preview={preview}
-            loading={previewBusy}
-            error={previewError}
-            position={selectedIndex + 1}
-            total={snapshot.photos.length}
-            onPrevious={() => selectAt(selectedIndex - 1)}
-            onNext={() => selectAt(selectedIndex + 1)}
-          />
-        </div>
+        </section>
       ) : (
         <WatermarkSourcePanel
           snapshot={snapshot}

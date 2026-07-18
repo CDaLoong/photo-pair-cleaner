@@ -21,6 +21,7 @@ function App() {
   });
   const [pendingDestination, setPendingDestination] = useState<AppModule | "close" | null>(null);
   const [watermarkDiscardToken, setWatermarkDiscardToken] = useState(0);
+  const [watermarkImmersive, setWatermarkImmersive] = useState(false);
   const closeBypass = useRef(false);
   const hasUnsavedWatermark = watermarkUnsaved.dirtyTemplate || watermarkUnsaved.unexportedChanges;
 
@@ -55,6 +56,7 @@ function App() {
       setPendingDestination(module);
       return;
     }
+    if (activeModule === "watermark") setWatermarkImmersive(false);
     setActiveModule(module);
   }
 
@@ -64,6 +66,7 @@ function App() {
     setPendingDestination(null);
     setWatermarkDiscardToken((current) => current + 1);
     setWatermarkUnsaved({ dirtyTemplate: false, unexportedChanges: false });
+    setWatermarkImmersive(false);
     if (destination === "close") {
       closeBypass.current = true;
       void import("@tauri-apps/api/window")
@@ -80,7 +83,7 @@ function App() {
   }
 
   return (
-    <AppShell activeModule={activeModule} onModuleChange={requestModuleChange}>
+    <AppShell activeModule={activeModule} onModuleChange={requestModuleChange} immersive={activeModule === "watermark" && watermarkImmersive}>
       <div className="module-panel" hidden={activeModule !== "preview"}>
         <PreviewModule active={activeModule === "preview"} onSendToWatermark={sendToWatermark} />
       </div>
@@ -93,6 +96,8 @@ function App() {
           transfer={watermarkTransfer}
           discardToken={watermarkDiscardToken}
           onUnsavedWorkChange={setWatermarkUnsaved}
+          immersive={watermarkImmersive}
+          onImmersiveChange={setWatermarkImmersive}
         />
       </div>
       <WatermarkLeaveDialog

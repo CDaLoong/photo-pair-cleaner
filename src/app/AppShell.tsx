@@ -7,7 +7,7 @@ import {
   ShieldCheck,
   Stamp,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { storedBooleanPreference } from "../utils";
 
@@ -16,6 +16,7 @@ export type AppModule = "preview" | "cleanup" | "watermark";
 interface AppShellProps {
   activeModule: AppModule;
   onModuleChange: (module: AppModule) => void;
+  immersive: boolean;
   children: ReactNode;
 }
 
@@ -27,7 +28,7 @@ const MODULES = [
 
 const MODULE_SIDEBAR_STORAGE_KEY = "framepair.layout.module-sidebar-collapsed.v1";
 
-export function AppShell({ activeModule, onModuleChange, children }: AppShellProps) {
+export function AppShell({ activeModule, onModuleChange, immersive, children }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return storedBooleanPreference(localStorage.getItem(MODULE_SIDEBAR_STORAGE_KEY));
@@ -35,6 +36,15 @@ export function AppShell({ activeModule, onModuleChange, children }: AppShellPro
       return false;
     }
   });
+  const [responsiveCollapsed, setResponsiveCollapsed] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 760px)");
+    const sync = () => setResponsiveCollapsed(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
 
   function toggleSidebar() {
     setSidebarCollapsed((current) => {
@@ -48,9 +58,11 @@ export function AppShell({ activeModule, onModuleChange, children }: AppShellPro
     });
   }
 
+  const effectiveCollapsed = sidebarCollapsed || responsiveCollapsed || immersive;
+
   return (
-    <div className={sidebarCollapsed ? "app-shell is-module-sidebar-collapsed" : "app-shell"}>
-      <aside className={sidebarCollapsed ? "module-sidebar is-collapsed" : "module-sidebar"} aria-label="功能模块侧边栏">
+    <div className={`app-shell${effectiveCollapsed ? " is-module-sidebar-collapsed" : ""}${immersive ? " is-immersive" : ""}`}>
+      <aside className={effectiveCollapsed ? "module-sidebar is-collapsed" : "module-sidebar"} aria-label="功能模块侧边栏" aria-hidden={immersive || undefined}>
         <div className="sidebar-brand">
           <Aperture aria-hidden="true" size={24} strokeWidth={2.25} />
           <span><strong>FramePair</strong><small>本地摄影工作台</small></span>
@@ -58,12 +70,12 @@ export function AppShell({ activeModule, onModuleChange, children }: AppShellPro
             className="sidebar-collapse-control"
             type="button"
             onClick={toggleSidebar}
-            aria-label={sidebarCollapsed ? "展开功能模块侧边栏" : "收起功能模块侧边栏"}
-            aria-expanded={!sidebarCollapsed}
+            aria-label={effectiveCollapsed ? "展开功能模块侧边栏" : "收起功能模块侧边栏"}
+            aria-expanded={!effectiveCollapsed}
             aria-controls="module-navigation"
-            title={sidebarCollapsed ? "展开功能栏" : "收起功能栏"}
+            title={effectiveCollapsed ? "展开功能栏" : "收起功能栏"}
           >
-            {sidebarCollapsed
+            {effectiveCollapsed
               ? <PanelLeftOpen aria-hidden="true" size={17} />
               : <PanelLeftClose aria-hidden="true" size={17} />}
           </button>

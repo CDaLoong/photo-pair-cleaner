@@ -65,3 +65,57 @@ test("watermark work cannot be abandoned without explicit confirmation", () => {
   assert.match(dialogSource, /尚未导出/);
   assert.match(dialogSource, /放弃更改/);
 });
+
+test("watermark studio composes the approved three-pane workspace", () => {
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const component of [
+    "WatermarkHeader",
+    "WatermarkTemplatePanel",
+    "WatermarkInspector",
+    "WatermarkFilmstrip",
+  ]) {
+    assert.match(moduleSource, new RegExp(`<${component}`));
+  }
+  assert.match(moduleSource, /data-watermark-tour="sources-templates"/);
+  assert.match(moduleSource, /data-watermark-tour="canvas"/);
+  assert.match(moduleSource, /data-watermark-tour="inspector"/);
+  assert.match(moduleSource, /data-watermark-tour="filmstrip"/);
+});
+
+test("watermark studio persists collapsible panels and restores immersive state", () => {
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  const shellSource = fs.readFileSync(new URL("../src/app/AppShell.tsx", import.meta.url), "utf8");
+  assert.match(moduleSource, /framepair\.watermark\.left-panel-collapsed\.v1/);
+  assert.match(moduleSource, /framepair\.watermark\.right-panel-collapsed\.v1/);
+  assert.match(moduleSource, /immersiveRestoreRef/);
+  assert.match(shellSource, /is-immersive/);
+});
+
+test("watermark filmstrip follows keyboard selection and reports orientation", () => {
+  const filmstripSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkFilmstrip.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(filmstripSource, /filmstripScrollTarget/);
+  assert.match(filmstripSource, /ArrowLeft/);
+  assert.match(filmstripSource, /ArrowRight/);
+  assert.match(filmstripSource, /Home/);
+  assert.match(filmstripSource, /End/);
+  assert.match(filmstripSource, /orientation/);
+});
+
+test("watermark header icon commands have accessible Chinese names", () => {
+  const headerSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkHeader.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const label of ["撤销", "重做", "对比原图", "收起照片与模板", "收起属性面板", "进入沉浸模式"]) {
+    assert.match(headerSource, new RegExp(`aria-label=.*${label}`));
+  }
+});

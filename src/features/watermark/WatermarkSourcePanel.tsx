@@ -91,7 +91,7 @@ function SourceTree({ nodes, depth = 0 }: { nodes: SourceDirectoryNode[]; depth?
   );
 }
 
-function SourceThumbnail({ photo, snapshotId }: { photo: WatermarkSourcePhoto; snapshotId: string }) {
+export function WatermarkPhotoThumbnail({ photo, snapshotId }: { photo: WatermarkSourcePhoto; snapshotId: string }) {
   const request = useMemo<PreviewRequest>(() => ({
     root: photo.root,
     relativePath: photo.relativePath,
@@ -138,7 +138,7 @@ export function WatermarkSourcePanel({
   }, [selectedPhotoId]);
 
   return (
-    <main className="watermark-source-workspace">
+    <section className="watermark-source-workspace">
       {error ? (
         <div className="watermark-source-notice" role="alert">
           <TriangleAlert aria-hidden="true" size={18} />
@@ -179,7 +179,7 @@ export function WatermarkSourcePanel({
                   onClick={() => onSelectPhoto(photo.id)}
                   aria-pressed={selectedPhotoId === photo.id}
                 >
-                  <SourceThumbnail photo={photo} snapshotId={snapshot.id} />
+                  <WatermarkPhotoThumbnail photo={photo} snapshotId={snapshot.id} />
                   <div>
                     <strong>{photo.fileName}</strong>
                     <small>{index + 1} · {photo.pixelWidth} x {photo.pixelHeight}</small>
@@ -205,6 +205,6 @@ export function WatermarkSourcePanel({
           {snapshot.skippedUnsupported > 0 ? <span>已跳过 {snapshot.skippedUnsupported} 个不支持的文件</span> : null}
         </footer>
       ) : null}
-    </main>
+    </section>
   );
 }

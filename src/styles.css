@@ -73,11 +73,6 @@ body,
   overflow: hidden;
 }
 
-body {
-  min-width: 760px;
-  min-height: 580px;
-}
-
 button,
 input {
   font: inherit;
@@ -135,6 +130,16 @@ input:disabled {
 
 .app-shell.is-module-sidebar-collapsed {
   grid-template-columns: 56px minmax(0, 1fr);
+}
+
+.app-shell.is-immersive {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.app-shell.is-immersive > .module-sidebar {
+  overflow: hidden;
+  visibility: hidden;
+  border-right: 0;
 }
 
 .module-sidebar {

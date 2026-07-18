@@ -14,6 +14,8 @@ interface WatermarkCanvasProps {
   preview: WatermarkPreviewResult | null;
   loading: boolean;
   error: string | null;
+  originalUrl: string | null;
+  compareOriginal: boolean;
   position: number;
   total: number;
   onPrevious: () => void;
@@ -25,6 +27,8 @@ export function WatermarkCanvas({
   preview,
   loading,
   error,
+  originalUrl,
+  compareOriginal,
   position,
   total,
   onPrevious,
@@ -32,6 +36,7 @@ export function WatermarkCanvas({
 }: WatermarkCanvasProps) {
   const canGoPrevious = position > 1;
   const canGoNext = position > 0 && position < total;
+  const showingOriginal = compareOriginal && originalUrl;
   return (
     <section className="watermark-canvas-panel" aria-label="水印效果预览">
       <header className="watermark-canvas-toolbar">
@@ -54,7 +59,13 @@ export function WatermarkCanvas({
       </header>
 
       <div className="watermark-canvas-viewport">
-        {preview ? (
+        {showingOriginal ? (
+          <img
+            src={originalUrl}
+            alt={photo ? `${photo.fileName} 的原图预览` : "原图预览"}
+            draggable={false}
+          />
+        ) : preview ? (
           <img
             src={preview.url}
             alt={photo ? `${photo.fileName} 的水印预览` : "水印预览"}
@@ -83,7 +94,11 @@ export function WatermarkCanvas({
         ) : null}
       </div>
 
-      {error && preview ? (
+      {showingOriginal ? (
+        <footer className="watermark-canvas-ready">
+          <ShieldCheck aria-hidden="true" size={14} />正在对比只读原图
+        </footer>
+      ) : error && preview ? (
         <footer className="watermark-canvas-warning" role="alert">
           <TriangleAlert aria-hidden="true" size={14} />
           <span>{error}</span>
