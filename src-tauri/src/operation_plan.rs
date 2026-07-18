@@ -1,7 +1,5 @@
 use crate::photo_groups::{PhotoIndex, PhotoMemberKind};
-use crate::rating_rules::{
-    RatingRule, RuleAction, RuleMemberKind, validate_rule_set,
-};
+use crate::rating_rules::{RatingRule, RuleAction, RuleMemberKind, validate_rule_set};
 use crate::rating_sync::{
     RatingConflictPolicy, RatingResolution, RatingSyncTarget, RatingSyncTargets, resolve_rating,
 };
@@ -175,16 +173,17 @@ fn validate_request(
     if rules.is_empty() {
         return Err("请至少创建一条评分规则".to_string());
     }
-    let root = fs::canonicalize(&request.root)
-        .map_err(|error| format!("照片目录不可访问：{error}"))?;
-    let index_root = fs::canonicalize(&index.root)
-        .map_err(|error| format!("照片索引目录不可访问：{error}"))?;
+    let root =
+        fs::canonicalize(&request.root).map_err(|error| format!("照片目录不可访问：{error}"))?;
+    let index_root =
+        fs::canonicalize(&index.root).map_err(|error| format!("照片索引目录不可访问：{error}"))?;
     if root != index_root {
         return Err("评分整理目录与照片索引不一致".to_string());
     }
-    for rule in rules.iter_mut().filter(|rule| {
-        rule.enabled && matches!(rule.action, RuleAction::Copy | RuleAction::Move)
-    }) {
+    for rule in rules
+        .iter_mut()
+        .filter(|rule| rule.enabled && matches!(rule.action, RuleAction::Copy | RuleAction::Move))
+    {
         let destination = rule.destination.as_deref().unwrap_or_default();
         let metadata = fs::symlink_metadata(destination)
             .map_err(|error| format!("规则“{}”的目标目录不可访问：{error}", rule.name))?;
@@ -285,7 +284,10 @@ fn target_path_issue(destination: &Path, target: &Path) -> Option<String> {
         current.push(component.as_os_str());
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                return Some(format!("目标父目录不是可信文件夹：{}", display_path(&current)));
+                return Some(format!(
+                    "目标父目录不是可信文件夹：{}",
+                    display_path(&current)
+                ));
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
@@ -337,10 +339,7 @@ fn sync_location(
 ) -> Option<(PathBuf, SyncTiming)> {
     match rule.action {
         RuleAction::Cleanup if !sync_cleanup_before => None,
-        RuleAction::Cleanup => Some((
-            root.join(source_relative_path),
-            SyncTiming::BeforeCleanup,
-        )),
+        RuleAction::Cleanup => Some((root.join(source_relative_path), SyncTiming::BeforeCleanup)),
         RuleAction::Copy | RuleAction::Move => members
             .iter()
             .find(|member| member.kind == kind)
@@ -450,11 +449,12 @@ fn mark_duplicate_targets(items: &mut [OperationPlanItem]) {
         if item.status == OperationPlanStatus::Conflict {
             continue;
         }
-        for target in item.members.iter().filter_map(|member| member.target_path.as_ref()) {
-            owners
-                .entry(target.to_lowercase())
-                .or_default()
-                .push(index);
+        for target in item
+            .members
+            .iter()
+            .filter_map(|member| member.target_path.as_ref())
+        {
+            owners.entry(target.to_lowercase()).or_default().push(index);
         }
     }
     for indexes in owners.values().filter(|indexes| indexes.len() > 1) {
@@ -512,7 +512,9 @@ fn summarize(plan_id: String, root: String, items: Vec<OperationPlanItem>) -> Op
                 item.status == OperationPlanStatus::Ready && item.terminal_action == Some(action)
             })
             .flat_map(|item| &item.members)
-            .fold(0_u64, |total, member| total.saturating_add(member.size_bytes))
+            .fold(0_u64, |total, member| {
+                total.saturating_add(member.size_bytes)
+            })
     };
     OperationPlanSummary {
         plan_id,
@@ -569,7 +571,10 @@ pub(crate) fn build_operation_plan(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let matched_rule_ids = matches.iter().map(|rule| rule.id.clone()).collect::<Vec<_>>();
+        let matched_rule_ids = matches
+            .iter()
+            .map(|rule| rule.id.clone())
+            .collect::<Vec<_>>();
         let matched_rule_names = matches
             .iter()
             .map(|rule| rule.name.clone())
@@ -634,13 +639,7 @@ pub(crate) fn build_operation_plan(
                 } else {
                     OperationPlanStatus::Ready
                 };
-                (
-                    Some(rule.action),
-                    status,
-                    members,
-                    missing,
-                    sync_actions,
-                )
+                (Some(rule.action), status, members, missing, sync_actions)
             }
         };
 

@@ -62,7 +62,11 @@ fn destination_rule(
             minimum: 0,
             maximum: 5,
         },
-        vec![RuleMemberKind::Jpeg, RuleMemberKind::Raw, RuleMemberKind::Xmp],
+        vec![
+            RuleMemberKind::Jpeg,
+            RuleMemberKind::Raw,
+            RuleMemberKind::Xmp,
+        ],
         action,
     );
     output.destination = Some(destination.to_string_lossy().into_owned());
@@ -134,8 +138,8 @@ fn one_matching_rule_plans_the_existing_requested_members() {
         RuleAction::Cleanup,
     );
 
-    let plan = build_operation_plan(&index, &request(&root, vec![matching]), "plan-1".into())
-        .unwrap();
+    let plan =
+        build_operation_plan(&index, &request(&root, vec![matching]), "plan-1".into()).unwrap();
     let item = &plan.summary().items[0];
     assert_eq!(item.status, OperationPlanStatus::Ready);
     assert_eq!(item.rating, Some(4));
@@ -183,7 +187,11 @@ fn missing_requested_kinds_are_reported_while_existing_members_remain_planned() 
     let cleanup = rule(
         "mixed",
         RatingCondition::AtMost { rating: 2 },
-        vec![RuleMemberKind::Jpeg, RuleMemberKind::Raw, RuleMemberKind::Xmp],
+        vec![
+            RuleMemberKind::Jpeg,
+            RuleMemberKind::Raw,
+            RuleMemberKind::Xmp,
+        ],
         RuleAction::Cleanup,
     );
 
@@ -253,10 +261,11 @@ fn rating_source_conflicts_block_rule_evaluation_under_the_default_policy() {
     let item = &plan.summary().items[0];
     assert_eq!(item.status, OperationPlanStatus::Conflict);
     assert_eq!(item.rating, None);
-    assert!(item
-        .issues
-        .iter()
-        .any(|issue| issue.contains("评分来源不一致")));
+    assert!(
+        item.issues
+            .iter()
+            .any(|issue| issue.contains("评分来源不一致"))
+    );
 }
 
 #[test]
@@ -298,11 +307,13 @@ fn copy_targets_preserve_relative_paths_or_flatten_by_explicit_rule() {
         "preserve".into(),
     )
     .unwrap();
-    assert!(preserved.summary().items[0].members[0]
-        .target_path
-        .as_deref()
-        .unwrap()
-        .ends_with("archive/day/A.NEF"));
+    assert!(
+        preserved.summary().items[0].members[0]
+            .target_path
+            .as_deref()
+            .unwrap()
+            .ends_with("archive/day/A.NEF")
+    );
 
     let flattened = build_operation_plan(
         &index,
@@ -313,12 +324,17 @@ fn copy_targets_preserve_relative_paths_or_flatten_by_explicit_rule() {
         "flat".into(),
     )
     .unwrap();
-    assert!(flattened.summary().items[0].members[0]
-        .target_path
-        .as_deref()
-        .unwrap()
-        .ends_with("archive/A.NEF"));
-    assert!(relative_entries(&target).is_empty(), "planning must not write targets");
+    assert!(
+        flattened.summary().items[0].members[0]
+            .target_path
+            .as_deref()
+            .unwrap()
+            .ends_with("archive/A.NEF")
+    );
+    assert!(
+        relative_entries(&target).is_empty(),
+        "planning must not write targets"
+    );
 }
 
 #[test]
@@ -372,10 +388,12 @@ fn occupied_and_flattened_duplicate_targets_block_every_affected_group() {
     )
     .unwrap();
     assert_eq!(plan.summary().conflicts, 3);
-    assert!(plan.summary().items.iter().all(|item| item
-        .issues
-        .iter()
-        .any(|issue| issue.contains("目标路径"))));
+    assert!(
+        plan.summary()
+            .items
+            .iter()
+            .all(|item| item.issues.iter().any(|issue| issue.contains("目标路径")))
+    );
     assert_eq!(relative_entries(&target), before);
 }
 
@@ -434,7 +452,10 @@ fn sync_preview_uses_source_destination_and_before_cleanup_timings() {
     move_request.sync.enabled = true;
     let move_plan = build_operation_plan(&index, &move_request, "sync-target".into()).unwrap();
     let destination_sync = &move_plan.summary().items[0].sync_actions[0];
-    assert_eq!(destination_sync.timing, operation_plan::SyncTiming::Destination);
+    assert_eq!(
+        destination_sync.timing,
+        operation_plan::SyncTiming::Destination
+    );
     assert!(destination_sync.target_path.ends_with("archive/A.xmp"));
 
     let cleanup = rule(
@@ -481,16 +502,20 @@ fn jpeg_sync_preview_requires_confirmation_and_uses_the_jpeg_target() {
         sync_cleanup_before: false,
     };
 
-    assert!(build_operation_plan(&index, &plan_request, "unconfirmed".into())
-        .unwrap_err()
-        .contains("启用 JPG 元数据同步前必须明确确认"));
+    assert!(
+        build_operation_plan(&index, &plan_request, "unconfirmed".into())
+            .unwrap_err()
+            .contains("启用 JPG 元数据同步前必须明确确认")
+    );
     plan_request.sync.jpeg_write_confirmed = true;
     let plan = build_operation_plan(&index, &plan_request, "confirmed".into()).unwrap();
     assert_eq!(
         plan.summary().items[0].sync_actions[0].target,
         RatingSyncTarget::JpegMetadata
     );
-    assert!(plan.summary().items[0].sync_actions[0]
-        .target_path
-        .ends_with("photos/A.JPG"));
+    assert!(
+        plan.summary().items[0].sync_actions[0]
+            .target_path
+            .ends_with("photos/A.JPG")
+    );
 }

@@ -1102,6 +1102,94 @@ async fn execute_rating_sync_plan(
 }
 
 #[tauri::command]
+async fn get_rating_rules(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RatingStore>,
+) -> Result<rating_rules::RatingRuleState, String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分规则目录：{error}"))?
+        .join("rating-rules.json");
+    let access = Arc::clone(&state.access);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access.lock().map_err(|_| "无法锁定评分规则".to_string())?;
+        rating_rules::load_rules(&database_path)
+    })
+    .await
+    .map_err(|error| format!("读取评分规则任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn save_rating_rules(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RatingStore>,
+    rules: Vec<rating_rules::RatingRule>,
+) -> Result<rating_rules::RatingRuleState, String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分规则目录：{error}"))?
+        .join("rating-rules.json");
+    let access = Arc::clone(&state.access);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access.lock().map_err(|_| "无法锁定评分规则".to_string())?;
+        rating_rules::save_rules(&database_path, &rules)
+    })
+    .await
+    .map_err(|error| format!("保存评分规则任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn import_rating_rules(path: String) -> Result<rating_rules::RatingRuleState, String> {
+    tauri::async_runtime::spawn_blocking(move || rating_rules::import_rules(Path::new(&path)))
+        .await
+        .map_err(|error| format!("导入评分规则任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn export_rating_rules(
+    path: String,
+    rules: Vec<rating_rules::RatingRule>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        rating_rules::export_rules(Path::new(&path), &rules)
+    })
+    .await
+    .map_err(|error| format!("导出评分规则任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn generate_operation_plan(
+    app: tauri::AppHandle,
+    rating_state: tauri::State<'_, RatingStore>,
+    plan_state: tauri::State<'_, operation_plan::OperationPlanStore>,
+    request: operation_plan::OperationPlanRequest,
+) -> Result<operation_plan::OperationPlanSummary, String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定评分数据目录：{error}"))?
+        .join("photo-ratings.json");
+    let access = Arc::clone(&rating_state.access);
+    let plan_id = next_plan_id();
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = access
+            .lock()
+            .map_err(|_| "无法锁定评分整理计划".to_string())?;
+        let mut index = photo_groups::index_directory(Path::new(&request.root))?;
+        let ratings = ratings::load_ratings(&database_path, Path::new(&request.root))?;
+        photo_groups::apply_framepair_ratings(&mut index, &ratings);
+        operation_plan::build_operation_plan(&index, &request, plan_id)
+    })
+    .await
+    .map_err(|error| format!("评分整理计划任务异常结束：{error}"))??;
+    let summary = plan.summary().clone();
+    plan_state.replace(plan)?;
+    Ok(summary)
+}
+
+#[tauri::command]
 async fn list_external_editors() -> Result<Vec<editors::ExternalEditor>, String> {
     tauri::async_runtime::spawn_blocking(editors::discover_installed)
         .await
@@ -1174,6 +1262,7 @@ pub fn run() {
         .manage(ScanPlanStore::default())
         .manage(RatingStore::default())
         .manage(rating_sync::RatingSyncPlanStore::default())
+        .manage(operation_plan::OperationPlanStore::default())
         .invoke_handler(tauri::generate_handler![
             validate_directory_path,
             scan_pairs,
@@ -1189,6 +1278,11 @@ pub fn run() {
             save_rating_sync_settings,
             generate_rating_sync_plan,
             execute_rating_sync_plan,
+            get_rating_rules,
+            save_rating_rules,
+            import_rating_rules,
+            export_rating_rules,
+            generate_operation_plan,
             load_photo_thumbnail,
             list_external_editors,
             open_photo_in_editor,

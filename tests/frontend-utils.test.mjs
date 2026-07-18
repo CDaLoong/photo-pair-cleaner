@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import {
   PreviewUrlCache,
@@ -7,6 +8,21 @@ import {
 import * as previewUtils from "../src/features/preview/previewUtils.ts";
 import * as ratingSyncUtils from "../src/features/rating-sync/ratingSyncUtils.ts";
 import * as utils from "../src/utils.ts";
+
+test("phase three registers read-only rating rule commands without an executor", () => {
+  const source = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  for (const command of [
+    "get_rating_rules",
+    "save_rating_rules",
+    "import_rating_rules",
+    "export_rating_rules",
+    "generate_operation_plan",
+  ]) {
+    assert.match(source, new RegExp(`async fn ${command}\\b`));
+    assert.match(source, new RegExp(`\\n\\s*${command},?`));
+  }
+  assert.doesNotMatch(source, /execute_operation_plan/);
+});
 
 test("sidebar preferences collapse only when storage explicitly says true", () => {
   assert.equal(utils.storedBooleanPreference("true"), true);

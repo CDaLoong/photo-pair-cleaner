@@ -110,9 +110,7 @@ fn validate_rule(rule: &RatingRule) -> Result<(), String> {
         return Err("规则名称不能为空".to_string());
     }
     if rule.name.chars().count() > MAX_RULE_NAME_CHARS {
-        return Err(format!(
-            "规则名称不能超过 {MAX_RULE_NAME_CHARS} 个字符"
-        ));
+        return Err(format!("规则名称不能超过 {MAX_RULE_NAME_CHARS} 个字符"));
     }
     validate_condition(&rule.condition)?;
     if rule.member_scope.is_empty() {
@@ -125,12 +123,8 @@ fn validate_rule(rule: &RatingRule) -> Result<(), String> {
 
     let destination = rule.destination.as_deref().map(str::trim).unwrap_or("");
     match rule.action {
-        RuleAction::Copy if destination.is_empty() => {
-            Err("复制规则必须选择目标目录".to_string())
-        }
-        RuleAction::Move if destination.is_empty() => {
-            Err("移动规则必须选择目标目录".to_string())
-        }
+        RuleAction::Copy if destination.is_empty() => Err("复制规则必须选择目标目录".to_string()),
+        RuleAction::Move if destination.is_empty() => Err("移动规则必须选择目标目录".to_string()),
         RuleAction::Keep | RuleAction::Cleanup if !destination.is_empty() => {
             Err("保留和待清理规则不能设置目标目录".to_string())
         }
@@ -182,8 +176,8 @@ fn read_database(path: &Path) -> Result<RatingRuleDatabase, String> {
 }
 
 fn write_database(path: &Path, database: &RatingRuleDatabase, export: bool) -> Result<(), String> {
-    let bytes =
-        serde_json::to_vec_pretty(database).map_err(|error| format!("无法序列化评分规则：{error}"))?;
+    let bytes = serde_json::to_vec_pretty(database)
+        .map_err(|error| format!("无法序列化评分规则：{error}"))?;
     if bytes.len() as u64 > MAX_RULE_DATABASE_BYTES {
         return Err("评分规则超过 4 MiB 上限".to_string());
     }
