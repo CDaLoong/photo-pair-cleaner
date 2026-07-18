@@ -112,12 +112,20 @@ pub(crate) struct OperationPlan {
     pub(crate) sync: OperationSyncPreference,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CleanupExecutionDestination {
+    Quarantine,
+    Trash,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExecutionSelection {
     pub(crate) plan_id: String,
     pub(crate) root: String,
     pub(crate) group_ids: Vec<String>,
+    pub(crate) cleanup_destination: Option<CleanupExecutionDestination>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +134,7 @@ pub(crate) struct AuthorizedOperationPlan {
     pub(crate) items: Vec<OperationPlanItem>,
     pub(crate) rules: Vec<RatingRule>,
     pub(crate) sync: OperationSyncPreference,
+    pub(crate) cleanup_destination: Option<CleanupExecutionDestination>,
 }
 
 impl OperationPlan {
@@ -200,15 +209,25 @@ impl OperationPlanStore {
             if item.status != OperationPlanStatus::Ready
                 || !matches!(
                     item.terminal_action,
-                    Some(RuleAction::Copy | RuleAction::Move)
+                    Some(RuleAction::Copy | RuleAction::Move | RuleAction::Cleanup)
                 )
             {
                 return Err(format!(
-                    "照片组“{}”当前不可执行复制或移动",
+                    "照片组“{}”当前不可执行复制、移动或清理",
                     item.relative_stem
                 ));
             }
             items.push(item.clone());
+        }
+        let contains_cleanup = items
+            .iter()
+            .any(|item| item.terminal_action == Some(RuleAction::Cleanup));
+        if contains_cleanup != selection.cleanup_destination.is_some() {
+            return Err(if contains_cleanup {
+                "待清理照片组必须明确选择隔离区或系统回收站".to_string()
+            } else {
+                "当前选择不包含待清理照片组，不能设置清理目标".to_string()
+            });
         }
         let plan = current
             .take()
@@ -218,6 +237,7 @@ impl OperationPlanStore {
             items,
             rules: plan.rules,
             sync: plan.sync,
+            cleanup_destination: selection.cleanup_destination,
         })
     }
 }
@@ -792,11 +812,16 @@ mod tests {
         }
     }
 
-    fn selection(root: &Path, groups: &[&str]) -> ExecutionSelection {
+    fn selection(
+        root: &Path,
+        groups: &[&str],
+        cleanup_destination: Option<CleanupExecutionDestination>,
+    ) -> ExecutionSelection {
         ExecutionSelection {
             plan_id: "plan-1".to_string(),
             root: display_path(root),
             group_ids: groups.iter().map(|group| (*group).to_string()).collect(),
+            cleanup_destination,
         }
     }
 
@@ -808,7 +833,7 @@ mod tests {
         store.replace(plan(&root)).expect("store plan");
 
         let authorized = store
-            .take_for_execution(&selection(&root, &["copy", "move"]))
+            .take_for_execution(&selection(&root, &["copy", "move"], None))
             .expect("authorized selection");
 
         assert_eq!(authorized.summary.plan_id, "plan-1");
@@ -817,7 +842,7 @@ mod tests {
         assert!(store.current_summary().expect("summary").is_none());
         assert!(
             store
-                .take_for_execution(&selection(&root, &["copy"]))
+                .take_for_execution(&selection(&root, &["copy"], None))
                 .is_err()
         );
     }
@@ -836,7 +861,7 @@ mod tests {
             store.replace(plan(&root)).expect("store plan");
             assert!(
                 store
-                    .take_for_execution(&selection(&root, &groups))
+                    .take_for_execution(&selection(&root, &groups, None))
                     .is_err()
             );
             assert!(store.current_summary().expect("summary").is_some());
@@ -854,7 +879,53 @@ mod tests {
 
         assert!(
             store
-                .take_for_execution(&selection(&other_root, &["copy"]))
+                .take_for_execution(&selection(&other_root, &["copy"], None))
+                .is_err()
+        );
+        assert!(store.current_summary().expect("summary").is_some());
+    }
+
+    #[test]
+    fn cleanup_execution_requires_an_explicit_destination() {
+        let directory = tempdir().expect("tempdir");
+        let root = fs::canonicalize(directory.path()).expect("canonical root");
+        for destination in [
+            CleanupExecutionDestination::Quarantine,
+            CleanupExecutionDestination::Trash,
+        ] {
+            let store = OperationPlanStore::default();
+            store.replace(plan(&root)).expect("store plan");
+            let authorized = store
+                .take_for_execution(&selection(&root, &["cleanup"], Some(destination)))
+                .expect("authorize cleanup");
+            assert_eq!(authorized.cleanup_destination, Some(destination));
+            assert_eq!(authorized.items[0].group_id, "cleanup");
+        }
+
+        let store = OperationPlanStore::default();
+        store.replace(plan(&root)).expect("store plan");
+        assert!(
+            store
+                .take_for_execution(&selection(&root, &["cleanup"], None))
+                .is_err()
+        );
+        assert!(store.current_summary().expect("summary").is_some());
+    }
+
+    #[test]
+    fn cleanup_destination_is_rejected_without_a_cleanup_group() {
+        let directory = tempdir().expect("tempdir");
+        let root = fs::canonicalize(directory.path()).expect("canonical root");
+        let store = OperationPlanStore::default();
+        store.replace(plan(&root)).expect("store plan");
+
+        assert!(
+            store
+                .take_for_execution(&selection(
+                    &root,
+                    &["copy"],
+                    Some(CleanupExecutionDestination::Quarantine),
+                ))
                 .is_err()
         );
         assert!(store.current_summary().expect("summary").is_some());

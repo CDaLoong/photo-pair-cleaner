@@ -1622,6 +1622,7 @@ mod tests {
             items,
             rules: vec![copy_rule(destination)],
             sync: OperationSyncPreference::default(),
+            cleanup_destination: None,
         }
     }
 

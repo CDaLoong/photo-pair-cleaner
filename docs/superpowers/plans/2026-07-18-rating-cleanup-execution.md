@@ -16,7 +16,7 @@
 - Modify: `src-tauri/src/operation_plan.rs`
 - Test: `src-tauri/src/operation_plan.rs`
 
-- [ ] **Step 1: Write failing authorization tests**
+- [x] **Step 1: Write failing authorization tests**
 
 Add focused tests proving that the selection below authorizes ready cleanup groups, defaults nowhere in the backend, rejects cleanup without a destination, rejects a cleanup destination when no cleanup group is selected, and still consumes the plan only after successful validation.
 
@@ -38,23 +38,23 @@ pub(crate) struct ExecutionSelection {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml operation_plan::tests::cleanup_execution --offline`
 
 Expected: FAIL because cleanup groups remain forbidden and the selection has no cleanup destination.
 
-- [ ] **Step 3: Implement cleanup authorization**
+- [x] **Step 3: Implement cleanup authorization**
 
 Allow only ready `copy`, `move`, or `cleanup` items. Compute `contains_cleanup` from the selected stored items and require `cleanup_destination.is_some() == contains_cleanup`. Store the validated destination on `AuthorizedOperationPlan`; do not accept paths or actions from the frontend.
 
-- [ ] **Step 4: Run operation-plan tests and verify GREEN**
+- [x] **Step 4: Run operation-plan tests and verify GREEN**
 
 Run: `cargo --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' test --manifest-path src-tauri/Cargo.toml operation_plan --offline`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src-tauri/src/operation_plan.rs
