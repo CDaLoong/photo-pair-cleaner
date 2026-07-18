@@ -14,8 +14,10 @@ mod rating_sync;
 mod ratings;
 mod reference;
 mod safety;
+mod watermark_commands;
 #[allow(dead_code)]
 mod watermark_model;
+mod watermark_source;
 
 use chrono::Utc;
 use safety::{CleanupPlan, FileSnapshot, unique_keys};
@@ -30,6 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use walkdir::WalkDir;
+use watermark_commands::prepare_watermark_source;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1394,6 +1397,7 @@ pub fn run() {
             load_photo_thumbnail,
             list_external_editors,
             open_photo_in_editor,
+            prepare_watermark_source,
             reveal_operation_log,
             open_system_trash
         ])

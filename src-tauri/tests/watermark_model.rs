@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[path = "../src/watermark_model.rs"]
 mod watermark_model;
 

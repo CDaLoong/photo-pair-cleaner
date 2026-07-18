@@ -168,6 +168,16 @@ export interface WatermarkSourceSnapshot {
   skippedUnsupported: number;
 }
 
+export type WatermarkSourceInput =
+  | { kind: "directory"; path: string }
+  | { kind: "file"; path: string }
+  | { kind: "relativePaths"; root: string; relativePaths: string[] };
+
+export interface WatermarkSourceRequest {
+  origin: WatermarkSourceOrigin;
+  inputs: WatermarkSourceInput[];
+}
+
 export interface PhotoPlacementOverride {
   alignX: number;
   alignY: number;
