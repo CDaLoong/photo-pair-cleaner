@@ -4,6 +4,8 @@ mod photo_groups;
 mod preview;
 mod quarantine;
 mod rating_metadata;
+#[allow(dead_code)]
+mod rating_rules;
 mod rating_sync;
 mod ratings;
 mod reference;
