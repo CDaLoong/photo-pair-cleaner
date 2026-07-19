@@ -114,9 +114,11 @@ export function WatermarkModule({
   const [error, setError] = useState<string | null>(null);
   const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null);
   const [preview, setPreview] = useState<WatermarkPreviewResult | null>(null);
+  const [previewPhotoId, setPreviewPhotoId] = useState<string | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [originalUrl, setOriginalUrl] = useState<string | null>(null);
+  const [originalPhotoId, setOriginalPhotoId] = useState<string | null>(null);
   const [compareOriginal, setCompareOriginal] = useState(false);
   const [preloadProgress, setPreloadProgress] = useState<PreloadProgress>(EMPTY_PRELOAD_PROGRESS);
   const [leftTab, setLeftTab] = useState<"photos" | "templates">("photos");
@@ -324,8 +326,10 @@ export function WatermarkModule({
     setSnapshot(null);
     setSelectedPhotoId(null);
     setPreview(null);
+    setPreviewPhotoId(null);
     setPreviewError(null);
     setOriginalUrl(null);
+    setOriginalPhotoId(null);
     setCompareOriginal(false);
     setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
     setError(null);
@@ -356,6 +360,7 @@ export function WatermarkModule({
   useEffect(() => {
     previewCacheRef.current?.clear();
     setPreview(null);
+    setPreviewPhotoId(null);
     setPreviewError(null);
     previousPreviewPhotoId.current = null;
   }, [snapshot?.id]);
@@ -409,6 +414,10 @@ export function WatermarkModule({
     [selectedPhotoId, snapshot],
   );
   const selectedPhoto = selectedIndex >= 0 ? snapshot?.photos[selectedIndex] ?? null : null;
+  const availableOrientations = useMemo(
+    () => new Set(snapshot?.photos.map((photo) => photo.orientation) ?? []),
+    [snapshot],
+  );
 
   useEffect(() => {
     if (!selectedPhoto) return;
@@ -418,8 +427,15 @@ export function WatermarkModule({
   useEffect(() => {
     if (!selectedPhoto || !snapshot) {
       setOriginalUrl(null);
+      setOriginalPhotoId(null);
       return;
     }
+    const thumbnailRequest: PreviewRequest = {
+      root: selectedPhoto.root,
+      relativePath: selectedPhoto.relativePath,
+      maxEdge: SOURCE_THUMBNAIL_EDGE,
+      version: `${snapshot.id}:${selectedPhoto.sizeBytes}:${selectedPhoto.modifiedMs}`,
+    };
     const request: PreviewRequest = {
       root: selectedPhoto.root,
       relativePath: selectedPhoto.relativePath,
@@ -427,12 +443,31 @@ export function WatermarkModule({
       version: `${snapshot.id}:${selectedPhoto.sizeBytes}:${selectedPhoto.modifiedMs}`,
     };
     let disposed = false;
-    setOriginalUrl(peekPhotoPreviewUrl(request));
-    void loadPhotoPreviewUrl(request)
-      .then((url) => { if (!disposed) setOriginalUrl(url); })
-      .catch(() => { if (!disposed) setOriginalUrl(null); });
+    const cached = peekPhotoPreviewUrl(request) ?? peekPhotoPreviewUrl(thumbnailRequest);
+    setOriginalUrl(cached);
+    setOriginalPhotoId(cached ? selectedPhoto.id : null);
+    if (!cached) {
+      void loadPhotoPreviewUrl(thumbnailRequest)
+        .then((url) => {
+          if (!disposed) {
+            setOriginalUrl(url);
+            setOriginalPhotoId(selectedPhoto.id);
+          }
+        })
+        .catch(() => undefined);
+    }
+    if (compareOriginal) {
+      void loadPhotoPreviewUrl(request)
+        .then((url) => {
+          if (!disposed) {
+            setOriginalUrl(url);
+            setOriginalPhotoId(selectedPhoto.id);
+          }
+        })
+        .catch(() => undefined);
+    }
     return () => { disposed = true; };
-  }, [selectedPhoto, snapshot]);
+  }, [compareOriginal, selectedPhoto, snapshot]);
 
   function requestFor(photo: WatermarkSourcePhoto): WatermarkRenderRequest {
     return {
@@ -450,12 +485,6 @@ export function WatermarkModule({
     if (!active || !snapshot || !selectedPhoto || selectedIndex < 0) return;
     const cache = previewCacheRef.current;
     if (!cache) return;
-    const keepPhotos = snapshot.photos.slice(
-      Math.max(0, selectedIndex - 2),
-      Math.min(snapshot.photos.length, selectedIndex + 3),
-    );
-    cache.retainPhotos(new Set(keepPhotos.map((photo) => photo.id)));
-
     const request = requestFor(selectedPhoto);
     const key = watermarkPreviewRequestKey(request, WATERMARK_PREVIEW_EDGE);
     const descriptor: WatermarkPreviewDescriptor = {
@@ -468,6 +497,11 @@ export function WatermarkModule({
     const switchedPhoto = previousPreviewPhotoId.current !== selectedPhoto.id;
     previousPreviewPhotoId.current = selectedPhoto.id;
     let disposed = false;
+    const cached = cache.peek(key);
+    if (cached) {
+      setPreview(cached);
+      setPreviewPhotoId(selectedPhoto.id);
+    }
     setPreviewBusy(true);
     setPreviewError(null);
     const timeout = window.setTimeout(() => {
@@ -477,17 +511,7 @@ export function WatermarkModule({
       ).then((result) => {
         if (disposed || !cache.isCurrent(token)) return;
         setPreview(result);
-        for (const neighbor of keepPhotos) {
-          if (neighbor.id === selectedPhoto.id) continue;
-          const neighborRequest = requestFor(neighbor);
-          const neighborKey = watermarkPreviewRequestKey(neighborRequest, WATERMARK_PREVIEW_EDGE);
-          void cache.getOrLoad({
-            key: neighborKey,
-            photoId: neighbor.id,
-            root: neighbor.root,
-            templateId: template.id,
-          }, () => loadWatermarkPreview(neighborRequest, WATERMARK_PREVIEW_EDGE)).catch(() => undefined);
-        }
+        setPreviewPhotoId(selectedPhoto.id);
       }).catch((renderError) => {
         if (!disposed && cache.isCurrent(token)) setPreviewError(errorMessage(renderError));
       }).finally(() => {
@@ -499,6 +523,9 @@ export function WatermarkModule({
       window.clearTimeout(timeout);
     };
   }, [active, editor.present.photoOverrides, selectedPhoto, selectedIndex, snapshot, template]);
+
+  const visiblePreview = previewPhotoId === selectedPhoto?.id ? preview : null;
+  const visibleOriginalUrl = originalPhotoId === selectedPhoto?.id ? originalUrl : null;
 
   function selectAt(index: number) {
     const photo = snapshot?.photos[index];
@@ -960,13 +987,13 @@ export function WatermarkModule({
             <main className="watermark-stage" data-watermark-tour="canvas">
               <WatermarkCanvas
                 photo={selectedPhoto}
-                preview={preview}
+                preview={visiblePreview}
                 template={template}
                 orientation={selectedPhoto?.orientation ?? editor.activeOrientation}
                 activeLayerId={editor.activeLayerId}
                 loading={previewBusy}
                 error={previewError}
-                originalUrl={originalUrl}
+                originalUrl={visibleOriginalUrl}
                 compareOriginal={compareOriginal}
                 position={selectedIndex + 1}
                 total={snapshot.photos.length}
@@ -987,6 +1014,7 @@ export function WatermarkModule({
               <WatermarkInspector
                 template={template}
                 orientation={editor.activeOrientation}
+                availableOrientations={availableOrientations}
                 activeLayerId={editor.activeLayerId}
                 photoId={selectedPhoto?.id ?? null}
                 photoOverride={selectedPhoto ? editor.present.photoOverrides[selectedPhoto.id] ?? null : null}

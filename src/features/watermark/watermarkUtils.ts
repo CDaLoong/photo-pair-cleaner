@@ -2,6 +2,7 @@ import type {
   LayoutVariant,
   ExifTextLayer,
   ImageLayer,
+  NormalizedPlacement,
   TextLayer,
   VariantLayerLayout,
   WatermarkLayer,
@@ -16,6 +17,31 @@ import type {
 
 export interface Point2D { x: number; y: number }
 export interface Size2D { width: number; height: number }
+
+interface WatermarkLayerGeometryLike {
+  anchorRect: { x: number; y: number; width: number; height: number };
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+  rotationDeg: number;
+}
+
+export function projectWatermarkLayerGeometry<T extends WatermarkLayerGeometryLike>(
+  geometry: T,
+  initial: NormalizedPlacement,
+  current: NormalizedPlacement,
+): T {
+  const scale = initial.width > 0 ? current.width / initial.width : 1;
+  return {
+    ...geometry,
+    centerX: Math.round(geometry.anchorRect.x + current.x * geometry.anchorRect.width),
+    centerY: Math.round(geometry.anchorRect.y + current.y * geometry.anchorRect.height),
+    width: Math.max(1, Math.round(geometry.width * scale)),
+    height: Math.max(1, Math.round(geometry.height * scale)),
+    rotationDeg: current.rotationDeg,
+  };
+}
 
 export function viewportDeltaToNormalized(delta: { dx: number; dy: number }, anchorSize: Size2D): Point2D {
   if (anchorSize.width <= 0 || anchorSize.height <= 0) {

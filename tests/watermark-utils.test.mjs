@@ -19,6 +19,7 @@ import {
   viewportDeltaToNormalized,
   watermarkFilenameExamples,
 } from "../src/features/watermark/watermarkUtils.ts";
+import * as watermarkUtils from "../src/features/watermark/watermarkUtils.ts";
 import {
   WatermarkPreviewCache,
   decodeWatermarkPreviewEnvelope,
@@ -74,6 +75,27 @@ test("watermark orientation uses the agreed near-square band", () => {
   assert.equal(classifyWatermarkOrientation(1200, 800), "landscape");
   assert.equal(classifyWatermarkOrientation(800, 1200), "portrait");
   assert.equal(classifyWatermarkOrientation(1000, 960), "square");
+});
+
+test("watermark drag geometry is projected immediately from local placement", () => {
+  assert.equal(typeof watermarkUtils.projectWatermarkLayerGeometry, "function");
+  const geometry = {
+    id: "signature",
+    anchorRect: { x: 100, y: 200, width: 400, height: 100 },
+    centerX: 300,
+    centerY: 250,
+    width: 200,
+    height: 20,
+    rotationDeg: 0,
+  };
+  assert.deepEqual(
+    watermarkUtils.projectWatermarkLayerGeometry(
+      geometry,
+      { anchorSpace: "frame", frameEdge: "bottom", x: 0.5, y: 0.5, width: 0.5, rotationDeg: 0, opacity: 1 },
+      { anchorSpace: "frame", frameEdge: "bottom", x: 0.75, y: 0.2, width: 0.25, rotationDeg: 30, opacity: 1 },
+    ),
+    { ...geometry, centerX: 400, centerY: 220, width: 100, height: 10, rotationDeg: 30 },
+  );
 });
 
 test("default template has all three independent variants", () => {

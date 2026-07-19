@@ -82,7 +82,14 @@ fn rgba8_to_linear(
     Ok(result)
 }
 
-fn decode_path(path: &Path) -> Result<DecodedImage, String> {
+fn preview_source_edge(target: RenderTarget) -> Option<u32> {
+    match target {
+        RenderTarget::Preview { max_edge } => Some(max_edge),
+        RenderTarget::Export { .. } => None,
+    }
+}
+
+fn decode_path(path: &Path, maximum_edge: Option<u32>) -> Result<DecodedImage, String> {
     let reader = ImageReader::open(path)
         .map_err(|error| format!("无法打开水印来源：{error}"))?
         .with_guessed_format()
@@ -99,6 +106,11 @@ fn decode_path(path: &Path) -> Result<DecodedImage, String> {
     let mut image = DynamicImage::from_decoder(decoder)
         .map_err(|error| format!("无法解码水印来源：{error}"))?;
     image.apply_orientation(orientation);
+    if let Some(maximum_edge) = maximum_edge
+        && image.width().max(image.height()) > maximum_edge
+    {
+        image = image.resize(maximum_edge, maximum_edge, FilterType::Lanczos3);
+    }
     Ok(DecodedImage {
         image: rgba8_to_linear(image.to_rgba8(), source_icc.as_deref())?,
         source_icc,
@@ -617,7 +629,10 @@ pub(crate) fn render_base_with_resources(
     if !matches!(extension.as_str(), "jpg" | "jpeg") {
         return Err("水印照片来源只支持 JPG/JPEG".to_string());
     }
-    let decoded = decode_path(source)?;
+    if matches!(target, RenderTarget::Preview { max_edge: 0 }) {
+        return Err("预览长边必须大于 0".to_string());
+    }
+    let decoded = decode_path(source, preview_source_edge(target))?;
     let (source_width, source_height) = decoded.image.dimensions();
     let (align_x, align_y, photo_scale) = photo_override
         .map(|value| (value.align_x, value.align_y, value.scale))

@@ -22,6 +22,7 @@ import {
   clampWatermarkNumber,
   keyboardNudgeNormalized,
   normalizeWatermarkRotation,
+  projectWatermarkLayerGeometry,
   snapNormalizedPosition,
   viewportDeltaToNormalized,
 } from "./watermarkUtils";
@@ -63,6 +64,7 @@ interface DragSession {
   startX: number;
   startY: number;
   initial: NormalizedPlacement;
+  current: NormalizedPlacement;
   geometry: WatermarkPreviewLayerGeometry;
   cornerX: -1 | 1;
   cornerY: -1 | 1;
@@ -104,6 +106,7 @@ export function WatermarkCanvas({
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 0, height: 0 });
   const [zoom, setZoom] = useState(1);
   const [guides, setGuides] = useState<string[]>([]);
+  const [liveGeometry, setLiveGeometry] = useState<WatermarkPreviewLayerGeometry | null>(null);
   const canGoPrevious = position > 1;
   const canGoNext = position > 0 && position < total;
   const showingOriginal = compareOriginal && originalUrl;
@@ -118,6 +121,12 @@ export function WatermarkCanvas({
     observer.observe(viewport);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    dragRef.current = null;
+    setLiveGeometry(null);
+    setGuides([]);
+  }, [photo?.id, preview?.url]);
 
   const artboardSize = useMemo(() => {
     if (!preview || viewportSize.width <= 0 || viewportSize.height <= 0) return null;
@@ -170,11 +179,13 @@ export function WatermarkCanvas({
       startX: event.clientX,
       startY: event.clientY,
       initial: { ...initial },
+      current: { ...initial },
       geometry,
       cornerX,
       cornerY,
       startAngle: Math.atan2(event.clientY - centerY, event.clientX - centerX) * 180 / Math.PI,
     };
+    setLiveGeometry(geometry);
   }
 
   function moveDrag(event: ReactPointerEvent<HTMLElement>) {
@@ -212,28 +223,44 @@ export function WatermarkCanvas({
         bypass: event.shiftKey,
       });
       setGuides(snapped.guides);
-      onSetLayerPlacement(session.layerId, snapped.position, session.group);
+      session.current = { ...session.current, ...snapped.position };
+      setLiveGeometry(projectWatermarkLayerGeometry(
+        session.geometry,
+        session.initial,
+        session.current,
+      ));
       return;
     }
     if (session.mode === "scale") {
       const horizontal = session.cornerX * (event.clientX - session.startX) / anchorSize.width;
       const vertical = session.cornerY * (event.clientY - session.startY) / anchorSize.height;
       const width = clampWatermarkNumber(session.initial.width + (horizontal + vertical) / 2, 0.01, 1, session.initial.width);
-      onSetLayerPlacement(session.layerId, { width }, session.group);
+      session.current = { ...session.current, width };
+      setLiveGeometry(projectWatermarkLayerGeometry(
+        session.geometry,
+        session.initial,
+        session.current,
+      ));
       return;
     }
     const centerX = artboard.left + session.geometry.centerX / preview.width * artboard.width;
     const centerY = artboard.top + session.geometry.centerY / preview.height * artboard.height;
     const angle = Math.atan2(event.clientY - centerY, event.clientX - centerX) * 180 / Math.PI;
-    onSetLayerPlacement(session.layerId, {
+    session.current = { ...session.current,
       rotationDeg: normalizeWatermarkRotation(session.initial.rotationDeg + angle - session.startAngle),
-    }, session.group);
+    };
+    setLiveGeometry(projectWatermarkLayerGeometry(
+      session.geometry,
+      session.initial,
+      session.current,
+    ));
   }
 
   function endDrag(event: ReactPointerEvent<HTMLElement>) {
     const session = dragRef.current;
     if (!session || session.pointerId !== event.pointerId) return;
     dragRef.current = null;
+    onSetLayerPlacement(session.layerId, session.current, session.group);
     setGuides([]);
     onCloseHistoryGroup();
   }
@@ -314,23 +341,24 @@ export function WatermarkCanvas({
                 draggable={false}
               />
               {!showingOriginal ? preview.layers.map((geometry) => {
-                const active = geometry.id === activeLayerId;
-                const movable = layerCanMove(geometry.id);
+                const displayGeometry = liveGeometry?.id === geometry.id ? liveGeometry : geometry;
+                const active = displayGeometry.id === activeLayerId;
+                const movable = layerCanMove(displayGeometry.id);
                 return (
                   <div
                     className={`watermark-layer-box${active ? " is-active" : ""}${movable ? "" : " is-locked"}`}
                     style={{
-                      left: `${geometry.centerX / preview.width * 100}%`,
-                      top: `${geometry.centerY / preview.height * 100}%`,
-                      width: `${geometry.width / preview.width * 100}%`,
-                      height: `${geometry.height / preview.height * 100}%`,
-                      transform: `translate(-50%, -50%) rotate(${geometry.rotationDeg}deg)`,
+                      left: `${displayGeometry.centerX / preview.width * 100}%`,
+                      top: `${displayGeometry.centerY / preview.height * 100}%`,
+                      width: `${displayGeometry.width / preview.width * 100}%`,
+                      height: `${displayGeometry.height / preview.height * 100}%`,
+                      transform: `translate(-50%, -50%) rotate(${displayGeometry.rotationDeg}deg)`,
                     }}
-                    key={geometry.id}
+                    key={displayGeometry.id}
                     role="button"
                     tabIndex={active ? 0 : -1}
-                    aria-label={`编辑图层 ${template.shared.layers.find((layer) => layer.id === geometry.id)?.name ?? geometry.id}`}
-                    onPointerDown={(event) => beginDrag(event, geometry, "move")}
+                    aria-label={`编辑图层 ${template.shared.layers.find((layer) => layer.id === displayGeometry.id)?.name ?? displayGeometry.id}`}
+                    onPointerDown={(event) => beginDrag(event, displayGeometry, "move")}
                     onPointerMove={moveDrag}
                     onPointerUp={endDrag}
                     onPointerCancel={endDrag}
@@ -342,11 +370,11 @@ export function WatermarkCanvas({
                           <span
                             className={`watermark-scale-handle is-x-${x} is-y-${y}`}
                             key={`${x}:${y}`}
-                            onPointerDown={(event) => beginDrag(event, geometry, "scale", x, y)}
+                            onPointerDown={(event) => beginDrag(event, displayGeometry, "scale", x, y)}
                           />
                         ))}
                         <span className="watermark-rotate-stem" aria-hidden="true" />
-                        <span className="watermark-rotate-handle" onPointerDown={(event) => beginDrag(event, geometry, "rotate")} title="旋转图层"><RotateCw aria-hidden="true" size={11} /></span>
+                        <span className="watermark-rotate-handle" onPointerDown={(event) => beginDrag(event, displayGeometry, "rotate")} title="旋转图层"><RotateCw aria-hidden="true" size={11} /></span>
                       </>
                     ) : null}
                   </div>
@@ -358,6 +386,10 @@ export function WatermarkCanvas({
               }) : null}
             </div>
           </div>
+        ) : originalUrl ? (
+          <div className="watermark-canvas-placeholder">
+            <img src={originalUrl} alt={photo ? `${photo.fileName} 的加载预览` : "照片加载预览"} draggable={false} />
+          </div>
         ) : error ? (
           <div className="watermark-canvas-message is-error"><TriangleAlert aria-hidden="true" size={28} /><strong>无法生成预览</strong><span>{error}</span></div>
         ) : (
@@ -366,7 +398,7 @@ export function WatermarkCanvas({
             <strong>{loading ? "正在生成预览" : "请选择一张照片"}</strong>
           </div>
         )}
-        {loading && preview ? <div className="watermark-canvas-loading" role="status"><LoaderCircle className="spin" aria-hidden="true" size={14} />更新预览</div> : null}
+        {loading && (preview || originalUrl) ? <div className="watermark-canvas-loading" role="status"><LoaderCircle className="spin" aria-hidden="true" size={14} />更新预览</div> : null}
       </div>
 
       {showingOriginal ? (

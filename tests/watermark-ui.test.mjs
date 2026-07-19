@@ -255,3 +255,87 @@ test("watermark release versions stay aligned at 0.8.0", () => {
   assert.equal(tauri.version, "0.8.0");
   assert.match(cargo, /^version = "0\.8\.0"$/m);
 });
+
+test("packaged CSP permits generated preview blobs only for images", () => {
+  const tauri = JSON.parse(fs.readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+  const directives = new Map(tauri.app.security.csp.split(";").map((directive) => {
+    const [name, ...sources] = directive.trim().split(/\s+/);
+    return [name, sources];
+  }));
+  assert.ok(directives.get("img-src")?.includes("blob:"), "img-src must allow in-memory preview images");
+  assert.ok(!directives.get("default-src")?.includes("blob:"), "blob URLs must stay scoped to images");
+});
+
+test("watermark selection never displays the previous photo preview", () => {
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  const canvasSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkCanvas.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(moduleSource, /previewPhotoId === selectedPhoto\?\.id/);
+  assert.match(moduleSource, /originalPhotoId === selectedPhoto\?\.id/);
+  assert.match(canvasSource, /watermark-canvas-placeholder/);
+});
+
+test("watermark pointer dragging stays local until the pointer is released", () => {
+  const canvasSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkCanvas.tsx", import.meta.url),
+    "utf8",
+  );
+  const moveDrag = canvasSource.slice(
+    canvasSource.indexOf("function moveDrag"),
+    canvasSource.indexOf("function endDrag"),
+  );
+  const endDrag = canvasSource.slice(
+    canvasSource.indexOf("function endDrag"),
+    canvasSource.indexOf("function nudgeLayer"),
+  );
+  assert.match(moveDrag, /setLiveGeometry/);
+  assert.doesNotMatch(moveDrag, /onSetLayerPlacement/);
+  assert.match(endDrag, /onSetLayerPlacement/);
+  assert.doesNotMatch(endDrag, /setLiveGeometry\(null\)/);
+});
+
+test("watermark foreground renders are not queued behind speculative neighbors", () => {
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(moduleSource, /for \(const neighbor of keepPhotos\)/);
+  assert.doesNotMatch(moduleSource, /cache\.retainPhotos/);
+});
+
+test("watermark preview bounds decoded pixels before floating-point rendering", () => {
+  const renderSource = fs.readFileSync(
+    new URL("../src-tauri/src/watermark_render.rs", import.meta.url),
+    "utf8",
+  );
+  assert.match(renderSource, /decode_path\(source, preview_source_edge\(target\)\)/);
+  assert.match(renderSource, /image\.resize\(maximum_edge, maximum_edge, FilterType::Lanczos3\)/);
+});
+
+test("watermark loads a full-size original preview only when comparison is active", () => {
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(moduleSource, /if \(compareOriginal\) \{\s*void loadPhotoPreviewUrl\(request\)/);
+  assert.match(moduleSource, /\[compareOriginal, selectedPhoto, snapshot\]/);
+});
+
+test("watermark orientation controls disable layouts without a matching photo", () => {
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkModule.tsx", import.meta.url),
+    "utf8",
+  );
+  const inspectorSource = fs.readFileSync(
+    new URL("../src/features/watermark/WatermarkInspector.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(moduleSource, /availableOrientations=\{availableOrientations\}/);
+  assert.match(inspectorSource, /disabled=\{!availableOrientations\.has\(item\.id\)\}/);
+  assert.match(inspectorSource, /当前任务没有.*照片/);
+});

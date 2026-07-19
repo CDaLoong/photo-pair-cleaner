@@ -87,6 +87,7 @@ function solidBackground(background: WatermarkBackground): Extract<WatermarkBack
 interface WatermarkInspectorProps {
   template: WatermarkTemplate;
   orientation: WatermarkOrientation;
+  availableOrientations: ReadonlySet<WatermarkOrientation>;
   activeLayerId: string | null;
   photoId: string | null;
   photoOverride: PhotoPlacementOverride | null;
@@ -104,6 +105,7 @@ interface WatermarkInspectorProps {
 export function WatermarkInspector({
   template,
   orientation,
+  availableOrientations,
   activeLayerId,
   photoId,
   photoOverride,
@@ -170,7 +172,18 @@ export function WatermarkInspector({
       <div className="watermark-inspector-section">
         <strong>方向版式</strong>
         <div className="watermark-orientation-switch" role="group" aria-label="编辑方向版式">
-          {ORIENTATION_LABELS.map((item) => <button type="button" key={item.id} aria-pressed={orientation === item.id} onClick={() => onOrientationChange(item.id)}>{item.label}</button>)}
+          {ORIENTATION_LABELS.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              aria-pressed={orientation === item.id}
+              disabled={!availableOrientations.has(item.id)}
+              title={availableOrientations.has(item.id) ? `切换到${item.label}照片` : `当前任务没有${item.label}照片`}
+              onClick={() => onOrientationChange(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       </div>
 
