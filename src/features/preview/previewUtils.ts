@@ -212,3 +212,47 @@ export function filmstripScrollTarget({
 
   return Math.max(0, Math.min(scrollWidth - clientWidth, target));
 }
+
+export interface VirtualPhotoGridWindow {
+  columns: number;
+  tileHeight: number;
+  rowPitch: number;
+  totalHeight: number;
+  startIndex: number;
+  endIndex: number;
+}
+
+export function virtualPhotoGridWindow(input: {
+  itemCount: number;
+  tileSize: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  scrollTop: number;
+  gap?: number;
+  overscanRows?: number;
+}): VirtualPhotoGridWindow {
+  const gap = Math.max(0, input.gap ?? 12);
+  const overscanRows = Math.max(0, Math.floor(input.overscanRows ?? 2));
+  const tileSize = Math.max(1, input.tileSize);
+  const viewportWidth = Math.max(tileSize, input.viewportWidth);
+  const columns = Math.max(1, Math.floor((viewportWidth + gap) / (tileSize + gap)));
+  const tileHeight = Math.ceil(Math.max(0, tileSize - 2) * 0.75 + 42);
+  const rowPitch = tileHeight + gap;
+  const rowCount = Math.ceil(Math.max(0, input.itemCount) / columns);
+  const totalHeight = rowCount === 0 ? 0 : rowCount * tileHeight + (rowCount - 1) * gap;
+  const firstVisibleRow = Math.floor(Math.max(0, input.scrollTop) / rowPitch);
+  const lastVisibleRow = Math.ceil(
+    (Math.max(0, input.scrollTop) + Math.max(0, input.viewportHeight)) / rowPitch,
+  );
+  const startRow = Math.max(0, firstVisibleRow - overscanRows);
+  const endRow = Math.min(rowCount, lastVisibleRow + overscanRows);
+
+  return {
+    columns,
+    tileHeight,
+    rowPitch,
+    totalHeight,
+    startIndex: Math.min(input.itemCount, startRow * columns),
+    endIndex: Math.min(input.itemCount, endRow * columns),
+  };
+}

@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
@@ -27,7 +27,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   errorMessage,
   formatBytes,
@@ -47,14 +47,15 @@ import { PhotoDirectoryTree } from "./PhotoDirectoryTree";
 import { PhotoThumbnail } from "./PhotoThumbnail";
 import { PreviewGuideDialog } from "./PreviewGuideDialog";
 import { RatingControl } from "./RatingControl";
+import { VirtualPhotoGrid } from "./VirtualPhotoGrid";
 import {
   clearPhotoPreviewCache,
-  loadPhotoPreviewUrl,
   photoPreviewRequest,
   photoPreviewVersion,
+  preloadPhotoPreviewUrl,
   preloadPreviewRequests,
+  warmPhotoPreviewCache,
   type PreloadProgress,
-  type PreviewRequest,
 } from "./previewCache";
 import {
   adjacentPreviewAssetId,
@@ -75,6 +76,8 @@ import type {
   ExternalEditor,
   PhotoAsset,
   PhotoIndex,
+  PhotoIndexEvent,
+  PhotoIndexProgress,
   PreviewFilter,
   PreviewSort,
   PreviewView,
@@ -84,14 +87,76 @@ import type {
 const PREVIEW_ROOT_STORAGE_KEY = "framepair.preview.root.v1";
 const PREVIEW_GUIDE_STORAGE_KEY = "framepair.preview.guide.v1";
 const FOLDER_SIDEBAR_STORAGE_KEY = "framepair.preview.folder-sidebar-collapsed.v1";
-const LOUPE_PREVIEW_EDGE = 1800;
-const PRELOAD_CONCURRENCY = 3;
-const EMPTY_PRELOAD_PROGRESS: PreloadProgress = { total: 0, completed: 0, failed: 0 };
+const LOUPE_PREVIEW_EDGE = 1280;
 const SYSTEM_EDITOR: ExternalEditor = {
   id: "system",
   label: "系统默认应用",
   kind: "system",
 };
+
+const INITIAL_INDEX_PROGRESS: PhotoIndexProgress = {
+  phase: "discovering",
+  completed: 0,
+  total: null,
+  filesFound: 0,
+  assetsFound: 0,
+};
+
+function progressRatio(progress: PhotoIndexProgress): number {
+  if (!progress.total) return 0;
+  return Math.min(1, progress.completed / progress.total);
+}
+
+function indexProgressPercent(progress: PhotoIndexProgress): number | null {
+  if (progress.phase === "discovering") {
+    return progress.total === null ? null : 10;
+  }
+  if (progress.phase === "grouping") return Math.round(10 + progressRatio(progress) * 40);
+  if (progress.phase === "ratings") return Math.round(50 + progressRatio(progress) * 45);
+  return Math.round(95 + progressRatio(progress) * 5);
+}
+
+function indexProgressCopy(progress: PhotoIndexProgress): { title: string; detail: string } {
+  if (progress.phase === "discovering") {
+    return {
+      title: "正在扫描照片目录",
+      detail: `已扫描 ${progress.completed} 个文件，发现 ${progress.filesFound} 个照片文件`,
+    };
+  }
+  if (progress.phase === "grouping") {
+    return {
+      title: "正在整理照片分组",
+      detail: `${progress.completed} / ${progress.total ?? 0} 个文件，已识别 ${progress.assetsFound} 组照片`,
+    };
+  }
+  if (progress.phase === "ratings") {
+    return {
+      title: "正在读取照片信息",
+      detail: `${progress.completed} / ${progress.total ?? 0} 组，缩略预览会分批显示`,
+    };
+  }
+  return {
+    title: "正在完成照片索引",
+    detail: `${progress.assetsFound} 组照片已建立索引`,
+  };
+}
+
+function progressivePhotoIndex(
+  root: string,
+  totalAssets: number,
+  assets: PhotoAsset[],
+  indexedAtMs: number,
+): PhotoIndex {
+  return {
+    root,
+    indexedAtMs,
+    totalAssets,
+    pairedAssets: assets.filter((asset) => asset.jpegPaths.length > 0 && asset.rawPaths.length > 0).length,
+    previewableAssets: assets.filter((asset) => asset.previewPath !== null).length,
+    rawOnlyAssets: assets.filter((asset) => asset.jpegPaths.length === 0 && asset.rawPaths.length > 0).length,
+    assets,
+  };
+}
 
 interface PreviewModuleProps {
   active: boolean;
@@ -115,6 +180,8 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
     }
   });
   const [busy, setBusy] = useState(false);
+  const [indexProgress, setIndexProgress] = useState<PhotoIndexProgress | null>(null);
+  const [previewPreloadProgress, setPreviewPreloadProgress] = useState<PreloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PreviewFilter>("all");
@@ -143,7 +210,6 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
       return false;
     }
   });
-  const [preloadProgress, setPreloadProgress] = useState<PreloadProgress>(EMPTY_PRELOAD_PROGRESS);
   const attemptedStoredRoot = useRef(false);
   const busyRef = useRef(busy);
   const indexedRootRef = useRef<string | null>(null);
@@ -212,9 +278,65 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
     if (!path || busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
+    setIndexProgress(INITIAL_INDEX_PROGRESS);
     setError(null);
+    const streamAssets = !options.preserveContext;
+    const progressiveStartedAt = Date.now();
+    const streamedAssets: PhotoAsset[] = [];
+    let streamedRoot = path;
+    let streamedTotal = 0;
+    let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let acceptingEvents = true;
+    if (streamAssets) {
+      if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
+      indexedRootRef.current = null;
+      setIndex(null);
+      setRatings({});
+      setSelectedId(null);
+      setContextMenu(null);
+    }
+    const flushStreamedAssets = () => {
+      streamFlushTimer = null;
+      if (!acceptingEvents || streamedAssets.length === 0) return;
+      const snapshot = [...streamedAssets];
+      setIndex(progressivePhotoIndex(
+        streamedRoot,
+        streamedTotal,
+        snapshot,
+        progressiveStartedAt,
+      ));
+      setRoot(streamedRoot);
+      setSelectedId((current) => current ?? snapshot[0]?.id ?? null);
+    };
+    const channel = new Channel<PhotoIndexEvent>();
+    channel.onmessage = (event) => {
+      if (!acceptingEvents) return;
+      if (event.event === "progress") {
+        setIndexProgress(event.progress);
+        return;
+      }
+      if (!streamAssets || event.batch.assets.length === 0) return;
+      streamedAssets.push(...event.batch.assets);
+      streamedRoot = event.batch.root;
+      streamedTotal = event.batch.totalAssets;
+      if (streamFlushTimer === null) {
+        streamFlushTimer = setTimeout(flushStreamedAssets, 80);
+      }
+    };
     try {
-      const result = await invoke<PhotoIndex>("index_photo_directory", { root: path });
+      const result = await invoke<PhotoIndex>("index_photo_directory", {
+        root: path,
+        onEvent: channel,
+      });
+      acceptingEvents = false;
+      if (streamFlushTimer !== null) clearTimeout(streamFlushTimer);
+      setIndexProgress({
+        phase: "finalizing",
+        completed: 1,
+        total: 1,
+        filesFound: result.assets.reduce((count, asset) => count + asset.members.length, 0),
+        assetsFound: result.totalAssets,
+      });
       const preserveContext = options.preserveContext
         && indexedRootRef.current === result.root;
       if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
@@ -261,8 +383,9 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
       setSelectedDirectory("");
       setContextMenu(null);
       setGuideOpen(false);
-      setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
     } finally {
+      acceptingEvents = false;
+      if (streamFlushTimer !== null) clearTimeout(streamFlushTimer);
       busyRef.current = false;
       setBusy(false);
     }
@@ -389,27 +512,49 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   }, [active, effectiveSelectedId, view, visibleAssets]);
 
   useEffect(() => {
-    if (!index) {
-      setPreloadProgress(EMPTY_PRELOAD_PROGRESS);
+    if (!active || !index || !effectiveSelectedId || !isTauri()) return;
+    const selectedIndex = visibleAssets.findIndex((asset) => asset.id === effectiveSelectedId);
+    if (selectedIndex < 0) return;
+    const nearbyOffsets = [0, 1, -1, 2, -2, 3, -3];
+    for (const offset of nearbyOffsets) {
+      const asset = visibleAssets[selectedIndex + offset];
+      if (!asset) continue;
+      const request = photoPreviewRequest(index.root, asset, LOUPE_PREVIEW_EDGE);
+      if (request) void preloadPhotoPreviewUrl(request).catch(() => undefined);
+    }
+  }, [active, effectiveSelectedId, index, visibleAssets]);
+
+  useEffect(() => {
+    if (!active || busy || !index || !isTauri()) {
+      setPreviewPreloadProgress(null);
       return;
     }
-    const controller = new AbortController();
-    const requests = index.assets
-      .map((asset) => photoPreviewRequest(
-        index.root,
-        asset,
-        LOUPE_PREVIEW_EDGE,
-        index.indexedAtMs,
-      ))
-      .filter((request): request is PreviewRequest => request !== null);
-
-    void preloadPreviewRequests(requests, loadPhotoPreviewUrl, {
-      concurrency: PRELOAD_CONCURRENCY,
-      signal: controller.signal,
-      onProgress: setPreloadProgress,
+    const requests = index.assets.flatMap((asset) => {
+      const request = photoPreviewRequest(index.root, asset, LOUPE_PREVIEW_EDGE);
+      return request ? [request] : [];
     });
-    return () => controller.abort();
-  }, [index]);
+    if (requests.length === 0) {
+      setPreviewPreloadProgress(null);
+      return;
+    }
+    setPreviewPreloadProgress({ total: requests.length, completed: 0, failed: 0 });
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void preloadPreviewRequests(
+        requests,
+        (request) => warmPhotoPreviewCache(request, controller.signal),
+        {
+          concurrency: 1,
+          signal: controller.signal,
+          onProgress: setPreviewPreloadProgress,
+        },
+      );
+    }, 800);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [active, busy, index]);
 
   async function chooseDirectory() {
     try {
@@ -572,6 +717,13 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
     });
   }
 
+  const progressPercent = busy && indexProgress
+    ? indexProgressPercent(indexProgress)
+    : null;
+  const progressCopy = busy && indexProgress
+    ? indexProgressCopy(indexProgress)
+    : null;
+
   return (
     <section className="preview-module" aria-label="照片浏览">
       <header className="preview-header">
@@ -606,7 +758,46 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
         </div>
       </header>
 
-      {busy ? <div className="activity-line" aria-hidden="true"><span /></div> : null}
+      {busy && indexProgress && progressCopy ? (
+        <div className="preview-index-progress" role="status" aria-live="polite">
+          <div className="preview-index-progress-copy">
+            <LoaderCircle className="spin" aria-hidden="true" size={16} />
+            <strong>{progressCopy.title}</strong>
+            <span>{progressCopy.detail}</span>
+            {progressPercent !== null ? <b>{progressPercent}%</b> : null}
+          </div>
+          <div
+            className={progressPercent === null ? "preview-index-progress-track is-indeterminate" : "preview-index-progress-track"}
+            role="progressbar"
+            aria-label="照片索引进度"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progressPercent ?? undefined}
+          >
+            <span style={progressPercent === null ? undefined : { width: `${progressPercent}%` }} />
+          </div>
+        </div>
+      ) : null}
+      {!busy && previewPreloadProgress && previewPreloadProgress.completed < previewPreloadProgress.total ? (
+        <div className="preview-index-progress is-preload" role="status" aria-live="polite">
+          <div className="preview-index-progress-copy">
+            <LoaderCircle className="spin" aria-hidden="true" size={16} />
+            <strong>正在预加载大图</strong>
+            <span>{previewPreloadProgress.completed} / {previewPreloadProgress.total} 张，当前照片优先</span>
+            <b>{Math.round((previewPreloadProgress.completed / previewPreloadProgress.total) * 100)}%</b>
+          </div>
+          <div
+            className="preview-index-progress-track"
+            role="progressbar"
+            aria-label="大图预加载进度"
+            aria-valuemin={0}
+            aria-valuemax={previewPreloadProgress.total}
+            aria-valuenow={previewPreloadProgress.completed}
+          >
+            <span style={{ width: `${(previewPreloadProgress.completed / previewPreloadProgress.total) * 100}%` }} />
+          </div>
+        </div>
+      ) : null}
       {error ? (
         <div className="notice notice-warning" role="alert">
           <Image aria-hidden="true" size={18} />
@@ -692,40 +883,25 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
               onSelect={selectDirectory}
               onCollapsedChange={changeFolderSidebarCollapsed}
             />
-            {view === "grid" ? (
-            <main className="photo-grid-scroll" data-preview-tour="grid">
-              <div
-                className="photo-grid"
-                style={{ "--preview-tile-size": `${tileSize}px` } as CSSProperties}
-              >
-                {visibleAssets.map((asset) => (
-                  <button
-                    key={asset.id}
-                    className={asset.id === effectiveSelectedId ? "photo-tile is-selected" : "photo-tile"}
-                    type="button"
-                    onClick={() => setSelectedId(asset.id)}
-                    onDoubleClick={() => openLoupe(asset)}
-                    onContextMenu={(event) => showContextMenu(event, asset)}
-                    aria-pressed={asset.id === effectiveSelectedId}
-                    title={`${asset.relativeStem} · ${asset.extensions.join(" + ")}`}
-                  >
-                    <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={480} version={photoPreviewVersion(asset, index.indexedAtMs)} alt="" />
-                    {asset.rating > 0 ? <span className="photo-rating-badge"><Star aria-hidden="true" size={11} fill="currentColor" />{asset.rating}</span> : null}
-                    <span className="photo-tile-meta">
-                      <strong>{asset.name}</strong>
-                      <small>{asset.extensions.join(" + ")}</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-              {visibleAssets.length === 0 ? (
+            {view === "grid" ? (visibleAssets.length > 0 ? (
+              <VirtualPhotoGrid
+                root={index.root}
+                assets={visibleAssets}
+                selectedId={effectiveSelectedId}
+                tileSize={tileSize}
+                onSelect={(asset) => setSelectedId(asset.id)}
+                onOpen={openLoupe}
+                onContextMenu={showContextMenu}
+              />
+            ) : (
+              <main className="photo-grid-scroll" data-preview-tour="grid">
                 <div className="preview-empty compact">
                   <Search aria-hidden="true" size={28} />
                   <strong>当前目录没有符合筛选条件的照片</strong>
                   <button className="secondary-command" type="button" onClick={clearPreviewFilters}>清除筛选</button>
                 </div>
-              ) : null}
-            </main>
+              </main>
+            )
           ) : selectedAsset ? (
             <main className="loupe-workspace" data-preview-tour="loupe">
               <div className="loupe-commandbar">
@@ -750,7 +926,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
                 </div>
               </div>
               <div className="loupe-stage" onContextMenu={(event) => showContextMenu(event, selectedAsset)}>
-                <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={LOUPE_PREVIEW_EDGE} version={photoPreviewVersion(selectedAsset, index.indexedAtMs)} alt={selectedAsset.name} eager />
+                <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={LOUPE_PREVIEW_EDGE} version={photoPreviewVersion(selectedAsset)} alt={selectedAsset.name} eager />
               </div>
               <div className="loupe-metadata">
                 <span className="loupe-rating" data-preview-tour="rating">
@@ -765,7 +941,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
               <div ref={filmstripRef} className="loupe-filmstrip" aria-label="照片胶片栏">
                 {visibleAssets.map((asset) => (
                   <button ref={asset.id === effectiveSelectedId ? selectedFilmstripItemRef : undefined} key={asset.id} type="button" className={asset.id === effectiveSelectedId ? "is-selected" : ""} onClick={() => setSelectedId(asset.id)} onContextMenu={(event) => showContextMenu(event, asset)} aria-label={asset.name} aria-pressed={asset.id === effectiveSelectedId} title={asset.name}>
-                    <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={160} version={photoPreviewVersion(asset, index.indexedAtMs)} alt="" />
+                    <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={256} version={photoPreviewVersion(asset)} alt="" />
                     {asset.rating > 0 ? <span className="filmstrip-rating"><Star aria-hidden="true" size={10} fill="currentColor" />{asset.rating}</span> : null}
                   </button>
                 ))}
@@ -801,16 +977,16 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
             <span>{filterCounts.paired} 组已配对</span>
             <span>{ratedCount} 张已评分</span>
             {filterCounts.raw > 0 ? <span>{filterCounts.raw} 张仅 RAW</span> : null}
-            {preloadProgress.total > 0 ? (
-              <span className={preloadProgress.completed < preloadProgress.total ? "preload-status is-loading" : "preload-status"} aria-live="polite">
-                {preloadProgress.completed < preloadProgress.total
-                  ? `预加载 ${preloadProgress.completed} / ${preloadProgress.total}`
-                  : preloadProgress.failed > 0
-                    ? `${preloadProgress.total - preloadProgress.failed} 张预览就绪 · ${preloadProgress.failed} 张失败`
-                    : `${preloadProgress.total} 张预览已就绪`}
+            <span>{busy ? "索引正在更新" : `索引于 ${formatDate(index.indexedAtMs)}`}</span>
+            {previewPreloadProgress ? (
+              <span className={`preload-status${previewPreloadProgress.completed < previewPreloadProgress.total ? " is-loading" : previewPreloadProgress.failed > 0 ? " has-errors" : ""}`}>
+                {previewPreloadProgress.completed < previewPreloadProgress.total
+                  ? `大图预加载 ${previewPreloadProgress.completed}/${previewPreloadProgress.total}`
+                  : previewPreloadProgress.failed > 0
+                    ? `大图预加载完成，${previewPreloadProgress.failed} 张失败`
+                    : `已预加载 ${previewPreloadProgress.total} 张大图`}
               </span>
             ) : null}
-            <span>索引于 {formatDate(index.indexedAtMs)}</span>
           </footer>
         </>
       ) : (

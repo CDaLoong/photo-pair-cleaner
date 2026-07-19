@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import {
+  PreviewLoadScheduler,
   PreviewUrlCache,
   preloadPreviewRequests,
 } from "../src/features/preview/previewCache.ts";
@@ -711,6 +712,30 @@ test("filmstrip scroll keeps the selected thumbnail inside the viewport", () => 
   }), 600);
 });
 
+test("virtual photo grid keeps a fixed DOM window for large directories", () => {
+  const firstWindow = previewUtils.virtualPhotoGridWindow({
+    itemCount: 1000,
+    tileSize: 180,
+    viewportWidth: 800,
+    viewportHeight: 600,
+    scrollTop: 0,
+  });
+  const scrolledWindow = previewUtils.virtualPhotoGridWindow({
+    itemCount: 1000,
+    tileSize: 180,
+    viewportWidth: 800,
+    viewportHeight: 600,
+    scrollTop: 4700,
+  });
+
+  assert.equal(firstWindow.columns, 4);
+  assert.equal(firstWindow.totalHeight, 46988);
+  assert.equal(firstWindow.startIndex, 0);
+  assert.equal(firstWindow.endIndex, 24);
+  assert.ok(scrolledWindow.startIndex > 0);
+  assert.ok(scrolledWindow.endIndex - scrolledWindow.startIndex <= 32);
+});
+
 const previewRequest = {
   root: "/photos",
   relativePath: "day/A.JPG",
@@ -753,6 +778,103 @@ test("clearing a preview root releases URLs and permits a fresh load", async () 
   assert.equal(cache.peek(previewRequest), null);
   assert.equal(await cache.getOrLoad(previewRequest, loader), "blob:photo-2");
   assert.equal(calls, 2);
+});
+
+test("preview cache retains visible leases and evicts old unpinned URLs", async () => {
+  const released = [];
+  const cache = new PreviewUrlCache((url) => released.push(url), 2);
+  const request = (name) => ({ ...previewRequest, relativePath: name });
+
+  const first = cache.acquire(request("A.JPG"), async () => "blob:a");
+  const second = cache.acquire(request("B.JPG"), async () => "blob:b");
+  await Promise.all([first.promise, second.promise]);
+  first.release();
+
+  const third = cache.acquire(request("C.JPG"), async () => "blob:c");
+  await third.promise;
+
+  assert.deepEqual(released, ["blob:a"]);
+  assert.equal(cache.peek(request("A.JPG")), null);
+  assert.equal(cache.peek(request("B.JPG")), "blob:b");
+  assert.equal(cache.peek(request("C.JPG")), "blob:c");
+  second.release();
+  third.release();
+});
+
+test("releasing the last pending preview lease cancels abandoned work", async () => {
+  const cache = new PreviewUrlCache();
+  const lease = cache.acquire(previewRequest, (signal) => new Promise((resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+  }));
+
+  lease.release();
+
+  await assert.rejects(lease.promise, /cancelled/);
+  assert.equal(cache.peek(previewRequest), null);
+});
+
+test("preview scheduler prioritizes visible work without exceeding its limit", async () => {
+  const scheduler = new PreviewLoadScheduler(1);
+  const order = [];
+  let releaseFirst;
+  const first = scheduler.schedule(async () => {
+    order.push("first");
+    await new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+  });
+  const background = scheduler.schedule(async () => {
+    order.push("background");
+  });
+  const foreground = scheduler.schedule(async () => {
+    order.push("foreground");
+  }, "foreground");
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  releaseFirst();
+  await Promise.all([first, background, foreground]);
+
+  assert.deepEqual(order, ["first", "foreground", "background"]);
+});
+
+test("preview indexing streams progress and preloads loupe images with bounded background work", () => {
+  const moduleSource = fs.readFileSync(
+    new URL("../src/features/preview/PreviewModule.tsx", import.meta.url),
+    "utf8",
+  );
+  const thumbnailSource = fs.readFileSync(
+    new URL("../src/features/preview/PhotoThumbnail.tsx", import.meta.url),
+    "utf8",
+  );
+  const gridSource = fs.readFileSync(
+    new URL("../src/features/preview/VirtualPhotoGrid.tsx", import.meta.url),
+    "utf8",
+  );
+  const cacheSource = fs.readFileSync(
+    new URL("../src/features/preview/previewCache.ts", import.meta.url),
+    "utf8",
+  );
+  const backendSource = fs.readFileSync(
+    new URL("../src-tauri/src/lib.rs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(moduleSource, /new Channel<PhotoIndexEvent>\(\)/);
+  assert.match(moduleSource, /onEvent: channel/);
+  assert.match(moduleSource, /preview-index-progress-track/);
+  assert.match(moduleSource, /preloadPreviewRequests/);
+  assert.match(moduleSource, /warmPhotoPreviewCache/);
+  assert.match(moduleSource, /concurrency: 1/);
+  assert.match(moduleSource, /nearbyOffsets = \[0, 1, -1, 2, -2, 3, -3\]/);
+  assert.match(moduleSource, /大图预加载进度/);
+  assert.match(cacheSource, /warm_photo_thumbnail/);
+  assert.match(backendSource, /warm_photo_thumbnail/);
+  assert.match(thumbnailSource, /Math\.min\(maxEdge, QUICK_PREVIEW_EDGE\)/);
+  assert.match(thumbnailSource, /peekPhotoPreviewUrl/);
+  assert.match(thumbnailSource, /rootMargin: "600px"/);
+  assert.match(thumbnailSource, /acquirePhotoPreviewUrl/);
+  assert.match(gridSource, /virtualPhotoGridWindow/);
+  assert.match(gridSource, /assets\.slice\(windowState\.startIndex, windowState\.endIndex\)/);
 });
 
 test("preview preloader covers every request with bounded concurrency", async () => {

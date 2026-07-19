@@ -8,6 +8,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
+const THUMBNAIL_CACHE_VERSION: u8 = 2;
+
 fn modified_ms(metadata: &fs::Metadata) -> Option<u64> {
     metadata
         .modified()
@@ -59,6 +61,7 @@ fn thumbnail_cache_path(
     metadata.len().hash(&mut hasher);
     modified_ms(metadata).hash(&mut hasher);
     max_edge.hash(&mut hasher);
+    THUMBNAIL_CACHE_VERSION.hash(&mut hasher);
     cache_root.join(format!("{:016x}.jpg", hasher.finish()))
 }
 
@@ -73,6 +76,66 @@ pub(crate) fn temporary_cache_path(cache_path: &Path) -> PathBuf {
             .unwrap_or_default(),
         std::process::id(),
     ))
+}
+
+fn decode_thumbnail(source: &Path, max_edge: u32) -> Result<Vec<u8>, String> {
+    #[cfg(windows)]
+    if let Ok(bytes) = crate::windows_thumbnail::load_system_thumbnail(source, max_edge) {
+        return Ok(bytes);
+    }
+
+    let reader = ImageReader::open(source)
+        .map_err(|error| format!("无法打开 JPG 预览：{error}"))?
+        .with_guessed_format()
+        .map_err(|error| format!("无法识别 JPG 预览：{error}"))?;
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|error| format!("无法创建 JPG 解码器：{error}"))?;
+    let orientation = decoder
+        .orientation()
+        .map_err(|error| format!("无法读取 JPG 方向：{error}"))?;
+    let mut image = DynamicImage::from_decoder(decoder)
+        .map_err(|error| format!("无法解码 JPG 预览：{error}"))?;
+    image.apply_orientation(orientation);
+    let (width, height) = image.dimensions();
+    let thumbnail = if width > max_edge || height > max_edge {
+        image.thumbnail(max_edge, max_edge)
+    } else {
+        image
+    };
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 84)
+        .encode_image(&thumbnail)
+        .map_err(|error| format!("无法生成 JPG 缩略图：{error}"))?;
+    Ok(bytes)
+}
+
+fn save_thumbnail(cache_path: &Path, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let temporary_path = temporary_cache_path(cache_path);
+    let mut temporary = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_path)
+        .map_err(|error| format!("无法写入缩略图缓存：{error}"))?;
+    if let Err(error) = temporary
+        .write_all(&bytes)
+        .and_then(|_| temporary.sync_all())
+    {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!("无法保存缩略图缓存：{error}"));
+    }
+    drop(temporary);
+    match fs::rename(&temporary_path, cache_path) {
+        Ok(()) => Ok(bytes),
+        Err(_) if cache_path.is_file() => {
+            let _ = fs::remove_file(&temporary_path);
+            fs::read(cache_path).map_err(|error| format!("无法读取缩略图缓存：{error}"))
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temporary_path);
+            Err(format!("无法完成缩略图缓存：{error}"))
+        }
+    }
 }
 
 pub(crate) fn load_thumbnail(
@@ -99,53 +162,40 @@ pub(crate) fn load_thumbnail(
         return fs::read(&cache_path).map_err(|error| format!("无法读取缩略图缓存：{error}"));
     }
 
-    let reader = ImageReader::open(&source)
-        .map_err(|error| format!("无法打开 JPG 预览：{error}"))?
-        .with_guessed_format()
-        .map_err(|error| format!("无法识别 JPG 预览：{error}"))?;
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|error| format!("无法创建 JPG 解码器：{error}"))?;
-    let orientation = decoder
-        .orientation()
-        .map_err(|error| format!("无法读取 JPG 方向：{error}"))?;
-    let mut image = DynamicImage::from_decoder(decoder)
-        .map_err(|error| format!("无法解码 JPG 预览：{error}"))?;
-    image.apply_orientation(orientation);
-    let (width, height) = image.dimensions();
-    let thumbnail = if width > max_edge || height > max_edge {
-        image.thumbnail(max_edge, max_edge)
-    } else {
-        image
-    };
-    let mut bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut bytes, 84)
-        .encode_image(&thumbnail)
-        .map_err(|error| format!("无法生成 JPG 缩略图：{error}"))?;
+    let bytes = decode_thumbnail(&source, max_edge)?;
+    save_thumbnail(&cache_path, bytes)
+}
 
-    let temporary_path = temporary_cache_path(&cache_path);
-    let mut temporary = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary_path)
-        .map_err(|error| format!("无法写入缩略图缓存：{error}"))?;
-    if let Err(error) = temporary
-        .write_all(&bytes)
-        .and_then(|_| temporary.sync_all())
-    {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(format!("无法保存缩略图缓存：{error}"));
-    }
-    drop(temporary);
-    match fs::rename(&temporary_path, &cache_path) {
-        Ok(()) => Ok(bytes),
-        Err(_) if cache_path.is_file() => {
-            let _ = fs::remove_file(&temporary_path);
-            fs::read(&cache_path).map_err(|error| format!("无法读取缩略图缓存：{error}"))
-        }
-        Err(error) => {
-            let _ = fs::remove_file(&temporary_path);
-            Err(format!("无法完成缩略图缓存：{error}"))
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ImageFormat, Rgb, RgbImage};
+
+    #[test]
+    fn thumbnail_pipeline_writes_and_reuses_a_bounded_cache_entry() {
+        let root = tempfile::tempdir().expect("photo root");
+        let cache = tempfile::tempdir().expect("cache root");
+        let source = root.path().join("sample.jpg");
+        let image = RgbImage::from_fn(1200, 800, |x, y| {
+            Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
+        });
+        image
+            .save_with_format(&source, ImageFormat::Jpeg)
+            .expect("write jpeg fixture");
+
+        let first = load_thumbnail(root.path(), "sample.jpg", 256, cache.path())
+            .expect("generate thumbnail");
+        let second =
+            load_thumbnail(root.path(), "sample.jpg", 256, cache.path()).expect("reuse thumbnail");
+        let thumbnail = image::load_from_memory(&first).expect("decode thumbnail");
+        let cache_files = fs::read_dir(cache.path())
+            .expect("read cache")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("cache entries");
+
+        assert_eq!(first, second);
+        assert_eq!(cache_files.len(), 1);
+        assert!(thumbnail.width() <= 256);
+        assert!(thumbnail.height() <= 256);
     }
 }

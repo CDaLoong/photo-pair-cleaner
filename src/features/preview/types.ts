@@ -48,6 +48,27 @@ export interface PhotoIndex {
   assets: PhotoAsset[];
 }
 
+export type PhotoIndexPhase = "discovering" | "grouping" | "ratings" | "finalizing";
+
+export interface PhotoIndexProgress {
+  phase: PhotoIndexPhase;
+  completed: number;
+  total: number | null;
+  filesFound: number;
+  assetsFound: number;
+}
+
+export type PhotoIndexEvent =
+  | { event: "progress"; progress: PhotoIndexProgress }
+  | {
+    event: "assets";
+    batch: {
+      root: string;
+      totalAssets: number;
+      assets: PhotoAsset[];
+    };
+  };
+
 export interface PhotoDirectoryNode {
   name: string;
   path: string;

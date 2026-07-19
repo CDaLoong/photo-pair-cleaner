@@ -3,7 +3,7 @@ use crate::rating_metadata;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
@@ -65,6 +65,40 @@ pub(crate) struct PhotoIndex {
     pub(crate) previewable_assets: usize,
     pub(crate) raw_only_assets: usize,
     pub(crate) assets: Vec<PhotoAsset>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PhotoIndexPhase {
+    Discovering,
+    Grouping,
+    Ratings,
+    Finalizing,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PhotoIndexProgress {
+    pub(crate) phase: PhotoIndexPhase,
+    pub(crate) completed: usize,
+    pub(crate) total: Option<usize>,
+    pub(crate) files_found: usize,
+    pub(crate) assets_found: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PhotoIndexAssetBatch {
+    pub(crate) root: String,
+    pub(crate) total_assets: usize,
+    pub(crate) assets: Vec<PhotoAsset>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event", rename_all = "camelCase")]
+pub(crate) enum PhotoIndexEvent {
+    Progress { progress: PhotoIndexProgress },
+    Assets { batch: PhotoIndexAssetBatch },
 }
 
 #[derive(Default)]
@@ -234,14 +268,40 @@ fn finalize_asset(key: String, mut builder: PhotoAssetBuilder) -> PhotoAsset {
     }
 }
 
+fn should_report_progress(completed: usize, total: usize) -> bool {
+    completed == total || completed % (total / 100).max(1) == 0
+}
+
 pub(crate) fn index_directory(root: &Path) -> Result<PhotoIndex, String> {
+    index_directory_with_events(root, |_| {})
+}
+
+pub(crate) fn index_directory_with_events<F>(
+    root: &Path,
+    mut on_event: F,
+) -> Result<PhotoIndex, String>
+where
+    F: FnMut(PhotoIndexEvent),
+{
     let root = fs::canonicalize(root).map_err(|error| format!("照片目录不可访问：{error}"))?;
     if !root.is_dir() {
         return Err("照片目录不是文件夹".to_string());
     }
 
-    let mut groups = BTreeMap::<String, PhotoAssetBuilder>::new();
-    let mut sidecars = Vec::new();
+    on_event(PhotoIndexEvent::Progress {
+        progress: PhotoIndexProgress {
+            phase: PhotoIndexPhase::Discovering,
+            completed: 0,
+            total: None,
+            files_found: 0,
+            assets_found: 0,
+        },
+    });
+
+    let mut photo_files = Vec::<(PathBuf, PhotoMemberKind)>::new();
+    let mut sidecars = Vec::<PathBuf>::new();
+    let mut files_scanned = 0usize;
+    let mut files_found = 0usize;
     for entry in WalkDir::new(&root)
         .follow_links(false)
         .into_iter()
@@ -251,26 +311,59 @@ pub(crate) fn index_directory(root: &Path) -> Result<PhotoIndex, String> {
         if !entry.file_type().is_file() {
             continue;
         }
+        files_scanned += 1;
         let path = entry.path();
         if formats::is_sidecar(path) {
             sidecars.push(path.to_path_buf());
-            continue;
-        }
-        let kind = if formats::is_reference(path) {
-            PhotoMemberKind::Jpeg
+            files_found += 1;
+        } else if formats::is_reference(path) {
+            photo_files.push((path.to_path_buf(), PhotoMemberKind::Jpeg));
+            files_found += 1;
         } else if formats::is_raw(path) {
-            PhotoMemberKind::Raw
-        } else {
-            continue;
-        };
+            photo_files.push((path.to_path_buf(), PhotoMemberKind::Raw));
+            files_found += 1;
+        }
+        if files_scanned == 1 || files_scanned % 64 == 0 {
+            on_event(PhotoIndexEvent::Progress {
+                progress: PhotoIndexProgress {
+                    phase: PhotoIndexPhase::Discovering,
+                    completed: files_scanned,
+                    total: None,
+                    files_found,
+                    assets_found: 0,
+                },
+            });
+        }
+    }
+    on_event(PhotoIndexEvent::Progress {
+        progress: PhotoIndexProgress {
+            phase: PhotoIndexPhase::Discovering,
+            completed: files_scanned,
+            total: Some(files_scanned),
+            files_found,
+            assets_found: 0,
+        },
+    });
 
+    let mut groups = BTreeMap::<String, PhotoAssetBuilder>::new();
+    let grouping_total = photo_files.len() + sidecars.len();
+    on_event(PhotoIndexEvent::Progress {
+        progress: PhotoIndexProgress {
+            phase: PhotoIndexPhase::Grouping,
+            completed: 0,
+            total: Some(grouping_total),
+            files_found,
+            assets_found: 0,
+        },
+    });
+    for (index, (path, kind)) in photo_files.into_iter().enumerate() {
         let relative = path
             .strip_prefix(&root)
             .map_err(|_| "照片索引超出了所选目录".to_string())?;
         let relative_path = display_path(relative);
         let relative_stem = display_path(&relative.with_extension(""));
         let key = formats::photo_group_key(relative, false);
-        let member = member_snapshot(&root, path, kind)?;
+        let member = member_snapshot(&root, &path, kind)?;
         let builder = groups.entry(key).or_insert_with(|| PhotoAssetBuilder {
             relative_stem,
             ..PhotoAssetBuilder::default()
@@ -287,10 +380,23 @@ pub(crate) fn index_directory(root: &Path) -> Result<PhotoIndex, String> {
             (current, None) => current,
         };
         builder.members.push(member);
+        let completed = index + 1;
+        if should_report_progress(completed, grouping_total) {
+            on_event(PhotoIndexEvent::Progress {
+                progress: PhotoIndexProgress {
+                    phase: PhotoIndexPhase::Grouping,
+                    completed,
+                    total: Some(grouping_total),
+                    files_found,
+                    assets_found: groups.len(),
+                },
+            });
+        }
     }
 
     sidecars.sort_by_key(|path| display_path(path).to_lowercase());
-    for path in sidecars {
+    let photo_file_count = grouping_total.saturating_sub(sidecars.len());
+    for (index, path) in sidecars.into_iter().enumerate() {
         let relative = path
             .strip_prefix(&root)
             .map_err(|_| "XMP 文件超出了所选目录".to_string())?;
@@ -298,27 +404,71 @@ pub(crate) fn index_directory(root: &Path) -> Result<PhotoIndex, String> {
             .into_iter()
             .filter(|key| groups.contains_key(key))
             .collect::<Vec<_>>();
-        let Some(key) = matching_keys.last() else {
-            continue;
-        };
-        let member = member_snapshot(&root, &path, PhotoMemberKind::Xmp)?;
-        let builder = groups.get_mut(key).expect("matched group must exist");
-        if matching_keys.len() > 1 {
-            builder
-                .rating_issues
-                .push(format!("XMP {} 可以匹配多个照片组", member.relative_path));
+        if let Some(key) = matching_keys.last() {
+            let member = member_snapshot(&root, &path, PhotoMemberKind::Xmp)?;
+            let builder = groups.get_mut(key).expect("matched group must exist");
+            if matching_keys.len() > 1 {
+                builder
+                    .rating_issues
+                    .push(format!("XMP {} 可以匹配多个照片组", member.relative_path));
+            }
+            builder.xmp_paths.push(member.relative_path.clone());
+            builder.members.push(member);
         }
-        builder.xmp_paths.push(member.relative_path.clone());
-        builder.members.push(member);
+        let completed = photo_file_count + index + 1;
+        if should_report_progress(completed, grouping_total) {
+            on_event(PhotoIndexEvent::Progress {
+                progress: PhotoIndexProgress {
+                    phase: PhotoIndexPhase::Grouping,
+                    completed,
+                    total: Some(grouping_total),
+                    files_found,
+                    assets_found: groups.len(),
+                },
+            });
+        }
     }
 
-    let assets = groups
-        .into_iter()
-        .map(|(key, mut builder)| {
-            populate_external_ratings(&root, &mut builder);
-            finalize_asset(key, builder)
-        })
-        .collect::<Vec<_>>();
+    let total_assets = groups.len();
+    on_event(PhotoIndexEvent::Progress {
+        progress: PhotoIndexProgress {
+            phase: PhotoIndexPhase::Ratings,
+            completed: 0,
+            total: Some(total_assets),
+            files_found,
+            assets_found: total_assets,
+        },
+    });
+    let display_root = display_path(&root);
+    let mut assets = Vec::with_capacity(total_assets);
+    let mut batch = Vec::with_capacity(12);
+    for (index, (key, mut builder)) in groups.into_iter().enumerate() {
+        populate_external_ratings(&root, &mut builder);
+        let asset = finalize_asset(key, builder);
+        batch.push(asset.clone());
+        assets.push(asset);
+        let completed = index + 1;
+        if completed == 12 || batch.len() == 64 || completed == total_assets {
+            on_event(PhotoIndexEvent::Assets {
+                batch: PhotoIndexAssetBatch {
+                    root: display_root.clone(),
+                    total_assets,
+                    assets: std::mem::take(&mut batch),
+                },
+            });
+        }
+        if should_report_progress(completed, total_assets) {
+            on_event(PhotoIndexEvent::Progress {
+                progress: PhotoIndexProgress {
+                    phase: PhotoIndexPhase::Ratings,
+                    completed,
+                    total: Some(total_assets),
+                    files_found,
+                    assets_found: total_assets,
+                },
+            });
+        }
+    }
     let paired_assets = assets
         .iter()
         .filter(|asset| !asset.jpeg_paths.is_empty() && !asset.raw_paths.is_empty())
@@ -333,7 +483,7 @@ pub(crate) fn index_directory(root: &Path) -> Result<PhotoIndex, String> {
         .count();
 
     Ok(PhotoIndex {
-        root: display_path(&root),
+        root: display_root,
         indexed_at_ms: now_ms(),
         total_assets: assets.len(),
         paired_assets,
@@ -351,5 +501,50 @@ pub(crate) fn apply_framepair_ratings(index: &mut PhotoIndex, ratings: &HashMap<
         asset.rating_state.resolved = rating;
         asset.rating_state.conflict =
             !asset.rating_issues.is_empty() || calculate_rating_conflict(&asset.rating_state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progressive_index_reports_phases_and_asset_batches() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        fs::write(temp.path().join("A.JPG"), b"not-a-real-jpeg").expect("write jpeg fixture");
+        fs::write(temp.path().join("A.ARW"), b"raw").expect("write raw fixture");
+        fs::write(temp.path().join("orphan.xmp"), b"<xmp />").expect("write xmp fixture");
+        fs::write(temp.path().join("ignored.txt"), b"ignored").expect("write ignored fixture");
+
+        let mut events = Vec::new();
+        let index = index_directory_with_events(temp.path(), |event| events.push(event))
+            .expect("index directory");
+
+        assert_eq!(index.total_assets, 1);
+        assert_eq!(index.paired_assets, 1);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PhotoIndexEvent::Progress { progress }
+                if progress.phase == PhotoIndexPhase::Discovering && progress.files_found == 3
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PhotoIndexEvent::Progress { progress }
+                if progress.phase == PhotoIndexPhase::Grouping
+                    && progress.completed == 3
+                    && progress.total == Some(3)
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PhotoIndexEvent::Progress { progress }
+                if progress.phase == PhotoIndexPhase::Ratings
+                    && progress.completed == 1
+                    && progress.total == Some(1)
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PhotoIndexEvent::Assets { batch }
+                if batch.total_assets == 1 && batch.assets.len() == 1
+        )));
     }
 }

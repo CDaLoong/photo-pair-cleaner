@@ -33,6 +33,8 @@ mod watermark_source;
 mod watermark_templates;
 #[allow(dead_code)]
 mod watermark_text;
+#[cfg(windows)]
+mod windows_thumbnail;
 
 use chrono::Utc;
 use safety::{CleanupPlan, FileSnapshot, unique_keys};
@@ -928,6 +930,7 @@ async fn index_photo_directory(
     app: tauri::AppHandle,
     state: tauri::State<'_, RatingStore>,
     root: String,
+    on_event: tauri::ipc::Channel<photo_groups::PhotoIndexEvent>,
 ) -> Result<photo_groups::PhotoIndex, String> {
     let database_path = app
         .path()
@@ -939,9 +942,30 @@ async fn index_photo_directory(
         let _guard = access
             .lock()
             .map_err(|_| "无法锁定评分数据库".to_string())?;
-        let mut index = photo_groups::index_directory(Path::new(&root))?;
+        let progress_channel = on_event.clone();
+        let mut index = photo_groups::index_directory_with_events(Path::new(&root), |event| {
+            let _ = progress_channel.send(event);
+        })?;
+        let _ = on_event.send(photo_groups::PhotoIndexEvent::Progress {
+            progress: photo_groups::PhotoIndexProgress {
+                phase: photo_groups::PhotoIndexPhase::Finalizing,
+                completed: 0,
+                total: Some(1),
+                files_found: index.assets.iter().map(|asset| asset.members.len()).sum(),
+                assets_found: index.total_assets,
+            },
+        });
         let ratings = ratings::load_ratings(&database_path, Path::new(&root))?;
         photo_groups::apply_framepair_ratings(&mut index, &ratings);
+        let _ = on_event.send(photo_groups::PhotoIndexEvent::Progress {
+            progress: photo_groups::PhotoIndexProgress {
+                phase: photo_groups::PhotoIndexPhase::Finalizing,
+                completed: 1,
+                total: Some(1),
+                files_found: index.assets.iter().map(|asset| asset.members.len()).sum(),
+                assets_found: index.total_assets,
+            },
+        });
         Ok(index)
     })
     .await
@@ -1342,6 +1366,25 @@ async fn open_photo_in_editor(
 }
 
 #[tauri::command]
+async fn warm_photo_thumbnail(
+    app: tauri::AppHandle,
+    root: String,
+    relative_path: String,
+    max_edge: u32,
+) -> Result<(), String> {
+    let cache_root = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("无法确定缩略图缓存目录：{error}"))?
+        .join("photo-thumbnails");
+    tauri::async_runtime::spawn_blocking(move || {
+        preview::load_thumbnail(Path::new(&root), &relative_path, max_edge, &cache_root).map(|_| ())
+    })
+    .await
+    .map_err(|error| format!("缩略图预加载任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 async fn load_photo_thumbnail(
     app: tauri::AppHandle,
     root: String,
@@ -1417,6 +1460,7 @@ pub fn run() {
             restore_rating_move,
             restore_rating_quarantine,
             undo_rating_copy,
+            warm_photo_thumbnail,
             load_photo_thumbnail,
             list_external_editors,
             open_photo_in_editor,

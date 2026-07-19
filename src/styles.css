@@ -370,6 +370,69 @@ input:disabled {
   border-bottom: 1px solid var(--line);
 }
 
+.preview-index-progress {
+  display: grid;
+  gap: 7px;
+  min-height: 50px;
+  padding: 8px 16px 9px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.preview-index-progress-copy {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.preview-index-progress-copy strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.preview-index-progress-copy span {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-index-progress-copy b {
+  min-width: 34px;
+  color: var(--accent-ink);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.preview-index-progress-track {
+  position: relative;
+  height: 5px;
+  overflow: hidden;
+  background: var(--surface-active);
+  border-radius: 2px;
+}
+
+.preview-index-progress-track > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 160ms ease;
+}
+
+.preview-index-progress-track.is-indeterminate > span {
+  width: 28%;
+  animation: activity 1.1s ease-in-out infinite;
+}
+
+.preview-index-progress.is-preload {
+  background: var(--surface-subtle);
+}
+
 .preview-root {
   display: flex;
   align-items: center;
@@ -717,6 +780,18 @@ input:disabled {
   gap: 12px;
 }
 
+.photo-grid.photo-grid-virtual {
+  position: relative;
+  display: block;
+  min-width: var(--preview-tile-size);
+}
+
+.photo-grid-virtual .photo-tile {
+  position: absolute;
+  inset: 0 auto auto 0;
+  contain: layout paint style;
+}
+
 .photo-tile {
   position: relative;
   display: flex;
@@ -791,6 +866,17 @@ input:disabled {
   height: 100%;
   object-fit: cover;
   user-select: none;
+}
+
+.photo-thumbnail.is-preview::after {
+  position: absolute;
+  inset: auto auto 0 0;
+  width: 32%;
+  height: 2px;
+  background: var(--accent);
+  animation: activity 1.1s ease-in-out infinite;
+  content: "";
+  pointer-events: none;
 }
 
 .thumbnail-fallback {
@@ -1254,6 +1340,14 @@ input:disabled {
 
 .preview-statusbar .preload-status.is-loading {
   color: var(--accent-ink);
+}
+
+.preview-statusbar .preload-status.has-errors {
+  color: var(--warning);
+}
+
+.preview-statusbar > span:last-child {
+  margin-left: auto;
 }
 
 .app-header {
