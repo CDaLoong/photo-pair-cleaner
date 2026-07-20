@@ -22,7 +22,6 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -49,6 +48,7 @@ import { PhotoThumbnail } from "./PhotoThumbnail";
 import { PreviewGuideDialog } from "./PreviewGuideDialog";
 import { RatingControl } from "./RatingControl";
 import { VirtualPhotoGrid } from "./VirtualPhotoGrid";
+import { VirtualPhotoFilmstrip } from "./VirtualPhotoFilmstrip";
 import {
   clearPhotoPreviewCache,
   photoPreviewRequest,
@@ -61,11 +61,11 @@ import {
   buildPhotoDirectoryTree,
   contextMenuPosition,
   displayPreviewEdge,
-  filmstripScrollTarget,
   filterAssetsByDirectory,
   filterPreviewAssets,
   previewFilterCounts,
   previewKeyboardShortcutsEnabled,
+  previewPreloadOffsets,
   previewAssetPosition,
   shouldOpenPreviewGuide,
   sortPreviewAssets,
@@ -216,8 +216,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   const attemptedStoredRoot = useRef(false);
   const busyRef = useRef(busy);
   const indexedRootRef = useRef<string | null>(null);
-  const filmstripRef = useRef<HTMLDivElement>(null);
-  const selectedFilmstripItemRef = useRef<HTMLButtonElement>(null);
+  const previousLoupeIndexRef = useRef<number | null>(null);
   const attemptedEditorDiscovery = useRef(false);
   const attemptedPreviewGuide = useRef(false);
   const loadDirectoryRef = useRef<(
@@ -519,34 +518,28 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [active, contextMenu, effectiveSelectedId, guideOpen, ratingBusyId, selectedAsset, view, visibleAssets]);
 
-  useLayoutEffect(() => {
-    if (!active || view !== "loupe" || !effectiveSelectedId) return;
-    const filmstrip = filmstripRef.current;
-    const selectedItem = selectedFilmstripItemRef.current;
-    if (!filmstrip || !selectedItem) return;
-
-    const filmstripRect = filmstrip.getBoundingClientRect();
-    const itemRect = selectedItem.getBoundingClientRect();
-    filmstrip.scrollLeft = filmstripScrollTarget({
-      scrollLeft: filmstrip.scrollLeft,
-      clientWidth: filmstrip.clientWidth,
-      scrollWidth: filmstrip.scrollWidth,
-      itemOffsetLeft: itemRect.left - filmstripRect.left + filmstrip.scrollLeft,
-      itemWidth: itemRect.width,
-    });
-  }, [active, effectiveSelectedId, view, visibleAssets]);
-
   useEffect(() => {
-    if (!active || view !== "loupe" || !index || !effectiveSelectedId || !isTauri()) return;
+    if (!active || view !== "loupe" || !index || !effectiveSelectedId || !isTauri()) {
+      previousLoupeIndexRef.current = null;
+      return;
+    }
     const selectedIndex = visibleAssets.findIndex((asset) => asset.id === effectiveSelectedId);
     if (selectedIndex < 0) return;
-    const nearbyOffsets = [1, 2, 3, -1, -2, -3];
-    for (const offset of nearbyOffsets) {
+    const previousIndex = previousLoupeIndexRef.current;
+    const direction = previousIndex === null || previousIndex === selectedIndex
+      ? 0
+      : selectedIndex > previousIndex ? 1 : -1;
+    previousLoupeIndexRef.current = selectedIndex;
+    const controller = new AbortController();
+    for (const offset of previewPreloadOffsets(direction)) {
       const asset = visibleAssets[selectedIndex + offset];
       if (!asset) continue;
       const request = photoPreviewRequest(index.root, asset, loupePreviewEdge);
-      if (request) void preloadPhotoPreviewUrl(request).catch(() => undefined);
+      if (request) {
+        void preloadPhotoPreviewUrl(request, controller.signal).catch(() => undefined);
+      }
     }
+    return () => controller.abort();
   }, [active, effectiveSelectedId, index, loupePreviewEdge, view, visibleAssets]);
 
   async function chooseDirectory() {
@@ -925,14 +918,13 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
                   <small>{nativePreviewActive === true ? "Quick Look · 只读" : "显示缓存 · 只读"}</small>
                 </span>
               </div>
-              <div ref={filmstripRef} className="loupe-filmstrip" aria-label="照片胶片栏">
-                {visibleAssets.map((asset) => (
-                  <button ref={asset.id === effectiveSelectedId ? selectedFilmstripItemRef : undefined} key={asset.id} type="button" className={asset.id === effectiveSelectedId ? "is-selected" : ""} onClick={() => setSelectedId(asset.id)} onContextMenu={(event) => showContextMenu(event, asset)} aria-label={asset.name} aria-pressed={asset.id === effectiveSelectedId} title={asset.name}>
-                    <PhotoThumbnail root={index.root} relativePath={asset.previewPath} maxEdge={512} version={photoPreviewVersion(asset)} alt="" />
-                    {asset.rating > 0 ? <span className="filmstrip-rating"><Star aria-hidden="true" size={10} fill="currentColor" />{asset.rating}</span> : null}
-                  </button>
-                ))}
-              </div>
+              <VirtualPhotoFilmstrip
+                root={index.root}
+                assets={visibleAssets}
+                selectedId={effectiveSelectedId}
+                onSelect={(asset) => setSelectedId(asset.id)}
+                onContextMenu={showContextMenu}
+              />
             </main>
           ) : null}
             {contextAsset && contextMenu ? (

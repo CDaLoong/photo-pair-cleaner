@@ -1297,21 +1297,24 @@ input:disabled {
 .loupe-filmstrip {
   position: relative;
   z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  display: block;
   min-width: 0;
-  padding: 7px 10px;
   overflow-x: auto;
+  overflow-y: hidden;
   background: var(--surface-subtle);
   border-top: 1px solid var(--line);
 }
 
-.loupe-filmstrip > button {
+.loupe-filmstrip-window {
   position: relative;
+  height: 80px;
+}
+
+.loupe-filmstrip .filmstrip-item {
+  position: absolute;
+  top: 7px;
   width: 88px;
   height: 66px;
-  flex: 0 0 auto;
   padding: 0;
   overflow: hidden;
   background: transparent;
@@ -1328,7 +1331,7 @@ input:disabled {
   font-size: 9px;
 }
 
-.loupe-filmstrip > button.is-selected {
+.loupe-filmstrip .filmstrip-item.is-selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent);
 }

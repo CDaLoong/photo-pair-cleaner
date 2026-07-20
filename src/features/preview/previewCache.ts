@@ -21,7 +21,13 @@ interface CacheEntry {
   disposed: boolean;
   consumers: number;
   leased: boolean;
+  costBytes: number;
   controller: AbortController;
+}
+
+interface PreviewCacheLimits {
+  maxEntries: number;
+  maxCostBytes: number;
 }
 
 export interface PreviewUrlLease {
@@ -44,13 +50,23 @@ export class PreviewUrlCache {
   private readonly entries = new Map<string, CacheEntry>();
   private readonly release: (url: string) => void;
   private readonly maxEntries: number;
+  private readonly maxCostBytes: number;
+  private retainedCostBytes = 0;
 
   constructor(
     release: (url: string) => void = () => undefined,
-    maxEntries = Number.POSITIVE_INFINITY,
+    limits: number | Partial<PreviewCacheLimits> = Number.POSITIVE_INFINITY,
   ) {
     this.release = release;
-    this.maxEntries = Math.max(1, Math.floor(maxEntries));
+    const normalized = typeof limits === "number" ? { maxEntries: limits } : limits;
+    this.maxEntries = Math.max(
+      1,
+      Math.floor(normalized.maxEntries ?? Number.POSITIVE_INFINITY),
+    );
+    this.maxCostBytes = Math.max(
+      1,
+      Math.floor(normalized.maxCostBytes ?? Number.POSITIVE_INFINITY),
+    );
   }
 
   getOrLoad(
@@ -71,6 +87,7 @@ export class PreviewUrlCache {
       disposed: false,
       consumers: 0,
       leased: false,
+      costBytes: Math.max(1, request.maxEdge * request.maxEdge * 4),
       controller: new AbortController(),
     };
     entry.promise = loader(entry.controller.signal)
@@ -80,6 +97,7 @@ export class PreviewUrlCache {
           throw new Error("预览缓存已失效");
         }
         entry.url = url;
+        this.retainedCostBytes += entry.costBytes;
         this.touch(key, entry);
         this.trim();
         return url;
@@ -132,6 +150,7 @@ export class PreviewUrlCache {
       entry.disposed = true;
       entry.controller.abort();
       if (entry.url) this.release(entry.url);
+      if (entry.url) this.retainedCostBytes = Math.max(0, this.retainedCostBytes - entry.costBytes);
       this.entries.delete(key);
     }
   }
@@ -143,62 +162,125 @@ export class PreviewUrlCache {
   }
 
   private trim(): void {
-    if (this.entries.size <= this.maxEntries) return;
+    if (this.entries.size <= this.maxEntries && this.retainedCostBytes <= this.maxCostBytes) {
+      return;
+    }
     for (const [key, entry] of this.entries) {
-      if (this.entries.size <= this.maxEntries) return;
+      if (this.entries.size <= this.maxEntries && this.retainedCostBytes <= this.maxCostBytes) {
+        return;
+      }
       if (entry.consumers > 0 || !entry.url) continue;
       entry.disposed = true;
       entry.controller.abort();
       this.release(entry.url);
+      this.retainedCostBytes = Math.max(0, this.retainedCostBytes - entry.costBytes);
       this.entries.delete(key);
     }
+  }
+
+  estimatedCostBytes(): number {
+    return this.retainedCostBytes;
   }
 }
 
 export class PreviewLoadScheduler {
   private active = 0;
-  private readonly foreground: Array<() => Promise<void>> = [];
-  private readonly background: Array<() => Promise<void>> = [];
+  private activeBackground = 0;
+  private readonly foreground: ScheduledPreviewTask[] = [];
+  private readonly background: ScheduledPreviewTask[] = [];
   private readonly concurrency: number;
+  private readonly backgroundConcurrency: number;
 
-  constructor(concurrency = 2) {
-    this.concurrency = concurrency;
+  constructor(concurrency = 2, backgroundConcurrency = 1) {
+    this.concurrency = Math.max(1, Math.floor(concurrency));
+    this.backgroundConcurrency = Math.max(
+      1,
+      Math.min(this.concurrency, Math.floor(backgroundConcurrency)),
+    );
   }
 
   schedule<T>(
-    task: () => Promise<T>,
+    taskInput: () => Promise<T>,
     priority: PreviewLoadPriority = "background",
     signal?: AbortSignal,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const run = async () => {
-        if (signal?.aborted) {
-          reject(new Error("预览请求已取消"));
-          return;
-        }
-        try {
-          resolve(await task());
-        } catch (error) {
-          reject(error);
-        }
+      const scheduled: ScheduledPreviewTask = {
+        priority,
+        signal,
+        cancelled: false,
+        started: false,
+        abort: () => undefined,
+        run: async () => {
+          scheduled.started = true;
+          signal?.removeEventListener("abort", scheduled.abort);
+          if (scheduled.cancelled || signal?.aborted) {
+            reject(new Error("预览请求已取消"));
+            return;
+          }
+          try {
+            resolve(await taskInput());
+          } catch (error) {
+            reject(error);
+          }
+        },
       };
-      (priority === "foreground" ? this.foreground : this.background).push(run);
+      scheduled.abort = () => {
+        if (scheduled.started || scheduled.cancelled) return;
+        scheduled.cancelled = true;
+        reject(new Error("预览请求已取消"));
+        this.pump();
+      };
+      if (signal?.aborted) {
+        scheduled.abort();
+        return;
+      }
+      signal?.addEventListener("abort", scheduled.abort, { once: true });
+      (priority === "foreground" ? this.foreground : this.background).push(scheduled);
+      this.pump();
+    });
+  }
+
+  private next(queue: ScheduledPreviewTask[]): ScheduledPreviewTask | null {
+    while (queue.length > 0) {
+      const task = queue.shift()!;
+      if (!task.cancelled) return task;
+    }
+    return null;
+  }
+
+  private start(task: ScheduledPreviewTask) {
+    this.active += 1;
+    if (task.priority === "background") this.activeBackground += 1;
+    void task.run().finally(() => {
+      this.active -= 1;
+      if (task.priority === "background") this.activeBackground -= 1;
       this.pump();
     });
   }
 
   private pump(): void {
-    const maximum = Math.max(1, Math.floor(this.concurrency));
-    while (this.active < maximum) {
-      const next = this.foreground.shift() ?? this.background.shift();
-      if (!next) return;
-      this.active += 1;
-      void next().finally(() => {
-        this.active -= 1;
-        this.pump();
-      });
+    while (this.active < this.concurrency) {
+      const foreground = this.next(this.foreground);
+      if (foreground) {
+        this.start(foreground);
+        continue;
+      }
+      if (this.activeBackground >= this.backgroundConcurrency) return;
+      const background = this.next(this.background);
+      if (!background) return;
+      this.start(background);
     }
   }
+}
+
+interface ScheduledPreviewTask {
+  priority: PreviewLoadPriority;
+  signal?: AbortSignal;
+  cancelled: boolean;
+  started: boolean;
+  abort: () => void;
+  run: () => Promise<void>;
 }
 
 export function photoPreviewRequest(
@@ -263,8 +345,11 @@ export async function preloadPreviewRequests<T>(
   return progress;
 }
 
-const previewCache = new PreviewUrlCache((url) => URL.revokeObjectURL(url), 128);
-const previewScheduler = new PreviewLoadScheduler(3);
+const previewCache = new PreviewUrlCache((url) => URL.revokeObjectURL(url), {
+  maxEntries: 128,
+  maxCostBytes: 512 * 1024 * 1024,
+});
+const previewScheduler = new PreviewLoadScheduler(3, 1);
 const PREVIEW_LOAD_TIMEOUT_MS = 12_000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -300,7 +385,11 @@ export function peekPhotoPreviewUrl(request: PreviewRequest): string | null {
   return previewCache.peek(request);
 }
 
-async function fetchPhotoPreviewUrl(request: PreviewRequest): Promise<string> {
+async function fetchPhotoPreviewUrl(
+  request: PreviewRequest,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) throw new Error("预览请求已取消");
   const response = await withTimeout(
     invoke<ArrayBuffer | number[]>("load_photo_thumbnail", {
       root: request.root,
@@ -309,6 +398,7 @@ async function fetchPhotoPreviewUrl(request: PreviewRequest): Promise<string> {
     }),
     PREVIEW_LOAD_TIMEOUT_MS,
   );
+  if (signal?.aborted) throw new Error("预览请求已取消");
   const bytes = response instanceof ArrayBuffer
     ? new Uint8Array(response)
     : Uint8Array.from(response);
@@ -317,6 +407,7 @@ async function fetchPhotoPreviewUrl(request: PreviewRequest): Promise<string> {
   );
   try {
     await decodeImage(objectUrl);
+    if (signal?.aborted) throw new Error("预览请求已取消");
     return objectUrl;
   } catch (error) {
     URL.revokeObjectURL(objectUrl);
@@ -328,22 +419,36 @@ export function loadPhotoPreviewUrl(request: PreviewRequest): Promise<string> {
   return previewCache.getOrLoad(
     request,
     (signal) => previewScheduler.schedule(
-      () => fetchPhotoPreviewUrl(request),
+      () => fetchPhotoPreviewUrl(request, signal),
       request.maxEdge > 512 ? "foreground" : "background",
       signal,
     ),
   );
 }
 
-export function preloadPhotoPreviewUrl(request: PreviewRequest): Promise<string> {
-  return previewCache.getOrLoad(
+export async function preloadPhotoPreviewUrl(
+  request: PreviewRequest,
+  externalSignal?: AbortSignal,
+): Promise<string> {
+  if (externalSignal?.aborted) throw new Error("预览请求已取消");
+  const lease = previewCache.acquire(
     request,
     (signal) => previewScheduler.schedule(
-      () => fetchPhotoPreviewUrl(request),
+      () => fetchPhotoPreviewUrl(request, signal),
       "background",
       signal,
     ),
   );
+  const abort = () => lease.release();
+  externalSignal?.addEventListener("abort", abort, { once: true });
+  try {
+    const url = await lease.promise;
+    if (externalSignal?.aborted) throw new Error("预览请求已取消");
+    return url;
+  } finally {
+    externalSignal?.removeEventListener("abort", abort);
+    lease.release();
+  }
 }
 
 export function warmPhotoPreviewCache(
@@ -368,7 +473,7 @@ export function acquirePhotoPreviewUrl(
   return previewCache.acquire(
     request,
     (signal) => previewScheduler.schedule(
-      () => fetchPhotoPreviewUrl(request),
+      () => fetchPhotoPreviewUrl(request, signal),
       priority,
       signal,
     ),

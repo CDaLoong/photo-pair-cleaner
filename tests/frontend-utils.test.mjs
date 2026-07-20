@@ -720,6 +720,28 @@ test("filmstrip scroll keeps the selected thumbnail inside the viewport", () => 
   }), 600);
 });
 
+test("nearby preview preloads follow the current browsing direction", () => {
+  assert.deepEqual(previewUtils.previewPreloadOffsets(1), [1, 2, 3, -1]);
+  assert.deepEqual(previewUtils.previewPreloadOffsets(-1), [-1, -2, -3, 1]);
+  assert.deepEqual(previewUtils.previewPreloadOffsets(0), [1, -1]);
+});
+
+test("virtual filmstrip keeps a fixed DOM window for huge directories", () => {
+  const window = previewUtils.virtualFilmstripWindow({
+    itemCount: 10_000,
+    itemPitch: 95,
+    viewportWidth: 950,
+    scrollLeft: 475_000,
+    overscan: 5,
+  });
+
+  assert.equal(window.totalWidth, 950_000);
+  assert.ok(window.startIndex > 0);
+  assert.ok(window.endIndex - window.startIndex <= 20);
+  assert.ok(window.startIndex <= 5_000);
+  assert.ok(window.endIndex > 5_000);
+});
+
 test("virtual photo grid keeps a fixed DOM window for large directories", () => {
   const firstWindow = previewUtils.virtualPhotoGridWindow({
     itemCount: 1000,
@@ -809,6 +831,24 @@ test("preview cache retains visible leases and evicts old unpinned URLs", async 
   third.release();
 });
 
+test("preview cache evicts by estimated decoded bytes", async () => {
+  const released = [];
+  const cache = new PreviewUrlCache((url) => released.push(url), {
+    maxEntries: 10,
+    maxCostBytes: 70 * 1024 * 1024,
+  });
+  const large = { ...previewRequest, relativePath: "large.JPG", maxEdge: 4096 };
+  const medium = { ...previewRequest, relativePath: "medium.JPG", maxEdge: 1600 };
+
+  await cache.getOrLoad(large, async () => "blob:large");
+  await cache.getOrLoad(medium, async () => "blob:medium");
+
+  assert.deepEqual(released, ["blob:large"]);
+  assert.equal(cache.peek(large), null);
+  assert.equal(cache.peek(medium), "blob:medium");
+  assert.ok(cache.estimatedCostBytes() <= 70 * 1024 * 1024);
+});
+
 test("releasing the last pending preview lease cancels abandoned work", async () => {
   const cache = new PreviewUrlCache();
   const lease = cache.acquire(previewRequest, (signal) => new Promise((resolve, reject) => {
@@ -845,6 +885,54 @@ test("preview scheduler prioritizes visible work without exceeding its limit", a
   assert.deepEqual(order, ["first", "foreground", "background"]);
 });
 
+test("preview scheduler reserves capacity for foreground work", async () => {
+  const scheduler = new PreviewLoadScheduler(3, 1);
+  const started = [];
+  const releases = [];
+  const hold = (name) => scheduler.schedule(async () => {
+    started.push(name);
+    await new Promise((resolve) => releases.push(resolve));
+  }, name.startsWith("foreground") ? "foreground" : "background");
+
+  const work = [
+    hold("background-1"),
+    hold("background-2"),
+    hold("foreground-1"),
+    hold("foreground-2"),
+  ];
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(started, ["background-1", "foreground-1", "foreground-2"]);
+  for (const release of releases.splice(0)) release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (const release of releases.splice(0)) release();
+  await Promise.all(work);
+});
+
+test("aborting queued preview work rejects before an active job finishes", async () => {
+  const scheduler = new PreviewLoadScheduler(1, 1);
+  let releaseActive;
+  let queuedRan = false;
+  const active = scheduler.schedule(() => new Promise((resolve) => {
+    releaseActive = resolve;
+  }));
+  const controller = new AbortController();
+  const queued = scheduler.schedule(async () => {
+    queuedRan = true;
+  }, "background", controller.signal);
+
+  controller.abort();
+  const outcome = await Promise.race([
+    queued.then(() => "resolved", () => "cancelled"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 0)),
+  ]);
+
+  assert.equal(outcome, "cancelled");
+  assert.equal(queuedRan, false);
+  releaseActive();
+  await active;
+});
+
 test("preview indexing streams progress and preloads nearby display previews", () => {
   const moduleSource = fs.readFileSync(
     new URL("../src/features/preview/PreviewModule.tsx", import.meta.url),
@@ -858,6 +946,10 @@ test("preview indexing streams progress and preloads nearby display previews", (
     new URL("../src/features/preview/VirtualPhotoGrid.tsx", import.meta.url),
     "utf8",
   );
+  const filmstripSource = fs.readFileSync(
+    new URL("../src/features/preview/VirtualPhotoFilmstrip.tsx", import.meta.url),
+    "utf8",
+  );
   const cacheSource = fs.readFileSync(
     new URL("../src/features/preview/previewCache.ts", import.meta.url),
     "utf8",
@@ -868,6 +960,10 @@ test("preview indexing streams progress and preloads nearby display previews", (
   );
   const previewBackendSource = fs.readFileSync(
     new URL("../src-tauri/src/preview.rs", import.meta.url),
+    "utf8",
+  );
+  const previewCacheBackendSource = fs.readFileSync(
+    new URL("../src-tauri/src/preview_cache.rs", import.meta.url),
     "utf8",
   );
   const nativePreviewSource = fs.readFileSync(
@@ -889,7 +985,8 @@ test("preview indexing streams progress and preloads nearby display previews", (
   assert.doesNotMatch(moduleSource, /preloadPreviewRequests/);
   assert.doesNotMatch(moduleSource, /warmPhotoPreviewCache/);
   assert.match(moduleSource, /view !== "loupe"/);
-  assert.match(moduleSource, /nearbyOffsets = \[1, 2, 3, -1, -2, -3\]/);
+  assert.match(moduleSource, /previewPreloadOffsets\(direction\)/);
+  assert.match(moduleSource, /new AbortController\(\)/);
   assert.match(moduleSource, /恢复上次照片目录超时，请重新选择目录/);
   assert.match(moduleSource, /loupePreviewEdge/);
   assert.match(moduleSource, /setLoupePreviewEdge/);
@@ -915,7 +1012,10 @@ test("preview indexing streams progress and preloads nearby display previews", (
   assert.match(previewBackendSource, /THUMBNAIL_CACHE_VERSION: u8 = 3/);
   assert.match(previewBackendSource, /PREVIEW_CACHE_BUDGET_BYTES/);
   assert.match(previewBackendSource, /PREVIEW_CACHE_MAX_ENTRIES/);
-  assert.match(previewBackendSource, /prune_cache_to_limits/);
+  assert.match(previewBackendSource, /thumbnail_cache_relative_path/);
+  assert.match(previewCacheBackendSource, /pragma_update\(None, "journal_mode", "WAL"\)/);
+  assert.match(previewCacheBackendSource, /preview_entries_lru/);
+  assert.match(previewCacheBackendSource, /cache_for/);
   assert.match(previewBackendSource, /THUMBNAIL_GENERATION_LOCKS/);
   assert.match(previewBackendSource, /96\.\.=4096/);
   assert.match(previewBackendSource, /formatOptions/);
@@ -930,6 +1030,8 @@ test("preview indexing streams progress and preloads nearby display previews", (
   assert.match(gridSource, /virtualPhotoGridWindow/);
   assert.match(gridSource, /maxEdge=\{512\}/);
   assert.match(gridSource, /assets\.slice\(windowState\.startIndex, windowState\.endIndex\)/);
+  assert.match(filmstripSource, /virtualFilmstripWindow/);
+  assert.match(filmstripSource, /assets\.slice\(windowState\.startIndex, windowState\.endIndex\)/);
   assert.match(cargoSource, /objc2-app-kit/);
   assert.match(cargoSource, /objc2-foundation/);
 });

@@ -8,6 +8,7 @@ mod operation_history;
 mod operation_plan;
 mod photo_groups;
 mod preview;
+mod preview_cache;
 mod quarantine;
 mod rating_metadata;
 #[allow(dead_code)]

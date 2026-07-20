@@ -1,10 +1,8 @@
-use crate::formats;
+use crate::{formats, preview_cache};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::metadata::Orientation;
 use image::{DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageReader};
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
@@ -16,56 +14,10 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const THUMBNAIL_CACHE_VERSION: u8 = 3;
-const PREVIEW_CACHE_INDEX_VERSION: u8 = 1;
-const PREVIEW_CACHE_INDEX_FILE: &str = "preview-cache-index-v1.json";
 const PREVIEW_CACHE_BUDGET_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const PREVIEW_CACHE_MAX_ENTRIES: usize = 100_000;
-const PREVIEW_CACHE_ACCESS_FLUSH_COUNT: usize = 32;
-const PREVIEW_CACHE_ACCESS_FLUSH_MS: u64 = 30_000;
-const PREVIEW_CACHE_TARGET_PERCENT: u64 = 90;
+pub(crate) use crate::preview_cache::PreviewCacheStats;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreviewCacheEntry {
-    size_bytes: u64,
-    last_access_ms: u64,
-    #[serde(default)]
-    max_edge: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreviewCacheIndex {
-    schema_version: u8,
-    entries: HashMap<String, PreviewCacheEntry>,
-}
-
-impl PreviewCacheIndex {
-    fn empty() -> Self {
-        Self {
-            schema_version: PREVIEW_CACHE_INDEX_VERSION,
-            entries: HashMap::new(),
-        }
-    }
-}
-
-struct PreviewCacheState {
-    index: PreviewCacheIndex,
-    dirty_accesses: usize,
-    last_flush_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PreviewCacheStats {
-    pub(crate) entry_count: usize,
-    pub(crate) size_bytes: u64,
-    pub(crate) budget_bytes: u64,
-    pub(crate) max_entries: usize,
-}
-
-static PREVIEW_CACHE_STATES: LazyLock<Mutex<HashMap<PathBuf, PreviewCacheState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 static THUMBNAIL_GENERATION_LOCKS: LazyLock<Vec<Mutex<()>>> =
     LazyLock::new(|| (0..64).map(|_| Mutex::new(())).collect());
 
@@ -116,19 +68,23 @@ pub(crate) fn resolve_preview_path(root: &Path, relative_path: &str) -> Result<P
     Ok(path)
 }
 
-fn thumbnail_cache_path(
-    source: &Path,
-    metadata: &fs::Metadata,
-    max_edge: u32,
-    cache_root: &Path,
-) -> PathBuf {
+fn thumbnail_cache_key(source: &Path, metadata: &fs::Metadata, max_edge: u32) -> String {
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
     metadata.len().hash(&mut hasher);
     modified_ms(metadata).hash(&mut hasher);
     max_edge.hash(&mut hasher);
     THUMBNAIL_CACHE_VERSION.hash(&mut hasher);
-    cache_root.join(format!("{:016x}.jpg", hasher.finish()))
+    format!("{:016x}.jpg", hasher.finish())
+}
+
+pub(crate) fn thumbnail_cache_relative_path(
+    source: &Path,
+    metadata: &fs::Metadata,
+    max_edge: u32,
+) -> PathBuf {
+    let key = thumbnail_cache_key(source, metadata, max_edge);
+    PathBuf::from(&key[0..2]).join(&key[2..4]).join(key)
 }
 
 pub(crate) fn temporary_cache_path(cache_path: &Path) -> PathBuf {
@@ -144,237 +100,13 @@ pub(crate) fn temporary_cache_path(cache_path: &Path) -> PathBuf {
     ))
 }
 
-fn cache_index_path(cache_root: &Path) -> PathBuf {
-    cache_root.join(PREVIEW_CACHE_INDEX_FILE)
-}
-
-fn cache_file_name(cache_path: &Path) -> Result<String, String> {
-    cache_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| "缩略图缓存文件名无效".to_string())
-}
-
-fn load_cache_state(cache_root: &Path) -> Result<PreviewCacheState, String> {
-    let index_path = cache_index_path(cache_root);
-    let mut index = fs::read(&index_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<PreviewCacheIndex>(&bytes).ok())
-        .filter(|index| index.schema_version == PREVIEW_CACHE_INDEX_VERSION)
-        .unwrap_or_else(PreviewCacheIndex::empty);
-    let mut discovered = HashSet::new();
-
-    for item in
-        fs::read_dir(cache_root).map_err(|error| format!("无法扫描缩略图缓存目录：{error}"))?
-    {
-        let item = item.map_err(|error| format!("无法读取缩略图缓存项：{error}"))?;
-        let file_type = item
-            .file_type()
-            .map_err(|error| format!("无法读取缩略图缓存类型：{error}"))?;
-        if !file_type.is_file()
-            || item.path().extension().and_then(|value| value.to_str()) != Some("jpg")
-        {
-            continue;
-        }
-        let Some(name) = item.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        let metadata = item
-            .metadata()
-            .map_err(|error| format!("无法读取缩略图缓存信息：{error}"))?;
-        discovered.insert(name.clone());
-        index
-            .entries
-            .entry(name)
-            .and_modify(|entry| entry.size_bytes = metadata.len())
-            .or_insert_with(|| PreviewCacheEntry {
-                size_bytes: metadata.len(),
-                last_access_ms: modified_ms(&metadata).unwrap_or_default(),
-                max_edge: 0,
-            });
-    }
-    index.entries.retain(|name, _| discovered.contains(name));
-
-    Ok(PreviewCacheState {
-        index,
-        dirty_accesses: 1,
-        last_flush_ms: 0,
-    })
-}
-
-fn save_cache_index(cache_root: &Path, index: &PreviewCacheIndex) -> Result<(), String> {
-    let index_path = cache_index_path(cache_root);
-    let temporary_path = temporary_cache_path(&index_path);
-    let bytes =
-        serde_json::to_vec(index).map_err(|error| format!("无法序列化缩略图缓存索引：{error}"))?;
-    let mut temporary = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary_path)
-        .map_err(|error| format!("无法写入缩略图缓存索引：{error}"))?;
-    if let Err(error) = temporary
-        .write_all(&bytes)
-        .and_then(|_| temporary.sync_all())
-    {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(format!("无法保存缩略图缓存索引：{error}"));
-    }
-    drop(temporary);
-    #[cfg(windows)]
-    if index_path.is_file() {
-        if let Err(error) = fs::remove_file(&index_path) {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(format!("无法替换缩略图缓存索引：{error}"));
-        }
-    }
-    if let Err(error) = fs::rename(&temporary_path, &index_path) {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(format!("无法完成缩略图缓存索引：{error}"));
-    }
-    Ok(())
-}
-
-fn prune_cache_to_limits(
-    cache_root: &Path,
-    index: &mut PreviewCacheIndex,
-    budget_bytes: u64,
-    max_entries: usize,
-    protected_name: Option<&str>,
-) -> bool {
-    let budget_bytes = budget_bytes.max(1);
-    let max_entries = max_entries.max(1);
-    let mut size_bytes = index
-        .entries
-        .values()
-        .map(|entry| entry.size_bytes)
-        .sum::<u64>();
-    if size_bytes <= budget_bytes && index.entries.len() <= max_entries {
-        return false;
-    }
-
-    let target_bytes = budget_bytes
-        .saturating_mul(PREVIEW_CACHE_TARGET_PERCENT)
-        .checked_div(100)
-        .unwrap_or(budget_bytes)
-        .max(1);
-    let target_entries = max_entries
-        .saturating_mul(PREVIEW_CACHE_TARGET_PERCENT as usize)
-        .checked_div(100)
-        .unwrap_or(max_entries)
-        .max(1);
-    let mut candidates = index
-        .entries
-        .iter()
-        .map(|(name, entry)| (name.clone(), entry.last_access_ms, entry.size_bytes))
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
-    let mut changed = false;
-
-    for (name, _, entry_size) in candidates {
-        if size_bytes <= target_bytes && index.entries.len() <= target_entries {
-            break;
-        }
-        if protected_name == Some(name.as_str()) {
-            continue;
-        }
-        let path = cache_root.join(&name);
-        match fs::remove_file(path) {
-            Ok(()) => {
-                index.entries.remove(&name);
-                size_bytes = size_bytes.saturating_sub(entry_size);
-                changed = true;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                index.entries.remove(&name);
-                size_bytes = size_bytes.saturating_sub(entry_size);
-                changed = true;
-            }
-            Err(_) => {}
-        }
-    }
-    changed
-}
-
-fn record_cache_access(
-    cache_root: &Path,
-    cache_path: &Path,
-    max_edge: u32,
-    persist_now: bool,
-) -> Result<(), String> {
-    let name = cache_file_name(cache_path)?;
-    let size_bytes = fs::metadata(cache_path)
-        .map_err(|error| format!("无法读取缩略图缓存信息：{error}"))?
-        .len();
-    let timestamp = now_ms();
-    let mut states = PREVIEW_CACHE_STATES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !states.contains_key(cache_root) {
-        states.insert(cache_root.to_path_buf(), load_cache_state(cache_root)?);
-    }
-    let state = states.get_mut(cache_root).expect("cache state inserted");
-    state.index.entries.insert(
-        name.clone(),
-        PreviewCacheEntry {
-            size_bytes,
-            last_access_ms: timestamp,
-            max_edge,
-        },
-    );
-    state.dirty_accesses = state.dirty_accesses.saturating_add(1);
-    let pruned = prune_cache_to_limits(
-        cache_root,
-        &mut state.index,
-        PREVIEW_CACHE_BUDGET_BYTES,
-        PREVIEW_CACHE_MAX_ENTRIES,
-        Some(&name),
-    );
-    let should_flush = persist_now
-        || pruned
-        || state.dirty_accesses >= PREVIEW_CACHE_ACCESS_FLUSH_COUNT
-        || timestamp.saturating_sub(state.last_flush_ms) >= PREVIEW_CACHE_ACCESS_FLUSH_MS;
-    if should_flush {
-        save_cache_index(cache_root, &state.index)?;
-        state.dirty_accesses = 0;
-        state.last_flush_ms = timestamp;
-    }
-    Ok(())
-}
-
 pub(crate) fn cache_stats(cache_root: &Path) -> Result<PreviewCacheStats, String> {
-    fs::create_dir_all(cache_root).map_err(|error| format!("无法创建缩略图缓存目录：{error}"))?;
-    let mut states = PREVIEW_CACHE_STATES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !states.contains_key(cache_root) {
-        states.insert(cache_root.to_path_buf(), load_cache_state(cache_root)?);
-    }
-    let state = states.get_mut(cache_root).expect("cache state inserted");
-    let pruned = prune_cache_to_limits(
+    preview_cache::cache_for(
         cache_root,
-        &mut state.index,
         PREVIEW_CACHE_BUDGET_BYTES,
         PREVIEW_CACHE_MAX_ENTRIES,
-        None,
-    );
-    if pruned || state.dirty_accesses > 0 {
-        save_cache_index(cache_root, &state.index)?;
-        state.dirty_accesses = 0;
-        state.last_flush_ms = now_ms();
-    }
-    Ok(PreviewCacheStats {
-        entry_count: state.index.entries.len(),
-        size_bytes: state
-            .index
-            .entries
-            .values()
-            .map(|entry| entry.size_bytes)
-            .sum(),
-        budget_bytes: PREVIEW_CACHE_BUDGET_BYTES,
-        max_entries: PREVIEW_CACHE_MAX_ENTRIES,
-    })
+    )?
+    .stats()
 }
 
 fn generation_lock_index(cache_path: &Path) -> usize {
@@ -481,6 +213,10 @@ fn decode_thumbnail(source: &Path, max_edge: u32) -> Result<Vec<u8>, String> {
 }
 
 fn save_thumbnail(cache_path: &Path, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let cache_parent = cache_path
+        .parent()
+        .ok_or_else(|| "缩略图缓存目录无效".to_string())?;
+    fs::create_dir_all(cache_parent).map_err(|error| format!("无法创建缩略图缓存分片：{error}"))?;
     let temporary_path = temporary_cache_path(cache_path);
     let mut temporary = fs::OpenOptions::new()
         .write(true)
@@ -527,11 +263,44 @@ pub(crate) fn load_thumbnail(
         return Err("缩略图缓存目录不能是符号链接".to_string());
     }
     fs::create_dir_all(cache_root).map_err(|error| format!("无法创建缩略图缓存目录：{error}"))?;
-    let cache_path = thumbnail_cache_path(&source, &metadata, max_edge, cache_root);
+    let cache = preview_cache::cache_for(
+        cache_root,
+        PREVIEW_CACHE_BUDGET_BYTES,
+        PREVIEW_CACHE_MAX_ENTRIES,
+    )?;
+    let cache_relative = thumbnail_cache_relative_path(&source, &metadata, max_edge);
+    let cache_relative_text = cache_relative
+        .to_str()
+        .ok_or_else(|| "缩略图缓存路径不是有效 UTF-8".to_string())?;
+    let cache_path = cache_root.join(&cache_relative);
+    let legacy_path = cache_root.join(
+        cache_relative
+            .file_name()
+            .ok_or_else(|| "缩略图缓存文件名无效".to_string())?,
+    );
+    if !cache_path.is_file() && legacy_path.is_file() {
+        let cache_parent = cache_path
+            .parent()
+            .ok_or_else(|| "缩略图缓存分片目录无效".to_string())?;
+        fs::create_dir_all(cache_parent)
+            .map_err(|error| format!("无法创建缩略图缓存分片：{error}"))?;
+        match fs::rename(&legacy_path, &cache_path) {
+            Ok(()) => {}
+            Err(_) => {
+                fs::copy(&legacy_path, &cache_path)
+                    .map_err(|error| format!("无法迁移旧版缩略图缓存：{error}"))?;
+                fs::remove_file(&legacy_path)
+                    .map_err(|error| format!("无法移除旧版缩略图缓存：{error}"))?;
+            }
+        }
+        if let Some(legacy_name) = legacy_path.file_name().and_then(|value| value.to_str()) {
+            cache.remove_missing(legacy_name)?;
+        }
+    }
     if cache_path.is_file() {
         let bytes =
             fs::read(&cache_path).map_err(|error| format!("无法读取缩略图缓存：{error}"))?;
-        let _ = record_cache_access(cache_root, &cache_path, max_edge, false);
+        cache.record_access(cache_relative_text, bytes.len() as u64, max_edge, now_ms())?;
         return Ok(bytes);
     }
 
@@ -542,12 +311,12 @@ pub(crate) fn load_thumbnail(
     if cache_path.is_file() {
         let bytes =
             fs::read(&cache_path).map_err(|error| format!("无法读取缩略图缓存：{error}"))?;
-        let _ = record_cache_access(cache_root, &cache_path, max_edge, false);
+        cache.record_access(cache_relative_text, bytes.len() as u64, max_edge, now_ms())?;
         return Ok(bytes);
     }
     let bytes = decode_thumbnail(&source, max_edge)?;
     let bytes = save_thumbnail(&cache_path, bytes)?;
-    let _ = record_cache_access(cache_root, &cache_path, max_edge, true);
+    cache.record_generated(cache_relative_text, bytes.len() as u64, max_edge, now_ms())?;
     Ok(bytes)
 }
 
@@ -573,11 +342,9 @@ mod tests {
         let second =
             load_thumbnail(root.path(), "sample.jpg", 256, cache.path()).expect("reuse thumbnail");
         let thumbnail = image::load_from_memory(&first).expect("decode thumbnail");
-        let cache_files = fs::read_dir(cache.path())
-            .expect("read cache")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("cache entries")
+        let cache_files = walkdir::WalkDir::new(cache.path())
             .into_iter()
+            .filter_map(Result::ok)
             .filter(|entry| {
                 entry.path().extension().and_then(|value| value.to_str()) == Some("jpg")
             })
@@ -586,7 +353,7 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(cache_files.len(), 1);
-        assert!(cache_index_path(cache.path()).is_file());
+        assert!(cache.path().join("preview-cache-v2.sqlite3").is_file());
         assert_eq!(stats.entry_count, 1);
         assert_eq!(
             stats.size_bytes,
@@ -611,38 +378,5 @@ mod tests {
 
         assert_eq!(preview.dimensions(), (1200, 800));
         assert!(load_thumbnail(root.path(), "sample.jpg", 4097, cache.path()).is_err());
-    }
-
-    #[test]
-    fn cache_pruning_uses_lru_order_and_protects_the_current_preview() {
-        let cache = tempfile::tempdir().expect("cache root");
-        let mut index = PreviewCacheIndex::empty();
-        for (name, last_access_ms) in [("a.jpg", 1), ("b.jpg", 2), ("c.jpg", 3), ("d.jpg", 4)] {
-            fs::write(cache.path().join(name), [0_u8; 4]).expect("cache fixture");
-            index.entries.insert(
-                name.to_string(),
-                PreviewCacheEntry {
-                    size_bytes: 4,
-                    last_access_ms,
-                    max_edge: 512,
-                },
-            );
-        }
-
-        assert!(prune_cache_to_limits(
-            cache.path(),
-            &mut index,
-            12,
-            4,
-            Some("b.jpg"),
-        ));
-        assert_eq!(
-            index.entries.keys().cloned().collect::<HashSet<_>>(),
-            HashSet::from(["b.jpg".to_string(), "d.jpg".to_string(),])
-        );
-        assert!(cache.path().join("b.jpg").is_file());
-        assert!(cache.path().join("d.jpg").is_file());
-        assert!(!cache.path().join("a.jpg").exists());
-        assert!(!cache.path().join("c.jpg").exists());
     }
 }

@@ -233,6 +233,40 @@ export function filmstripScrollTarget({
   return Math.max(0, Math.min(scrollWidth - clientWidth, target));
 }
 
+export function previewPreloadOffsets(direction: -1 | 0 | 1): number[] {
+  if (direction > 0) return [1, 2, 3, -1];
+  if (direction < 0) return [-1, -2, -3, 1];
+  return [1, -1];
+}
+
+export interface VirtualFilmstripWindow {
+  totalWidth: number;
+  startIndex: number;
+  endIndex: number;
+}
+
+export function virtualFilmstripWindow(input: {
+  itemCount: number;
+  itemPitch: number;
+  viewportWidth: number;
+  scrollLeft: number;
+  overscan?: number;
+}): VirtualFilmstripWindow {
+  const itemCount = Math.max(0, Math.floor(input.itemCount));
+  const itemPitch = Math.max(1, input.itemPitch);
+  const viewportWidth = Math.max(0, input.viewportWidth);
+  const scrollLeft = Math.max(0, input.scrollLeft);
+  const overscan = Math.max(0, Math.floor(input.overscan ?? 4));
+  const firstVisible = Math.floor(scrollLeft / itemPitch);
+  const lastVisible = Math.ceil((scrollLeft + viewportWidth) / itemPitch);
+
+  return {
+    totalWidth: itemCount * itemPitch,
+    startIndex: Math.min(itemCount, Math.max(0, firstVisible - overscan)),
+    endIndex: Math.min(itemCount, lastVisible + overscan),
+  };
+}
+
 export interface VirtualPhotoGridWindow {
   columns: number;
   tileHeight: number;

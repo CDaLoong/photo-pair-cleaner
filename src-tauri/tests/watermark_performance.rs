@@ -4,6 +4,8 @@
 mod formats;
 #[path = "../src/preview.rs"]
 mod preview;
+#[path = "../src/preview_cache.rs"]
+mod preview_cache;
 
 use image::codecs::jpeg::JpegEncoder;
 use image::{ImageEncoder, Rgb, RgbImage};
@@ -11,6 +13,58 @@ use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+#[test]
+fn sqlite_cache_reopens_ten_thousand_entries_without_jpeg_discovery() {
+    let cache_root = tempfile::tempdir().expect("scale cache");
+    let cache =
+        preview_cache::PreviewCache::open(cache_root.path(), 10 * 1024 * 1024 * 1024, 20_000)
+            .expect("open scale cache");
+    let started = Instant::now();
+    for index in 0..10_000u64 {
+        cache
+            .record_access(
+                &format!(
+                    "{:02x}/{:02x}/preview-{index:05}.jpg",
+                    index % 256,
+                    (index / 256) % 256
+                ),
+                1_024 + index % 257,
+                512,
+                index,
+            )
+            .expect("record scale metadata");
+    }
+    cache.flush_accesses().expect("flush scale metadata");
+    let write_elapsed = started.elapsed();
+    let expected_bytes = (0..10_000u64).map(|index| 1_024 + index % 257).sum::<u64>();
+    assert_eq!(cache.stats().expect("scale stats").entry_count, 10_000);
+    drop(cache);
+
+    let reopen_started = Instant::now();
+    let reopened =
+        preview_cache::PreviewCache::open(cache_root.path(), 10 * 1024 * 1024 * 1024, 20_000)
+            .expect("reopen scale cache");
+    let stats = reopened.stats().expect("reopened scale stats");
+    let reopen_elapsed = reopen_started.elapsed();
+    eprintln!(
+        "sqlite metadata entries={} bytes={} write={write_elapsed:?} reopen_and_stats={reopen_elapsed:?}",
+        stats.entry_count, stats.size_bytes,
+    );
+    assert_eq!(stats.entry_count, 10_000);
+    assert_eq!(stats.size_bytes, expected_bytes);
+    assert_eq!(
+        walkdir::WalkDir::new(cache_root.path())
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(
+                |entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jpg")
+            )
+            .count(),
+        0,
+        "SQLite metadata must remain authoritative without JPEG payload discovery",
+    );
+}
 
 #[test]
 #[ignore = "release performance check with 100 high-resolution JPGs"]
@@ -104,24 +158,35 @@ fn benchmarks_real_high_resolution_preview_tiers() {
     photos.truncate(3);
     assert_eq!(photos.len(), 3, "benchmark requires at least three JPGs");
 
-    for max_edge in [512, 1600, 2560] {
+    for max_edge in [512, 1600, 2560, 4096] {
         let started = Instant::now();
+        let mut output_bytes = 0usize;
         for (_, relative_path) in &photos {
-            preview::load_thumbnail(&root, relative_path, max_edge, cache.path())
-                .expect("cold preview tier");
+            output_bytes += preview::load_thumbnail(&root, relative_path, max_edge, cache.path())
+                .expect("cold preview tier")
+                .len();
         }
         eprintln!(
-            "cold edge={max_edge} photos=3 elapsed={:?}",
-            started.elapsed()
+            "cold edge={max_edge} photos=3 output_bytes={output_bytes} elapsed={:?}",
+            started.elapsed(),
         );
     }
 
     let started = Instant::now();
+    let mut warm_bytes = 0usize;
     for (_, relative_path) in &photos {
-        preview::load_thumbnail(&root, relative_path, 2560, cache.path())
-            .expect("warm preview tier");
+        warm_bytes += preview::load_thumbnail(&root, relative_path, 2560, cache.path())
+            .expect("warm preview tier")
+            .len();
     }
     let warm_elapsed = started.elapsed();
-    eprintln!("warm edge=2560 photos=3 elapsed={warm_elapsed:?}");
+    let metadata_started = Instant::now();
+    let stats = preview::cache_stats(cache.path()).expect("cache metadata stats");
+    let metadata_elapsed = metadata_started.elapsed();
+    eprintln!("warm edge=2560 photos=3 output_bytes={warm_bytes} elapsed={warm_elapsed:?}");
+    eprintln!(
+        "cache metadata entries={} bytes={} elapsed={metadata_elapsed:?}",
+        stats.entry_count, stats.size_bytes,
+    );
     assert!(warm_elapsed < Duration::from_secs(1));
 }

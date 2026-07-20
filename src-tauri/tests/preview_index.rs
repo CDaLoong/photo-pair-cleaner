@@ -7,6 +7,9 @@ mod photo_groups;
 #[path = "../src/preview.rs"]
 mod preview;
 #[allow(dead_code)]
+#[path = "../src/preview_cache.rs"]
+mod preview_cache;
+#[allow(dead_code)]
 #[path = "../src/rating_metadata.rs"]
 mod rating_metadata;
 
@@ -132,8 +135,8 @@ fn thumbnail_generation_resizes_jpeg_and_reuses_the_disk_cache() {
         preview::load_thumbnail(&root, "photo.JPG", 320, &cache).expect("cached thumbnail");
     assert_eq!(cached, first);
     assert_eq!(
-        fs::read_dir(&cache)
-            .expect("cache directory")
+        walkdir::WalkDir::new(&cache)
+            .into_iter()
             .filter_map(Result::ok)
             .filter(
                 |entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jpg")
@@ -188,4 +191,53 @@ fn thumbnail_generation_applies_exif_orientation() {
     let decoded = image::load_from_memory(&bytes).expect("thumbnail jpeg");
 
     assert_eq!(decoded.dimensions(), (80, 120));
+}
+
+#[test]
+fn thumbnail_cache_uses_two_shard_directories() {
+    let temp = tempfile::tempdir().expect("temp root");
+    let root = temp.path().join("photos");
+    let source = root.join("photo.JPG");
+    fs::create_dir_all(&root).expect("photo directory");
+    RgbImage::from_pixel(1200, 800, Rgb([210, 80, 40]))
+        .save_with_format(&source, image::ImageFormat::Jpeg)
+        .expect("test jpeg");
+    let metadata = fs::metadata(&source).expect("photo metadata");
+
+    let relative = preview::thumbnail_cache_relative_path(&source, &metadata, 512);
+    let components = relative.components().collect::<Vec<_>>();
+
+    assert_eq!(components.len(), 3);
+    assert_eq!(
+        relative.extension().and_then(|value| value.to_str()),
+        Some("jpg")
+    );
+    assert_eq!(components[0].as_os_str().len(), 2);
+    assert_eq!(components[1].as_os_str().len(), 2);
+}
+
+#[test]
+fn legacy_flat_thumbnail_is_promoted_without_regeneration() {
+    let temp = tempfile::tempdir().expect("temp root");
+    let root = temp.path().join("photos");
+    let cache = temp.path().join("cache");
+    let source = root.join("photo.JPG");
+    fs::create_dir_all(&root).expect("photo directory");
+    fs::create_dir_all(&cache).expect("cache directory");
+    RgbImage::from_pixel(1200, 800, Rgb([210, 80, 40]))
+        .save_with_format(&source, image::ImageFormat::Jpeg)
+        .expect("test jpeg");
+    let source_bytes = fs::read(&source).expect("source bytes");
+    let canonical_source = fs::canonicalize(&source).expect("canonical source");
+    let metadata = fs::metadata(&canonical_source).expect("photo metadata");
+    let relative = preview::thumbnail_cache_relative_path(&canonical_source, &metadata, 512);
+    let legacy_path = cache.join(relative.file_name().expect("cache filename"));
+    fs::write(&legacy_path, &source_bytes).expect("legacy cache file");
+
+    let loaded =
+        preview::load_thumbnail(&root, "photo.JPG", 512, &cache).expect("promote legacy cache");
+
+    assert_eq!(loaded, source_bytes);
+    assert!(!legacy_path.exists());
+    assert!(cache.join(relative).is_file());
 }

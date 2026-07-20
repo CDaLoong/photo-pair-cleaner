@@ -23,6 +23,7 @@ imageproc = { version = "=0.26.2", default-features = false }
 little_exif = "0.6.23"
 moxcms = "0.8.1"
 quick-xml = "0.38"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
