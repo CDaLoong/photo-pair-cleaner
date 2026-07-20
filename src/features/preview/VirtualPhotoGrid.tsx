@@ -144,7 +144,7 @@ export function VirtualPhotoGrid({
               <PhotoThumbnail
                 root={root}
                 relativePath={asset.previewPath}
-                maxEdge={480}
+                maxEdge={512}
                 version={photoPreviewVersion(asset)}
                 alt=""
               />

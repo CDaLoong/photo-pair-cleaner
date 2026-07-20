@@ -131,7 +131,22 @@ fn thumbnail_generation_resizes_jpeg_and_reuses_the_disk_cache() {
     let cached =
         preview::load_thumbnail(&root, "photo.JPG", 320, &cache).expect("cached thumbnail");
     assert_eq!(cached, first);
-    assert_eq!(fs::read_dir(&cache).expect("cache directory").count(), 1);
+    assert_eq!(
+        fs::read_dir(&cache)
+            .expect("cache directory")
+            .filter_map(Result::ok)
+            .filter(
+                |entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jpg")
+            )
+            .count(),
+        1,
+    );
+    assert_eq!(
+        preview::cache_stats(&cache)
+            .expect("cache stats")
+            .entry_count,
+        1
+    );
 }
 
 #[test]
@@ -144,7 +159,7 @@ fn thumbnail_generation_rejects_unbounded_sizes() {
         .expect("test jpeg");
 
     assert!(preview::load_thumbnail(&root, "photo.jpg", 0, temp.path()).is_err());
-    assert!(preview::load_thumbnail(&root, "photo.jpg", 4096, temp.path()).is_err());
+    assert!(preview::load_thumbnail(&root, "photo.jpg", 4097, temp.path()).is_err());
 }
 
 #[test]

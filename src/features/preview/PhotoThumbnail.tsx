@@ -15,11 +15,12 @@ interface PhotoThumbnailProps {
   version: string;
   alt: string;
   eager?: boolean;
+  qualityFirst?: boolean;
 }
 
 type LoadState = "idle" | "loading" | "preview" | "ready" | "error";
 
-const QUICK_PREVIEW_EDGE = 256;
+const QUICK_PREVIEW_EDGE = 512;
 
 export function PhotoThumbnail({
   root,
@@ -28,6 +29,7 @@ export function PhotoThumbnail({
   version,
   alt,
   eager = false,
+  qualityFirst = false,
 }: PhotoThumbnailProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(eager);
@@ -41,16 +43,22 @@ export function PhotoThumbnail({
   } : null;
   const requestKey = request ? previewRequestKey(request) : "";
   const previewEdge = Math.min(maxEdge, QUICK_PREVIEW_EDGE);
+  const cachedFull = request ? peekPhotoPreviewUrl(request) : null;
   const cachedPreview = relativePath ? peekPhotoPreviewUrl({
     root,
     relativePath,
     maxEdge: previewEdge,
     version,
   }) : null;
-  const source = loaded?.key === requestKey ? loaded.url : cachedPreview;
-  const loadState: LoadState = status?.key === requestKey
-    ? status.state
-    : source
+  const currentStatus = status?.key === requestKey ? status.state : null;
+  const currentSource = loaded?.key === requestKey
+    ? loaded.url
+    : cachedFull ?? (qualityFirst ? null : cachedPreview);
+  const source = currentSource
+    ?? (qualityFirst && currentStatus !== "error" && visible ? loaded?.url ?? null : null);
+  const loadState: LoadState = currentStatus
+    ? currentStatus
+    : currentSource
       ? "ready"
       : relativePath && visible
         ? "loading"
@@ -98,10 +106,33 @@ export function PhotoThumbnail({
     };
     const fullRequest: PreviewRequest = { root, relativePath, maxEdge, version };
     const nextKey = previewRequestKey(fullRequest);
-    setLoaded(null);
     setStatus({ key: nextKey, state: "loading" });
 
     void (async () => {
+      if (qualityFirst) {
+        try {
+          fullLease = acquirePhotoPreviewUrl(fullRequest, "foreground");
+          const fullUrl = await fullLease.promise;
+          if (disposed) return;
+          setLoaded({ key: nextKey, url: fullUrl });
+          setStatus({ key: nextKey, state: "ready" });
+          return;
+        } catch {
+          if (disposed) return;
+          try {
+            previewLease = acquirePhotoPreviewUrl(previewRequest, "foreground");
+            const previewUrl = await previewLease.promise;
+            if (disposed) return;
+            setLoaded({ key: nextKey, url: previewUrl });
+            setStatus({ key: nextKey, state: "ready" });
+          } catch {
+            if (!disposed) setStatus({ key: nextKey, state: "error" });
+          }
+          return;
+        }
+      }
+
+      setLoaded(null);
       try {
         previewLease = acquirePhotoPreviewUrl(previewRequest, "foreground");
         const previewUrl = await previewLease.promise;
@@ -138,7 +169,7 @@ export function PhotoThumbnail({
       previewLease?.release();
       fullLease?.release();
     };
-  }, [eager, maxEdge, relativePath, requestKey, root, version, visible]);
+  }, [eager, maxEdge, qualityFirst, relativePath, requestKey, root, version, visible]);
 
   return (
     <div ref={containerRef} className={`photo-thumbnail is-${loadState}`}>

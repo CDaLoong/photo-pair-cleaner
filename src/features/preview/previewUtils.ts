@@ -6,6 +6,26 @@ import type {
   PreviewView,
 } from "./types";
 
+const DISPLAY_PREVIEW_EDGES = [1600, 2560, 4096] as const;
+
+export function displayPreviewEdge(
+  widthCssPixels: number,
+  heightCssPixels: number,
+  devicePixelRatio: number,
+): number {
+  const cssEdge = Math.max(
+    1,
+    Number.isFinite(widthCssPixels) ? widthCssPixels : 1,
+    Number.isFinite(heightCssPixels) ? heightCssPixels : 1,
+  );
+  const pixelRatio = Number.isFinite(devicePixelRatio)
+    ? Math.max(1, devicePixelRatio)
+    : 1;
+  const requiredEdge = Math.ceil(cssEdge * pixelRatio);
+  return DISPLAY_PREVIEW_EDGES.find((edge) => edge >= requiredEdge)
+    ?? DISPLAY_PREVIEW_EDGES.at(-1)!;
+}
+
 function matchesFilter(asset: PhotoAsset, filter: PreviewFilter): boolean {
   const hasJpeg = asset.jpegPaths.length > 0;
   const hasRaw = asset.rawPaths.length > 0;

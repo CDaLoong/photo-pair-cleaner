@@ -43,7 +43,7 @@ const PREVIEW_GUIDE_STEPS: GuidedTourStep[] = [
       { label: "左右切换", detail: "使用方向键、顶部按钮或底部胶片栏切换照片。" },
       { label: "回到网格", detail: "按 Esc，或点击右上角网格按钮。" },
     ],
-    tip: "程序会继续在后台预加载，切换时直接复用已解码预览。",
+    tip: "macOS 使用系统 Quick Look 原生预览，相邻照片只准备高清占位，避免后台负载影响切换。",
   },
   {
     title: "点击星星或按数字键评分",

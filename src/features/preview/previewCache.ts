@@ -263,8 +263,22 @@ export async function preloadPreviewRequests<T>(
   return progress;
 }
 
-const previewCache = new PreviewUrlCache((url) => URL.revokeObjectURL(url), 96);
-const previewScheduler = new PreviewLoadScheduler(2);
+const previewCache = new PreviewUrlCache((url) => URL.revokeObjectURL(url), 128);
+const previewScheduler = new PreviewLoadScheduler(3);
+const PREVIEW_LOAD_TIMEOUT_MS = 12_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error("照片预览加载超时")),
+      timeoutMs,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  });
+}
 
 async function decodeImage(url: string): Promise<void> {
   if (typeof Image === "undefined") return;
@@ -287,11 +301,14 @@ export function peekPhotoPreviewUrl(request: PreviewRequest): string | null {
 }
 
 async function fetchPhotoPreviewUrl(request: PreviewRequest): Promise<string> {
-  const response = await invoke<ArrayBuffer | number[]>("load_photo_thumbnail", {
-    root: request.root,
-    relativePath: request.relativePath,
-    maxEdge: request.maxEdge,
-  });
+  const response = await withTimeout(
+    invoke<ArrayBuffer | number[]>("load_photo_thumbnail", {
+      root: request.root,
+      relativePath: request.relativePath,
+      maxEdge: request.maxEdge,
+    }),
+    PREVIEW_LOAD_TIMEOUT_MS,
+  );
   const bytes = response instanceof ArrayBuffer
     ? new Uint8Array(response)
     : Uint8Array.from(response);

@@ -516,6 +516,14 @@ test("preview keyboard shortcuts pause while an overlay is open", () => {
   assert.equal(previewUtils.previewKeyboardShortcutsEnabled("grid", false, false), false);
 });
 
+test("single-photo previews select a bounded tier from actual device pixels", () => {
+  assert.equal(previewUtils.displayPreviewEdge(800, 600, 1), 1600);
+  assert.equal(previewUtils.displayPreviewEdge(900, 700, 2), 2560);
+  assert.equal(previewUtils.displayPreviewEdge(1800, 1200, 2), 4096);
+  assert.equal(previewUtils.displayPreviewEdge(5000, 3000, 2), 4096);
+  assert.equal(previewUtils.displayPreviewEdge(Number.NaN, Number.NaN, Number.NaN), 1600);
+});
+
 test("context menu position stays inside the viewport", () => {
   assert.deepEqual(
     previewUtils.contextMenuPosition(790, 590, 800, 600, 260, 220),
@@ -837,7 +845,7 @@ test("preview scheduler prioritizes visible work without exceeding its limit", a
   assert.deepEqual(order, ["first", "foreground", "background"]);
 });
 
-test("preview indexing streams progress and preloads loupe images with bounded background work", () => {
+test("preview indexing streams progress and preloads nearby display previews", () => {
   const moduleSource = fs.readFileSync(
     new URL("../src/features/preview/PreviewModule.tsx", import.meta.url),
     "utf8",
@@ -858,23 +866,72 @@ test("preview indexing streams progress and preloads loupe images with bounded b
     new URL("../src-tauri/src/lib.rs", import.meta.url),
     "utf8",
   );
+  const previewBackendSource = fs.readFileSync(
+    new URL("../src-tauri/src/preview.rs", import.meta.url),
+    "utf8",
+  );
+  const nativePreviewSource = fs.readFileSync(
+    new URL("../src-tauri/src/native_preview.rs", import.meta.url),
+    "utf8",
+  );
+  const nativePreviewBridgeSource = fs.readFileSync(
+    new URL("../src/features/preview/NativePhotoPreview.tsx", import.meta.url),
+    "utf8",
+  );
+  const cargoSource = fs.readFileSync(
+    new URL("../src-tauri/Cargo.toml", import.meta.url),
+    "utf8",
+  );
 
   assert.match(moduleSource, /new Channel<PhotoIndexEvent>\(\)/);
   assert.match(moduleSource, /onEvent: channel/);
   assert.match(moduleSource, /preview-index-progress-track/);
-  assert.match(moduleSource, /preloadPreviewRequests/);
-  assert.match(moduleSource, /warmPhotoPreviewCache/);
-  assert.match(moduleSource, /concurrency: 1/);
-  assert.match(moduleSource, /nearbyOffsets = \[0, 1, -1, 2, -2, 3, -3\]/);
-  assert.match(moduleSource, /大图预加载进度/);
+  assert.doesNotMatch(moduleSource, /preloadPreviewRequests/);
+  assert.doesNotMatch(moduleSource, /warmPhotoPreviewCache/);
+  assert.match(moduleSource, /view !== "loupe"/);
+  assert.match(moduleSource, /nearbyOffsets = \[1, 2, 3, -1, -2, -3\]/);
+  assert.match(moduleSource, /恢复上次照片目录超时，请重新选择目录/);
+  assert.match(moduleSource, /loupePreviewEdge/);
+  assert.match(moduleSource, /setLoupePreviewEdge/);
+  assert.match(moduleSource, /photoPreviewRequest/);
+  assert.match(moduleSource, /preloadPhotoPreviewUrl/);
+  assert.match(moduleSource, /nativePreviewActive/);
+  assert.doesNotMatch(moduleSource, /大图预加载进度/);
   assert.match(cacheSource, /warm_photo_thumbnail/);
+  assert.doesNotMatch(cacheSource, /authorize_photo_original/);
   assert.match(backendSource, /warm_photo_thumbnail/);
+  assert.match(backendSource, /async fn get_preview_cache_stats/);
+  assert.match(backendSource, /async fn show_native_photo_preview/);
+  assert.match(backendSource, /async fn hide_native_photo_preview/);
+  assert.match(nativePreviewSource, /QLPreviewView/);
+  assert.match(nativePreviewSource, /setPreviewItem/);
+  assert.match(nativePreviewSource, /setMasksToBounds/);
+  assert.match(nativePreviewSource, /removeFromSuperview/);
+  assert.match(nativePreviewBridgeSource, /ResizeObserver/);
+  assert.match(nativePreviewBridgeSource, /displayPreviewEdge/);
+  assert.match(nativePreviewBridgeSource, /VITE_ENABLE_EMBEDDED_QUICK_LOOK/);
+  assert.match(nativePreviewBridgeSource, /show_native_photo_preview/);
+  assert.match(nativePreviewBridgeSource, /hide_native_photo_preview/);
+  assert.match(previewBackendSource, /THUMBNAIL_CACHE_VERSION: u8 = 3/);
+  assert.match(previewBackendSource, /PREVIEW_CACHE_BUDGET_BYTES/);
+  assert.match(previewBackendSource, /PREVIEW_CACHE_MAX_ENTRIES/);
+  assert.match(previewBackendSource, /prune_cache_to_limits/);
+  assert.match(previewBackendSource, /THUMBNAIL_GENERATION_LOCKS/);
+  assert.match(previewBackendSource, /96\.\.=4096/);
+  assert.match(previewBackendSource, /formatOptions/);
+  assert.match(previewBackendSource, /set_icc_profile/);
   assert.match(thumbnailSource, /Math\.min\(maxEdge, QUICK_PREVIEW_EDGE\)/);
+  assert.match(thumbnailSource, /QUICK_PREVIEW_EDGE = 512/);
   assert.match(thumbnailSource, /peekPhotoPreviewUrl/);
   assert.match(thumbnailSource, /rootMargin: "600px"/);
   assert.match(thumbnailSource, /acquirePhotoPreviewUrl/);
+  assert.match(thumbnailSource, /qualityFirst/);
+  assert.match(cacheSource, /PREVIEW_LOAD_TIMEOUT_MS/);
   assert.match(gridSource, /virtualPhotoGridWindow/);
+  assert.match(gridSource, /maxEdge=\{512\}/);
   assert.match(gridSource, /assets\.slice\(windowState\.startIndex, windowState\.endIndex\)/);
+  assert.match(cargoSource, /objc2-app-kit/);
+  assert.match(cargoSource, /objc2-foundation/);
 });
 
 test("preview preloader covers every request with bounded concurrency", async () => {
