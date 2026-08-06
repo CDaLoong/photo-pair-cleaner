@@ -349,7 +349,7 @@ const previewCache = new PreviewUrlCache((url) => URL.revokeObjectURL(url), {
   maxEntries: 128,
   maxCostBytes: 512 * 1024 * 1024,
 });
-const previewScheduler = new PreviewLoadScheduler(3, 1);
+const previewScheduler = new PreviewLoadScheduler(3, 2);
 const PREVIEW_LOAD_TIMEOUT_MS = 12_000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

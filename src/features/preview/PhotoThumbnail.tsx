@@ -16,6 +16,7 @@ interface PhotoThumbnailProps {
   alt: string;
   eager?: boolean;
   qualityFirst?: boolean;
+  onFullReady?: () => void;
 }
 
 type LoadState = "idle" | "loading" | "preview" | "ready" | "error";
@@ -30,8 +31,10 @@ export function PhotoThumbnail({
   alt,
   eager = false,
   qualityFirst = false,
+  onFullReady,
 }: PhotoThumbnailProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const onFullReadyRef = useRef(onFullReady);
   const [visible, setVisible] = useState(eager);
   const [loaded, setLoaded] = useState<{ key: string; url: string } | null>(null);
   const [status, setStatus] = useState<{ key: string; state: LoadState } | null>(null);
@@ -53,9 +56,8 @@ export function PhotoThumbnail({
   const currentStatus = status?.key === requestKey ? status.state : null;
   const currentSource = loaded?.key === requestKey
     ? loaded.url
-    : cachedFull ?? (qualityFirst ? null : cachedPreview);
-  const source = currentSource
-    ?? (qualityFirst && currentStatus !== "error" && visible ? loaded?.url ?? null : null);
+    : cachedFull ?? cachedPreview;
+  const source = currentSource;
   const loadState: LoadState = currentStatus
     ? currentStatus
     : currentSource
@@ -63,6 +65,10 @@ export function PhotoThumbnail({
       : relativePath && visible
         ? "loading"
         : "idle";
+
+  useEffect(() => {
+    onFullReadyRef.current = onFullReady;
+  }, [onFullReady]);
 
   useEffect(() => {
     if (eager) {
@@ -106,27 +112,68 @@ export function PhotoThumbnail({
     };
     const fullRequest: PreviewRequest = { root, relativePath, maxEdge, version };
     const nextKey = previewRequestKey(fullRequest);
-    setStatus({ key: nextKey, state: "loading" });
+    const initialFullUrl = peekPhotoPreviewUrl(fullRequest);
+    const initialPreviewUrl = peekPhotoPreviewUrl(previewRequest);
+    if (initialFullUrl) {
+      setLoaded({ key: nextKey, url: initialFullUrl });
+      setStatus({ key: nextKey, state: "ready" });
+      onFullReadyRef.current?.();
+    } else if (initialPreviewUrl) {
+      setLoaded({ key: nextKey, url: initialPreviewUrl });
+      setStatus({
+        key: nextKey,
+        state: previewEdge === maxEdge ? "ready" : "preview",
+      });
+    } else {
+      setLoaded(null);
+      setStatus({ key: nextKey, state: "loading" });
+    }
 
     void (async () => {
       if (qualityFirst) {
-        try {
+        if (initialFullUrl) {
           fullLease = acquirePhotoPreviewUrl(fullRequest, "foreground");
+          try {
+            const fullUrl = await fullLease.promise;
+            if (disposed) return;
+            setLoaded({ key: nextKey, url: fullUrl });
+            setStatus({ key: nextKey, state: "ready" });
+            onFullReadyRef.current?.();
+          } catch {
+            if (!disposed) setStatus({ key: nextKey, state: "error" });
+          }
+          return;
+        }
+        let previewReady = false;
+        fullLease = acquirePhotoPreviewUrl(fullRequest, "foreground");
+        previewLease = acquirePhotoPreviewUrl(previewRequest, "foreground");
+        const previewPromise = previewLease.promise
+          .then((previewUrl) => {
+            if (disposed) return;
+            previewReady = true;
+            setLoaded((current) => current?.key === nextKey ? current : {
+              key: nextKey,
+              url: previewUrl,
+            });
+            setStatus((current) => current?.key === nextKey && current.state === "ready"
+              ? current
+              : { key: nextKey, state: "preview" });
+          })
+          .catch(() => undefined);
+        try {
           const fullUrl = await fullLease.promise;
           if (disposed) return;
           setLoaded({ key: nextKey, url: fullUrl });
           setStatus({ key: nextKey, state: "ready" });
+          onFullReadyRef.current?.();
+          previewLease.release();
+          previewLease = null;
           return;
         } catch {
           if (disposed) return;
-          try {
-            previewLease = acquirePhotoPreviewUrl(previewRequest, "foreground");
-            const previewUrl = await previewLease.promise;
-            if (disposed) return;
-            setLoaded({ key: nextKey, url: previewUrl });
-            setStatus({ key: nextKey, state: "ready" });
-          } catch {
-            if (!disposed) setStatus({ key: nextKey, state: "error" });
+          await previewPromise;
+          if (!disposed) {
+            setStatus({ key: nextKey, state: previewReady ? "ready" : "error" });
           }
           return;
         }
@@ -141,6 +188,7 @@ export function PhotoThumbnail({
 
         if (previewEdge === maxEdge) {
           setStatus({ key: nextKey, state: "ready" });
+          onFullReadyRef.current?.();
           return;
         }
 
@@ -154,6 +202,7 @@ export function PhotoThumbnail({
           if (disposed) return;
           setLoaded({ key: nextKey, url: fullUrl });
           setStatus({ key: nextKey, state: "ready" });
+          onFullReadyRef.current?.();
           previewLease.release();
           previewLease = null;
         } catch {

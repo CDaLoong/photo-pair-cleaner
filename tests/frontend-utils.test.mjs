@@ -933,7 +933,7 @@ test("aborting queued preview work rejects before an active job finishes", async
   await active;
 });
 
-test("preview indexing streams progress and preloads nearby display previews", () => {
+test("preview indexing streams progress and queues every display preview", () => {
   const moduleSource = fs.readFileSync(
     new URL("../src/features/preview/PreviewModule.tsx", import.meta.url),
     "utf8",
@@ -978,14 +978,19 @@ test("preview indexing streams progress and preloads nearby display previews", (
     new URL("../src-tauri/Cargo.toml", import.meta.url),
     "utf8",
   );
+  const stylesheetSource = fs.readFileSync(
+    new URL("../src/styles.css", import.meta.url),
+    "utf8",
+  );
 
   assert.match(moduleSource, /new Channel<PhotoIndexEvent>\(\)/);
   assert.match(moduleSource, /onEvent: channel/);
   assert.match(moduleSource, /preview-index-progress-track/);
-  assert.doesNotMatch(moduleSource, /preloadPreviewRequests/);
+  assert.match(moduleSource, /preloadPreviewRequests/);
   assert.doesNotMatch(moduleSource, /warmPhotoPreviewCache/);
   assert.match(moduleSource, /view !== "loupe"/);
-  assert.match(moduleSource, /previewPreloadOffsets\(direction\)/);
+  assert.match(moduleSource, /setPreloadingAssetIds\(new Set\(queue\.map/);
+  assert.doesNotMatch(moduleSource, /previewPreloadOffsets\(direction\)/);
   assert.match(moduleSource, /new AbortController\(\)/);
   assert.match(moduleSource, /恢复上次照片目录超时，请重新选择目录/);
   assert.match(moduleSource, /loupePreviewEdge/);
@@ -1026,12 +1031,20 @@ test("preview indexing streams progress and preloads nearby display previews", (
   assert.match(thumbnailSource, /rootMargin: "600px"/);
   assert.match(thumbnailSource, /acquirePhotoPreviewUrl/);
   assert.match(thumbnailSource, /qualityFirst/);
+  assert.match(thumbnailSource, /cachedFull \?\? cachedPreview/);
+  assert.doesNotMatch(thumbnailSource, /loaded\?\.url \?\? null/);
+  assert.match(thumbnailSource, /const previewPromise = previewLease\.promise/);
+  assert.match(thumbnailSource, /onFullReadyRef\.current\?\.\(\)/);
   assert.match(cacheSource, /PREVIEW_LOAD_TIMEOUT_MS/);
   assert.match(gridSource, /virtualPhotoGridWindow/);
   assert.match(gridSource, /maxEdge=\{512\}/);
   assert.match(gridSource, /assets\.slice\(windowState\.startIndex, windowState\.endIndex\)/);
   assert.match(filmstripSource, /virtualFilmstripWindow/);
   assert.match(filmstripSource, /assets\.slice\(windowState\.startIndex, windowState\.endIndex\)/);
+  assert.match(filmstripSource, /filmstrip-preload-indicator/);
+  assert.doesNotMatch(filmstripSource, /filmstrip-ready-indicator/);
+  assert.match(stylesheetSource, /minmax\(50px, auto\) 100px/);
+  assert.match(stylesheetSource, /\.loupe-filmstrip \{[\s\S]*scrollbar-gutter: stable/);
   assert.match(cargoSource, /objc2-app-kit/);
   assert.match(cargoSource, /objc2-foundation/);
 });

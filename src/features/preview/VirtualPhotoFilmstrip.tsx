@@ -1,4 +1,4 @@
-import { Star } from "lucide-react";
+import { LoaderCircle, Star } from "lucide-react";
 import {
   useLayoutEffect,
   useMemo,
@@ -23,6 +23,7 @@ interface VirtualPhotoFilmstripProps {
   root: string;
   assets: PhotoAsset[];
   selectedId: string | null;
+  preloadingAssetIds: ReadonlySet<string>;
   onSelect: (asset: PhotoAsset) => void;
   onContextMenu: (event: ReactMouseEvent, asset: PhotoAsset) => void;
 }
@@ -36,6 +37,7 @@ export function VirtualPhotoFilmstrip({
   root,
   assets,
   selectedId,
+  preloadingAssetIds,
   onSelect,
   onContextMenu,
 }: VirtualPhotoFilmstripProps) {
@@ -122,6 +124,7 @@ export function VirtualPhotoFilmstrip({
         {visibleAssets.map((asset, visibleIndex) => {
           const assetIndex = windowState.startIndex + visibleIndex;
           const selected = asset.id === selectedId;
+          const preloading = preloadingAssetIds.has(asset.id);
           return (
             <button
               key={asset.id}
@@ -142,6 +145,16 @@ export function VirtualPhotoFilmstrip({
                 version={photoPreviewVersion(asset)}
                 alt=""
               />
+              {preloading ? (
+                <span
+                  className="filmstrip-preload-indicator"
+                  role="status"
+                  aria-label="高清大图加载中"
+                  title="高清大图加载中"
+                >
+                  <LoaderCircle className="spin" aria-hidden="true" size={17} />
+                </span>
+              ) : null}
               {asset.rating > 0 ? (
                 <span className="filmstrip-rating">
                   <Star aria-hidden="true" size={10} fill="currentColor" />

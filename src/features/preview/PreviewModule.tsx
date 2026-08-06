@@ -51,9 +51,12 @@ import { VirtualPhotoGrid } from "./VirtualPhotoGrid";
 import { VirtualPhotoFilmstrip } from "./VirtualPhotoFilmstrip";
 import {
   clearPhotoPreviewCache,
+  peekPhotoPreviewUrl,
   photoPreviewRequest,
   photoPreviewVersion,
   preloadPhotoPreviewUrl,
+  preloadPreviewRequests,
+  previewRequestKey,
 } from "./previewCache";
 import {
   adjacentPreviewAssetId,
@@ -65,7 +68,6 @@ import {
   filterPreviewAssets,
   previewFilterCounts,
   previewKeyboardShortcutsEnabled,
-  previewPreloadOffsets,
   previewAssetPosition,
   shouldOpenPreviewGuide,
   sortPreviewAssets,
@@ -192,6 +194,9 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
     key: string;
     available: boolean | null;
   } | null>(null);
+  const [preloadingAssetIds, setPreloadingAssetIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
   const [loupePreviewEdge, setLoupePreviewEdge] = useState(INITIAL_LOUPE_PREVIEW_EDGE);
   const [tileSize, setTileSize] = useState(180);
   const [dropActive, setDropActive] = useState(false);
@@ -216,7 +221,8 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   const attemptedStoredRoot = useRef(false);
   const busyRef = useRef(busy);
   const indexedRootRef = useRef<string | null>(null);
-  const previousLoupeIndexRef = useRef<number | null>(null);
+  const completedPreloadKeysRef = useRef(new Set<string>());
+  const preloadAnchorIdRef = useRef<string | null>(null);
   const attemptedEditorDiscovery = useRef(false);
   const attemptedPreviewGuide = useRef(false);
   const loadDirectoryRef = useRef<(
@@ -255,6 +261,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   const effectiveSelectedPosition = selectedPosition || (visibleAssets.length > 0 ? 1 : 0);
   const selectedAsset = visibleAssets[effectiveSelectedPosition - 1] ?? null;
   const effectiveSelectedId = selectedAsset?.id ?? null;
+  preloadAnchorIdRef.current = effectiveSelectedId;
   const nativePreviewKey = selectedAsset
     ? `${selectedAsset.id}:${photoPreviewVersion(selectedAsset)}`
     : "";
@@ -519,28 +526,63 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   }, [active, contextMenu, effectiveSelectedId, guideOpen, ratingBusyId, selectedAsset, view, visibleAssets]);
 
   useEffect(() => {
-    if (!active || view !== "loupe" || !index || !effectiveSelectedId || !isTauri()) {
-      previousLoupeIndexRef.current = null;
+    if (!active || view !== "loupe" || !index || !isTauri()) {
+      setPreloadingAssetIds(new Set<string>());
       return;
     }
-    const selectedIndex = visibleAssets.findIndex((asset) => asset.id === effectiveSelectedId);
-    if (selectedIndex < 0) return;
-    const previousIndex = previousLoupeIndexRef.current;
-    const direction = previousIndex === null || previousIndex === selectedIndex
-      ? 0
-      : selectedIndex > previousIndex ? 1 : -1;
-    previousLoupeIndexRef.current = selectedIndex;
-    const controller = new AbortController();
-    for (const offset of previewPreloadOffsets(direction)) {
-      const asset = visibleAssets[selectedIndex + offset];
-      if (!asset) continue;
+    const anchorIndex = Math.max(
+      0,
+      visibleAssets.findIndex((asset) => asset.id === preloadAnchorIdRef.current),
+    );
+    const orderedAssets = visibleAssets
+      .map((asset, assetIndex) => ({ asset, assetIndex }))
+      .sort((left, right) => {
+        const distance = Math.abs(left.assetIndex - anchorIndex)
+          - Math.abs(right.assetIndex - anchorIndex);
+        return distance || left.assetIndex - right.assetIndex;
+      })
+      .map(({ asset }) => asset);
+    const queue = orderedAssets.flatMap((asset) => {
       const request = photoPreviewRequest(index.root, asset, loupePreviewEdge);
-      if (request) {
-        void preloadPhotoPreviewUrl(request, controller.signal).catch(() => undefined);
-      }
-    }
+      if (!request) return [];
+      const key = previewRequestKey(request);
+      if (peekPhotoPreviewUrl(request)) completedPreloadKeysRef.current.add(key);
+      return completedPreloadKeysRef.current.has(key)
+        ? []
+        : [{ assetId: asset.id, key, request }];
+    });
+    setPreloadingAssetIds(new Set(queue.map((item) => item.assetId)));
+    const controller = new AbortController();
+    void preloadPreviewRequests(
+      queue,
+      async (item) => {
+        await preloadPhotoPreviewUrl(item.request, controller.signal);
+        if (controller.signal.aborted) return;
+        completedPreloadKeysRef.current.add(item.key);
+        setPreloadingAssetIds((current) => {
+          if (!current.has(item.assetId)) return current;
+          const next = new Set(current);
+          next.delete(item.assetId);
+          return next;
+        });
+      },
+      { concurrency: 2, signal: controller.signal },
+    );
     return () => controller.abort();
-  }, [active, effectiveSelectedId, index, loupePreviewEdge, view, visibleAssets]);
+  }, [active, index, loupePreviewEdge, view, visibleAssets]);
+
+  const markSelectedPreviewReady = useCallback(() => {
+    if (!index || !selectedAsset) return;
+    const request = photoPreviewRequest(index.root, selectedAsset, loupePreviewEdge);
+    if (!request) return;
+    completedPreloadKeysRef.current.add(previewRequestKey(request));
+    setPreloadingAssetIds((current) => {
+      if (!current.has(selectedAsset.id)) return current;
+      const next = new Set(current);
+      next.delete(selectedAsset.id);
+      return next;
+    });
+  }, [index, loupePreviewEdge, selectedAsset]);
 
   async function chooseDirectory() {
     try {
@@ -892,7 +934,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
                 </div>
               </div>
               <div className="loupe-stage" onContextMenu={(event) => showContextMenu(event, selectedAsset)}>
-                <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={loupePreviewEdge} version={photoPreviewVersion(selectedAsset)} alt={selectedAsset.name} eager qualityFirst />
+                <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={loupePreviewEdge} version={photoPreviewVersion(selectedAsset)} alt={selectedAsset.name} eager qualityFirst onFullReady={markSelectedPreviewReady} />
                 {selectedAsset.previewPath ? (
                   <NativePhotoPreview
                     root={index.root}
@@ -922,6 +964,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
                 root={index.root}
                 assets={visibleAssets}
                 selectedId={effectiveSelectedId}
+                preloadingAssetIds={preloadingAssetIds}
                 onSelect={(asset) => setSelectedId(asset.id)}
                 onContextMenu={showContextMenu}
               />
