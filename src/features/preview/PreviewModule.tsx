@@ -51,9 +51,13 @@ import { VirtualPhotoGrid } from "./VirtualPhotoGrid";
 import { VirtualPhotoFilmstrip } from "./VirtualPhotoFilmstrip";
 import {
   clearPhotoPreviewCache,
+  originalPhotoRequestKey,
+  peekPhotoOriginalUrl,
   peekPhotoPreviewUrl,
+  photoOriginalRequest,
   photoPreviewRequest,
   photoPreviewVersion,
+  preloadPhotoOriginalUrl,
   preloadPhotoPreviewUrl,
   preloadPreviewRequests,
   previewRequestKey,
@@ -307,7 +311,10 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
     let requestTimeout: ReturnType<typeof setTimeout> | null = null;
     let acceptingEvents = true;
     if (streamAssets) {
-      if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
+      if (indexedRootRef.current) {
+        clearPhotoPreviewCache(indexedRootRef.current);
+        completedPreloadKeysRef.current.clear();
+      }
       indexedRootRef.current = null;
       setIndex(null);
       setRatings({});
@@ -370,7 +377,10 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
       });
       const preserveContext = options.preserveContext
         && indexedRootRef.current === result.root;
-      if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
+      if (indexedRootRef.current) {
+        clearPhotoPreviewCache(indexedRootRef.current);
+        completedPreloadKeysRef.current.clear();
+      }
       indexedRootRef.current = result.root;
       setIndex(result);
       setRatings(Object.fromEntries(result.assets.map((asset) => [asset.id, asset.rating])));
@@ -407,7 +417,10 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
       }
     } catch (loadError) {
       setError(errorMessage(loadError));
-      if (indexedRootRef.current) clearPhotoPreviewCache(indexedRootRef.current);
+      if (indexedRootRef.current) {
+        clearPhotoPreviewCache(indexedRootRef.current);
+        completedPreloadKeysRef.current.clear();
+      }
       indexedRootRef.current = null;
       setIndex(null);
       setRatings({});
@@ -526,7 +539,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   }, [active, contextMenu, effectiveSelectedId, guideOpen, ratingBusyId, selectedAsset, view, visibleAssets]);
 
   useEffect(() => {
-    if (!active || view !== "loupe" || !index || !isTauri()) {
+    if (!active || busy || view !== "loupe" || !index || !isTauri()) {
       setPreloadingAssetIds(new Set<string>());
       return;
     }
@@ -543,39 +556,57 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
       })
       .map(({ asset }) => asset);
     const queue = orderedAssets.flatMap((asset) => {
-      const request = photoPreviewRequest(index.root, asset, loupePreviewEdge);
-      if (!request) return [];
-      const key = previewRequestKey(request);
-      if (peekPhotoPreviewUrl(request)) completedPreloadKeysRef.current.add(key);
+      const originalRequest = photoOriginalRequest(index.root, asset);
+      const displayRequest = photoPreviewRequest(index.root, asset, loupePreviewEdge);
+      if (!originalRequest || !displayRequest) return [];
+      const key = JSON.stringify([
+        originalPhotoRequestKey(originalRequest),
+        previewRequestKey(displayRequest),
+      ]);
+      if (peekPhotoOriginalUrl(originalRequest) && peekPhotoPreviewUrl(displayRequest)) {
+        completedPreloadKeysRef.current.add(key);
+      }
       return completedPreloadKeysRef.current.has(key)
         ? []
-        : [{ assetId: asset.id, key, request }];
+        : [{ assetId: asset.id, key, originalRequest, displayRequest }];
     });
     setPreloadingAssetIds(new Set(queue.map((item) => item.assetId)));
     const controller = new AbortController();
     void preloadPreviewRequests(
       queue,
       async (item) => {
-        await preloadPhotoPreviewUrl(item.request, controller.signal);
-        if (controller.signal.aborted) return;
-        completedPreloadKeysRef.current.add(item.key);
-        setPreloadingAssetIds((current) => {
-          if (!current.has(item.assetId)) return current;
-          const next = new Set(current);
-          next.delete(item.assetId);
-          return next;
-        });
+        try {
+          await preloadPhotoPreviewUrl(item.displayRequest, controller.signal);
+          await preloadPhotoOriginalUrl(item.originalRequest, controller.signal);
+          if (!controller.signal.aborted) {
+            completedPreloadKeysRef.current.add(item.key);
+          }
+        } finally {
+          if (!controller.signal.aborted) {
+            setPreloadingAssetIds((current) => {
+              if (!current.has(item.assetId)) return current;
+              const next = new Set(current);
+              next.delete(item.assetId);
+              return next;
+            });
+          }
+        }
       },
       { concurrency: 2, signal: controller.signal },
     );
     return () => controller.abort();
-  }, [active, index, loupePreviewEdge, view, visibleAssets]);
+  }, [active, busy, index, loupePreviewEdge, view, visibleAssets]);
 
   const markSelectedPreviewReady = useCallback(() => {
     if (!index || !selectedAsset) return;
-    const request = photoPreviewRequest(index.root, selectedAsset, loupePreviewEdge);
-    if (!request) return;
-    completedPreloadKeysRef.current.add(previewRequestKey(request));
+    const originalRequest = photoOriginalRequest(index.root, selectedAsset);
+    const displayRequest = photoPreviewRequest(index.root, selectedAsset, loupePreviewEdge);
+    if (!originalRequest || !displayRequest) return;
+    if (!peekPhotoOriginalUrl(originalRequest) || !peekPhotoPreviewUrl(displayRequest)) return;
+    completedPreloadKeysRef.current.add(JSON.stringify([
+      originalPhotoRequestKey(originalRequest),
+      previewRequestKey(displayRequest),
+    ]));
     setPreloadingAssetIds((current) => {
       if (!current.has(selectedAsset.id)) return current;
       const next = new Set(current);
@@ -934,7 +965,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
                 </div>
               </div>
               <div className="loupe-stage" onContextMenu={(event) => showContextMenu(event, selectedAsset)}>
-                <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={loupePreviewEdge} version={photoPreviewVersion(selectedAsset)} alt={selectedAsset.name} eager qualityFirst onFullReady={markSelectedPreviewReady} />
+                <PhotoThumbnail root={index.root} relativePath={selectedAsset.previewPath} maxEdge={loupePreviewEdge} version={photoPreviewVersion(selectedAsset)} alt={selectedAsset.name} eager qualityFirst originalFirst zoomable onFullReady={markSelectedPreviewReady} />
                 {selectedAsset.previewPath ? (
                   <NativePhotoPreview
                     root={index.root}

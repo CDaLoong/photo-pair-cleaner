@@ -858,10 +858,20 @@ input:disabled {
 }
 
 .photo-thumbnail img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   user-select: none;
+}
+
+.photo-thumbnail img.photo-image-layer.is-pending {
+  opacity: 0;
+}
+
+.photo-thumbnail img.photo-image-layer.is-current {
+  opacity: 1;
 }
 
 .thumbnail-fallback {
@@ -1180,6 +1190,66 @@ input:disabled {
   object-fit: contain;
   image-orientation: from-image;
   image-rendering: auto;
+}
+
+.loupe-stage .photo-thumbnail.is-zoomable {
+  cursor: zoom-in;
+  touch-action: none;
+}
+
+.loupe-stage .photo-thumbnail.is-zoomable:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.loupe-stage .photo-thumbnail.is-zoomable.is-zoomed {
+  cursor: grab;
+}
+
+.loupe-stage .photo-thumbnail.is-zoomable.is-dragging {
+  cursor: grabbing;
+}
+
+.loupe-stage .photo-thumbnail.is-zoomable img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+  flex: 0 0 auto;
+  transform-origin: center;
+  will-change: transform;
+}
+
+.photo-zoom-controls {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: rgb(17 19 17 / 82%);
+  border: 1px solid rgb(255 255 255 / 24%);
+  border-radius: 5px;
+  cursor: default;
+}
+
+.photo-zoom-controls .zoom-control-button {
+  width: 32px;
+  height: 32px;
+  color: #fff;
+  background: transparent;
+  border-color: transparent;
+}
+
+.photo-zoom-controls .zoom-control-button:not(:disabled):hover {
+  background: rgb(255 255 255 / 14%);
+}
+
+.photo-zoom-controls .zoom-control-button:disabled {
+  color: rgb(255 255 255 / 42%);
+  opacity: 1;
 }
 
 .native-preview-anchor {

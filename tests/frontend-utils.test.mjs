@@ -524,6 +524,39 @@ test("single-photo previews select a bounded tier from actual device pixels", ()
   assert.equal(previewUtils.displayPreviewEdge(Number.NaN, Number.NaN, Number.NaN), 1600);
 });
 
+test("photo detail zoom stays anchored and clamps panning to image bounds", () => {
+  const geometry = {
+    viewportWidth: 1000,
+    viewportHeight: 800,
+    imageWidth: 1000,
+    imageHeight: 600,
+  };
+  assert.deepEqual(
+    previewUtils.clampPhotoViewport({ scale: 2, x: 900, y: -900 }, geometry),
+    { scale: 2, x: 500, y: -200 },
+  );
+  assert.deepEqual(
+    previewUtils.zoomPhotoViewportAtPoint(
+      { scale: 1, x: 0, y: 0 },
+      2,
+      250,
+      0,
+      geometry,
+    ),
+    { scale: 2, x: -250, y: 0 },
+  );
+  assert.deepEqual(
+    previewUtils.zoomPhotoViewportAtPoint(
+      { scale: 4, x: -300, y: 120 },
+      1,
+      100,
+      100,
+      geometry,
+    ),
+    { scale: 1, x: 0, y: 0 },
+  );
+});
+
 test("context menu position stays inside the viewport", () => {
   assert.deepEqual(
     previewUtils.contextMenuPosition(790, 590, 800, 600, 260, 220),
@@ -1035,6 +1068,10 @@ test("preview indexing streams progress and queues every display preview", () =>
   assert.doesNotMatch(thumbnailSource, /loaded\?\.url \?\? null/);
   assert.match(thumbnailSource, /const previewPromise = previewLease\.promise/);
   assert.match(thumbnailSource, /onFullReadyRef\.current\?\.\(\)/);
+  assert.match(thumbnailSource, /zoomPhotoViewportAtPoint/);
+  assert.match(thumbnailSource, /onPointerMove/);
+  assert.match(thumbnailSource, /onWheel/);
+  assert.match(thumbnailSource, /photo-zoom-controls/);
   assert.match(cacheSource, /PREVIEW_LOAD_TIMEOUT_MS/);
   assert.match(gridSource, /virtualPhotoGridWindow/);
   assert.match(gridSource, /maxEdge=\{512\}/);

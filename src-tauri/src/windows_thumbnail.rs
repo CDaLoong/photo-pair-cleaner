@@ -158,13 +158,22 @@ pub(crate) fn load_system_thumbnail(source: &Path, max_edge: u32) -> Result<Vec<
     });
     let image = DynamicImage::ImageRgb8(bitmap_rgb(bitmap.0)?);
     let (width, height) = image.dimensions();
+    if max_edge >= 1024
+        && let Ok((source_width, source_height)) = image::image_dimensions(&source)
+    {
+        let expected_edge = max_edge.min(source_width.max(source_height));
+        if u64::from(width.max(height)) * 10 < u64::from(expected_edge) * 9 {
+            return Err("Windows 返回的系统缩略图尺寸不足".to_string());
+        }
+    }
     let image = if width > max_edge || height > max_edge {
         image.thumbnail(max_edge, max_edge)
     } else {
         image
     };
     let mut bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut bytes, 84)
+    let quality = if max_edge >= 1024 { 95 } else { 88 };
+    JpegEncoder::new_with_quality(&mut bytes, quality)
         .encode_image(&image)
         .map_err(|error| format!("无法编码 Windows 缩略图：{error}"))?;
     Ok(bytes)

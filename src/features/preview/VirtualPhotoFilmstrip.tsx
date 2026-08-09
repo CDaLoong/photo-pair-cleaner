@@ -149,8 +149,8 @@ export function VirtualPhotoFilmstrip({
                 <span
                   className="filmstrip-preload-indicator"
                   role="status"
-                  aria-label="高清大图加载中"
-                  title="高清大图加载中"
+                  aria-label="原图加载中"
+                  title="原图加载中"
                 >
                   <LoaderCircle className="spin" aria-hidden="true" size={17} />
                 </span>

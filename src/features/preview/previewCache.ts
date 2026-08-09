@@ -1,10 +1,16 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { PhotoAsset } from "./types";
 
 export interface PreviewRequest {
   root: string;
   relativePath: string;
   maxEdge: number;
+  version: string;
+}
+
+export interface OriginalPhotoRequest {
+  root: string;
+  relativePath: string;
   version: string;
 }
 
@@ -44,6 +50,10 @@ export function previewRequestKey(request: PreviewRequest): string {
     request.maxEdge,
     request.version,
   ]);
+}
+
+export function originalPhotoRequestKey(request: OriginalPhotoRequest): string {
+  return JSON.stringify([request.root, request.relativePath, request.version, "original"]);
 }
 
 export class PreviewUrlCache {
@@ -87,7 +97,8 @@ export class PreviewUrlCache {
       disposed: false,
       consumers: 0,
       leased: false,
-      costBytes: Math.max(1, request.maxEdge * request.maxEdge * 4),
+      // The cache retains compressed JPEG blobs, not RGBA pixel buffers.
+      costBytes: Math.max(1, request.maxEdge * request.maxEdge),
       controller: new AbortController(),
     };
     entry.promise = loader(entry.controller.signal)
@@ -274,6 +285,129 @@ export class PreviewLoadScheduler {
   }
 }
 
+interface OriginalCacheEntry {
+  root: string;
+  promise: Promise<string>;
+  url: string | null;
+  disposed: boolean;
+  consumers: number;
+  costBytes: number;
+  controller: AbortController;
+}
+
+interface LoadedOriginalPhoto {
+  url: string;
+}
+
+class OriginalPhotoUrlCache {
+  private readonly entries = new Map<string, OriginalCacheEntry>();
+  private retainedCostBytes = 0;
+
+  constructor(
+    private readonly maxEntries: number,
+    private readonly maxCostBytes: number,
+  ) {}
+
+  acquire(
+    request: OriginalPhotoRequest,
+    loader: (signal: AbortSignal) => Promise<LoadedOriginalPhoto>,
+  ): PreviewUrlLease {
+    const key = originalPhotoRequestKey(request);
+    let entry = this.entries.get(key);
+    if (!entry) {
+      entry = {
+        root: request.root,
+        promise: Promise.resolve(""),
+        url: null,
+        disposed: false,
+        consumers: 0,
+        costBytes: 0,
+        controller: new AbortController(),
+      };
+      const nextEntry = entry;
+      nextEntry.promise = loader(nextEntry.controller.signal)
+        .then(({ url }) => {
+          if (nextEntry.disposed) {
+            throw new Error("原图缓存已失效");
+          }
+          nextEntry.url = url;
+          nextEntry.costBytes = 1;
+          this.retainedCostBytes += nextEntry.costBytes;
+          this.touch(key, nextEntry);
+          this.trim();
+          return url;
+        })
+        .catch((error) => {
+          if (this.entries.get(key) === nextEntry) this.entries.delete(key);
+          throw error;
+        });
+      this.entries.set(key, nextEntry);
+    } else {
+      this.touch(key, entry);
+    }
+
+    entry.consumers += 1;
+    let released = false;
+    return {
+      promise: entry.promise,
+      release: () => {
+        if (released) return;
+        released = true;
+        const current = this.entries.get(key);
+        if (current !== entry) return;
+        entry.consumers = Math.max(0, entry.consumers - 1);
+        if (entry.consumers === 0 && !entry.url) {
+          entry.disposed = true;
+          entry.controller.abort();
+          this.entries.delete(key);
+          return;
+        }
+        this.trim();
+      },
+    };
+  }
+
+  peek(request: OriginalPhotoRequest): string | null {
+    const key = originalPhotoRequestKey(request);
+    const entry = this.entries.get(key);
+    if (!entry?.url) return null;
+    this.touch(key, entry);
+    return entry.url;
+  }
+
+  clearRoot(root: string): void {
+    for (const [key, entry] of this.entries) {
+      if (entry.root !== root) continue;
+      entry.disposed = true;
+      entry.controller.abort();
+      if (entry.url) this.retainedCostBytes = Math.max(0, this.retainedCostBytes - entry.costBytes);
+      this.entries.delete(key);
+    }
+  }
+
+  private touch(key: string, entry: OriginalCacheEntry): void {
+    if (this.entries.get(key) !== entry) return;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+  }
+
+  private trim(): void {
+    if (this.entries.size <= this.maxEntries && this.retainedCostBytes <= this.maxCostBytes) {
+      return;
+    }
+    for (const [key, entry] of this.entries) {
+      if (this.entries.size <= this.maxEntries && this.retainedCostBytes <= this.maxCostBytes) {
+        return;
+      }
+      if (entry.consumers > 0 || !entry.url) continue;
+      entry.disposed = true;
+      entry.controller.abort();
+      this.retainedCostBytes = Math.max(0, this.retainedCostBytes - entry.costBytes);
+      this.entries.delete(key);
+    }
+  }
+}
+
 interface ScheduledPreviewTask {
   priority: PreviewLoadPriority;
   signal?: AbortSignal;
@@ -294,6 +428,19 @@ export function photoPreviewRequest(
     root,
     relativePath: asset.previewPath,
     maxEdge,
+    version: photoPreviewVersion(asset, generation),
+  };
+}
+
+export function photoOriginalRequest(
+  root: string,
+  asset: PhotoAsset,
+  generation = 0,
+): OriginalPhotoRequest | null {
+  if (!asset.previewPath) return null;
+  return {
+    root,
+    relativePath: asset.previewPath,
     version: photoPreviewVersion(asset, generation),
   };
 }
@@ -349,8 +496,10 @@ const previewCache = new PreviewUrlCache((url) => URL.revokeObjectURL(url), {
   maxEntries: 128,
   maxCostBytes: 512 * 1024 * 1024,
 });
+const originalPhotoCache = new OriginalPhotoUrlCache(100_000, Number.POSITIVE_INFINITY);
 const previewScheduler = new PreviewLoadScheduler(3, 2);
 const PREVIEW_LOAD_TIMEOUT_MS = 12_000;
+const ORIGINAL_LOAD_TIMEOUT_MS = 60_000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -412,6 +561,65 @@ async function fetchPhotoPreviewUrl(
   } catch (error) {
     URL.revokeObjectURL(objectUrl);
     throw error;
+  }
+}
+
+async function fetchPhotoOriginalUrl(
+  request: OriginalPhotoRequest,
+  signal?: AbortSignal,
+): Promise<LoadedOriginalPhoto> {
+  if (signal?.aborted) throw new Error("原图请求已取消");
+  const sourcePath = await withTimeout(
+    invoke<string>("prepare_photo_original", {
+      root: request.root,
+      relativePath: request.relativePath,
+    }),
+    ORIGINAL_LOAD_TIMEOUT_MS,
+  );
+  if (signal?.aborted) throw new Error("原图请求已取消");
+  const assetUrl = convertFileSrc(sourcePath);
+  const separator = assetUrl.includes("?") ? "&" : "?";
+  const sourceUrl = (
+    `${assetUrl}${separator}framepairVersion=${encodeURIComponent(request.version)}`
+  );
+  await withTimeout(decodeImage(sourceUrl), ORIGINAL_LOAD_TIMEOUT_MS);
+  if (signal?.aborted) throw new Error("原图请求已取消");
+  return { url: sourceUrl };
+}
+
+export function peekPhotoOriginalUrl(request: OriginalPhotoRequest): string | null {
+  return originalPhotoCache.peek(request);
+}
+
+export function acquirePhotoOriginalUrl(
+  request: OriginalPhotoRequest,
+  priority: PreviewLoadPriority = "background",
+): PreviewUrlLease {
+  return originalPhotoCache.acquire(
+    request,
+    (signal) => previewScheduler.schedule(
+      () => fetchPhotoOriginalUrl(request, signal),
+      priority,
+      signal,
+    ),
+  );
+}
+
+export async function preloadPhotoOriginalUrl(
+  request: OriginalPhotoRequest,
+  externalSignal?: AbortSignal,
+): Promise<string> {
+  if (externalSignal?.aborted) throw new Error("原图请求已取消");
+  const lease = acquirePhotoOriginalUrl(request, "background");
+  const abort = () => lease.release();
+  externalSignal?.addEventListener("abort", abort, { once: true });
+  try {
+    const url = await lease.promise;
+    if (externalSignal?.aborted) throw new Error("原图请求已取消");
+    return url;
+  } finally {
+    externalSignal?.removeEventListener("abort", abort);
+    lease.release();
   }
 }
 
@@ -482,4 +690,5 @@ export function acquirePhotoPreviewUrl(
 
 export function clearPhotoPreviewCache(root: string): void {
   previewCache.clearRoot(root);
+  originalPhotoCache.clearRoot(root);
 }

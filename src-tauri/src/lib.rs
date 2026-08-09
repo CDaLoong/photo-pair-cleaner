@@ -1408,6 +1408,23 @@ async fn load_photo_thumbnail(
 }
 
 #[tauri::command]
+async fn prepare_photo_original(
+    app: tauri::AppHandle,
+    root: String,
+    relative_path: String,
+) -> Result<String, String> {
+    let source = tauri::async_runtime::spawn_blocking(move || {
+        preview::resolve_preview_path(Path::new(&root), &relative_path)
+    })
+    .await
+    .map_err(|error| format!("原图授权任务异常结束：{error}"))??;
+    app.asset_protocol_scope()
+        .allow_file(&source)
+        .map_err(|error| format!("无法授权原图读取：{error}"))?;
+    Ok(source.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 async fn get_preview_cache_stats(
     app: tauri::AppHandle,
 ) -> Result<preview::PreviewCacheStats, String> {
@@ -1571,6 +1588,7 @@ pub fn run() {
             undo_rating_copy,
             warm_photo_thumbnail,
             load_photo_thumbnail,
+            prepare_photo_original,
             get_preview_cache_stats,
             show_native_photo_preview,
             hide_native_photo_preview,

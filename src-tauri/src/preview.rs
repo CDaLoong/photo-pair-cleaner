@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const THUMBNAIL_CACHE_VERSION: u8 = 3;
+const THUMBNAIL_CACHE_VERSION: u8 = 4;
 const PREVIEW_CACHE_BUDGET_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const PREVIEW_CACHE_MAX_ENTRIES: usize = 100_000;
 pub(crate) use crate::preview_cache::PreviewCacheStats;

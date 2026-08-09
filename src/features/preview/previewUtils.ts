@@ -26,6 +26,78 @@ export function displayPreviewEdge(
     ?? DISPLAY_PREVIEW_EDGES.at(-1)!;
 }
 
+export interface PhotoViewportTransform {
+  scale: number;
+  x: number;
+  y: number;
+}
+
+export interface PhotoViewportGeometry {
+  viewportWidth: number;
+  viewportHeight: number;
+  imageWidth: number;
+  imageHeight: number;
+}
+
+function finiteNumber(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+export function clampPhotoViewport(
+  transform: PhotoViewportTransform,
+  geometry: PhotoViewportGeometry,
+  minScale = 1,
+  maxScale = 8,
+): PhotoViewportTransform {
+  const lowerScale = Math.max(0.01, finiteNumber(minScale, 1));
+  const upperScale = Math.max(lowerScale, finiteNumber(maxScale, 8));
+  const scale = Math.min(
+    upperScale,
+    Math.max(lowerScale, finiteNumber(transform.scale, lowerScale)),
+  );
+  if (scale <= lowerScale) return { scale: lowerScale, x: 0, y: 0 };
+
+  const viewportWidth = Math.max(0, finiteNumber(geometry.viewportWidth, 0));
+  const viewportHeight = Math.max(0, finiteNumber(geometry.viewportHeight, 0));
+  const imageWidth = Math.max(0, finiteNumber(geometry.imageWidth, 0));
+  const imageHeight = Math.max(0, finiteNumber(geometry.imageHeight, 0));
+  const maxX = Math.max(0, (imageWidth * scale - viewportWidth) / 2);
+  const maxY = Math.max(0, (imageHeight * scale - viewportHeight) / 2);
+
+  return {
+    scale,
+    x: Math.min(maxX, Math.max(-maxX, finiteNumber(transform.x, 0))),
+    y: Math.min(maxY, Math.max(-maxY, finiteNumber(transform.y, 0))),
+  };
+}
+
+export function zoomPhotoViewportAtPoint(
+  transform: PhotoViewportTransform,
+  targetScale: number,
+  pointX: number,
+  pointY: number,
+  geometry: PhotoViewportGeometry,
+  minScale = 1,
+  maxScale = 8,
+): PhotoViewportTransform {
+  const current = clampPhotoViewport(transform, geometry, minScale, maxScale);
+  const upperScale = Math.max(minScale, maxScale);
+  const scale = Math.min(
+    upperScale,
+    Math.max(minScale, finiteNumber(targetScale, current.scale)),
+  );
+  if (scale <= minScale) return { scale: minScale, x: 0, y: 0 };
+
+  const ratio = scale / current.scale;
+  const anchorX = finiteNumber(pointX, 0);
+  const anchorY = finiteNumber(pointY, 0);
+  return clampPhotoViewport({
+    scale,
+    x: anchorX - (anchorX - current.x) * ratio,
+    y: anchorY - (anchorY - current.y) * ratio,
+  }, geometry, minScale, upperScale);
+}
+
 function matchesFilter(asset: PhotoAsset, filter: PreviewFilter): boolean {
   const hasJpeg = asset.jpegPaths.length > 0;
   const hasRaw = asset.rawPaths.length > 0;
