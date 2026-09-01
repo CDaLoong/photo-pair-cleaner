@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #[allow(dead_code)]
 #[path = "../src/editors.rs"]
 mod editors;

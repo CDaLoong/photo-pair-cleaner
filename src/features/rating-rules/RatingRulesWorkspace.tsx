@@ -46,8 +46,9 @@ import type {
   RecoveryKind,
 } from "./types";
 import type { RatingConflictPolicy } from "../rating-sync/types";
+import { STORAGE_KEYS } from "../../storageKeys";
+import { useDirectoryDrop } from "../../hooks/useDirectoryDrop";
 
-const ROOT_STORAGE_KEY = "framepair.rating-rules.root.v1";
 
 const DEFAULT_SYNC: OperationSyncPreference = {
   enabled: false,
@@ -69,7 +70,7 @@ interface RatingRulesWorkspaceProps {
 
 function loadStoredRoot(): string {
   try {
-    return localStorage.getItem(ROOT_STORAGE_KEY) ?? "";
+    return localStorage.getItem(STORAGE_KEYS.ratingRulesRoot) ?? "";
   } catch {
     return "";
   }
@@ -141,38 +142,17 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
       .finally(() => setBusy(false));
   }, [active]);
 
-  useEffect(() => {
-    if (!active || !isTauri()) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void import("@tauri-apps/api/webview")
-      .then(({ getCurrentWebview }) => getCurrentWebview().onDragDropEvent((event) => {
-        if (disposed) return;
-        if (event.payload.type === "leave") {
-          setDropActive(false);
-          return;
-        }
-        if (event.payload.type === "over") {
-          setDropActive(true);
-          return;
-        }
-        setDropActive(false);
-        if (event.payload.paths.length !== 1) {
-          setMessage({ tone: "warning", title: "一次只能拖入一个照片目录" });
-          return;
-        }
-        void validateAndSetRoot(event.payload.paths[0]);
-      }))
-      .then((stop) => {
-        if (disposed) stop();
-        else unlisten = stop;
-      })
-      .catch((dropError) => setMessage({ tone: "error", title: "无法启用目录拖拽", detail: errorMessage(dropError) }));
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [active]);
+  useDirectoryDrop({
+    active,
+    onHoverChange: setDropActive,
+    onDropDirectory: (path) => void validateAndSetRoot(path),
+    onRejectMultiple: () => setMessage({ tone: "warning", title: "一次只能拖入一个照片目录" }),
+    onError: (dropError) => setMessage({
+      tone: "error",
+      title: "无法启用目录拖拽",
+      detail: errorMessage(dropError),
+    }),
+  });
 
   function nextRuleId(): string {
     idCounter.current += 1;
@@ -204,7 +184,7 @@ export function RatingRulesWorkspace({ active, onStateChange }: RatingRulesWorks
       clearPlan();
       setPendingGroupIds([]);
       try {
-        localStorage.setItem(ROOT_STORAGE_KEY, validated);
+        localStorage.setItem(STORAGE_KEYS.ratingRulesRoot, validated);
       } catch {
         // The selected directory remains valid for the current session.
       }

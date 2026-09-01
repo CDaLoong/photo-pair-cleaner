@@ -301,12 +301,17 @@ interface LoadedOriginalPhoto {
 
 class OriginalPhotoUrlCache {
   private readonly entries = new Map<string, OriginalCacheEntry>();
+  private readonly maxEntries: number;
+  private readonly maxCostBytes: number;
   private retainedCostBytes = 0;
 
-  constructor(
-    private readonly maxEntries: number,
-    private readonly maxCostBytes: number,
-  ) {}
+  // Fields are declared and assigned explicitly rather than via TypeScript
+  // parameter properties: `node --test` strips types without transforming them,
+  // and parameter properties would make the whole test module fail to load.
+  constructor(maxEntries: number, maxCostBytes: number) {
+    this.maxEntries = maxEntries;
+    this.maxCostBytes = maxCostBytes;
+  }
 
   acquire(
     request: OriginalPhotoRequest,
@@ -657,21 +662,6 @@ export async function preloadPhotoPreviewUrl(
     externalSignal?.removeEventListener("abort", abort);
     lease.release();
   }
-}
-
-export function warmPhotoPreviewCache(
-  request: PreviewRequest,
-  signal?: AbortSignal,
-): Promise<void> {
-  return previewScheduler.schedule(
-    () => invoke<void>("warm_photo_thumbnail", {
-      root: request.root,
-      relativePath: request.relativePath,
-      maxEdge: request.maxEdge,
-    }),
-    "background",
-    signal,
-  );
 }
 
 export function acquirePhotoPreviewUrl(

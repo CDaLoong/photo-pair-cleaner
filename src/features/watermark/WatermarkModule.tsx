@@ -57,13 +57,11 @@ import {
   type WatermarkPreviewResult,
 } from "./watermarkPreviewCache";
 import "./watermark.css";
+import { STORAGE_KEYS } from "../../storageKeys";
 
 const WATERMARK_PREVIEW_EDGE = 1400;
 const SOURCE_THUMBNAIL_EDGE = 220;
 const SOURCE_PRELOAD_CONCURRENCY = 3;
-const LEFT_PANEL_STORAGE_KEY = "framepair.watermark.left-panel-collapsed.v1";
-const RIGHT_PANEL_STORAGE_KEY = "framepair.watermark.right-panel-collapsed.v1";
-const WATERMARK_GUIDE_STORAGE_KEY = "framepair.watermark.guide.v1";
 const EMPTY_PRELOAD_PROGRESS: PreloadProgress = { total: 0, completed: 0, failed: 0 };
 
 function storedPanelPreference(key: string): boolean {
@@ -122,8 +120,8 @@ export function WatermarkModule({
   const [compareOriginal, setCompareOriginal] = useState(false);
   const [preloadProgress, setPreloadProgress] = useState<PreloadProgress>(EMPTY_PRELOAD_PROGRESS);
   const [leftTab, setLeftTab] = useState<"photos" | "templates">("photos");
-  const [leftCollapsed, setLeftCollapsed] = useState(() => storedPanelPreference(LEFT_PANEL_STORAGE_KEY));
-  const [rightCollapsed, setRightCollapsed] = useState(() => storedPanelPreference(RIGHT_PANEL_STORAGE_KEY));
+  const [leftCollapsed, setLeftCollapsed] = useState(() => storedPanelPreference(STORAGE_KEYS.watermarkLeftPanelCollapsed));
+  const [rightCollapsed, setRightCollapsed] = useState(() => storedPanelPreference(STORAGE_KEYS.watermarkRightPanelCollapsed));
   const [fonts, setFonts] = useState<WatermarkFontSummary[]>([]);
   const [templateEntries, setTemplateEntries] = useState<WatermarkTemplateEntry[]>([]);
   const [templateBusy, setTemplateBusy] = useState(false);
@@ -162,8 +160,8 @@ export function WatermarkModule({
     const leftQuery = window.matchMedia("(max-width: 999px)");
     const rightQuery = window.matchMedia("(max-width: 880px)");
     const syncResponsivePanels = () => {
-      setLeftCollapsed(leftQuery.matches ? true : storedPanelPreference(LEFT_PANEL_STORAGE_KEY));
-      setRightCollapsed(rightQuery.matches ? true : storedPanelPreference(RIGHT_PANEL_STORAGE_KEY));
+      setLeftCollapsed(leftQuery.matches ? true : storedPanelPreference(STORAGE_KEYS.watermarkLeftPanelCollapsed));
+      setRightCollapsed(rightQuery.matches ? true : storedPanelPreference(STORAGE_KEYS.watermarkRightPanelCollapsed));
     };
     syncResponsivePanels();
     leftQuery.addEventListener("change", syncResponsivePanels);
@@ -209,7 +207,7 @@ export function WatermarkModule({
           attemptedGuideRef.current = true;
           let shouldOpenGuide = true;
           try {
-            shouldOpenGuide = localStorage.getItem(WATERMARK_GUIDE_STORAGE_KEY) !== "true";
+            shouldOpenGuide = localStorage.getItem(STORAGE_KEYS.watermarkGuide) !== "true";
           } catch {
             // The first-use guide still opens when preferences are unavailable.
           }
@@ -553,13 +551,13 @@ export function WatermarkModule({
     if (side === "left") {
       setLeftCollapsed((current) => {
         const next = !current;
-        persistPanelPreference(LEFT_PANEL_STORAGE_KEY, next);
+        persistPanelPreference(STORAGE_KEYS.watermarkLeftPanelCollapsed, next);
         return next;
       });
     } else {
       setRightCollapsed((current) => {
         const next = !current;
-        persistPanelPreference(RIGHT_PANEL_STORAGE_KEY, next);
+        persistPanelPreference(STORAGE_KEYS.watermarkRightPanelCollapsed, next);
         return next;
       });
     }
@@ -902,7 +900,7 @@ export function WatermarkModule({
 
   function dismissWatermarkGuide() {
     try {
-      localStorage.setItem(WATERMARK_GUIDE_STORAGE_KEY, "true");
+      localStorage.setItem(STORAGE_KEYS.watermarkGuide, "true");
     } catch {
       // The guide remains available from the header when storage is unavailable.
     }

@@ -1,9 +1,9 @@
+use crate::fs_util::{self, modified_ms};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Component, Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::path::{Path, PathBuf};
 
 pub(crate) const QUARANTINE_DIR: &str = ".framepair-quarantine";
 const MANIFEST_FILE: &str = "manifest.jsonl";
@@ -44,34 +44,13 @@ struct RestoreMarker {
     relative_path: String,
 }
 
-fn modified_ms(metadata: &fs::Metadata) -> Option<u64> {
-    metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-}
-
 fn canonical_root(raw_root: &Path) -> Result<PathBuf, String> {
-    let root =
-        fs::canonicalize(raw_root).map_err(|error| format!("RAW 源目录不可访问：{error}"))?;
-    if !root.is_dir() {
-        return Err("RAW 源目录不是文件夹".to_string());
-    }
-    Ok(root)
+    fs_util::canonical_directory(raw_root, "RAW 源目录")
 }
 
 fn safe_relative_path(value: &Path) -> Result<PathBuf, String> {
-    if value.as_os_str().is_empty() || value.is_absolute() {
-        return Err("隔离文件路径必须是非空相对路径".to_string());
-    }
-    if value
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("隔离文件路径包含不允许的跳转部分".to_string());
-    }
+    fs_util::safe_relative_path(value, "隔离文件路径")?;
+    // 否则一次恢复就能把隔离区自身搬进隔离区，形成无法收敛的嵌套。
     if value
         .components()
         .next()

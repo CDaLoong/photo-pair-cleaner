@@ -10,6 +10,7 @@ import {
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { storedBooleanPreference } from "../utils";
+import { STORAGE_KEYS } from "../storageKeys";
 
 export type AppModule = "preview" | "cleanup" | "watermark";
 
@@ -26,12 +27,11 @@ const MODULES = [
   { id: "watermark", label: "水印导出", detail: "边框与发布副本", icon: Stamp },
 ] as const;
 
-const MODULE_SIDEBAR_STORAGE_KEY = "framepair.layout.module-sidebar-collapsed.v1";
 
 export function AppShell({ activeModule, onModuleChange, immersive, children }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
-      return storedBooleanPreference(localStorage.getItem(MODULE_SIDEBAR_STORAGE_KEY));
+      return storedBooleanPreference(localStorage.getItem(STORAGE_KEYS.moduleSidebarCollapsed));
     } catch {
       return false;
     }
@@ -50,7 +50,7 @@ export function AppShell({ activeModule, onModuleChange, immersive, children }: 
     setSidebarCollapsed((current) => {
       const next = !current;
       try {
-        localStorage.setItem(MODULE_SIDEBAR_STORAGE_KEY, String(next));
+        localStorage.setItem(STORAGE_KEYS.moduleSidebarCollapsed, String(next));
       } catch {
         // The current session remains usable if layout preferences cannot be stored.
       }

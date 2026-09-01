@@ -15,8 +15,8 @@ import type {
   WatermarkTemplate,
 } from "./types";
 
-export interface Point2D { x: number; y: number }
-export interface Size2D { width: number; height: number }
+interface Point2D { x: number; y: number }
+interface Size2D { width: number; height: number }
 
 interface WatermarkLayerGeometryLike {
   anchorRect: { x: number; y: number; width: number; height: number };

@@ -1,8 +1,8 @@
+use crate::fs_util::{canonical_directory_from_input, collect_files};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use walkdir::WalkDir;
 
 const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_XMP_BYTES: u64 = 4 * 1024 * 1024;
@@ -37,33 +37,6 @@ pub(crate) struct ReferenceIndex {
     pub entries: HashMap<String, Vec<ReferenceMatch>>,
     pub source_items: usize,
     pub duplicate_keys: usize,
-}
-
-fn canonical_directory(input: &str, label: &str) -> Result<PathBuf, String> {
-    let path =
-        fs::canonicalize(input.trim()).map_err(|error| format!("{label}不可访问：{error}"))?;
-    if !path.is_dir() {
-        return Err(format!("{label}不是文件夹"));
-    }
-    Ok(path)
-}
-
-fn collect_files(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files = Vec::new();
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| {
-            entry.depth() != 1 || entry.file_name() != crate::quarantine::QUARANTINE_DIR
-        })
-    {
-        let entry = entry.map_err(|error| format!("扫描参考源失败：{error}"))?;
-        if entry.file_type().is_file() {
-            files.push(entry.into_path());
-        }
-    }
-    files.sort_by_key(|path| path.to_string_lossy().to_lowercase());
-    Ok(files)
 }
 
 fn match_key(path: &Path, case_sensitive: bool) -> String {
@@ -127,10 +100,11 @@ pub(crate) fn build_index(
 ) -> Result<ReferenceIndex, String> {
     let (root, entries, source_items) = match source {
         ReferenceSource::Directory { root } => {
-            let root = canonical_directory(root, "JPG 参考目录")?;
+            let root = canonical_directory_from_input(root, "JPG 参考目录")?;
             let mut entries: HashMap<String, Vec<ReferenceMatch>> = HashMap::new();
             let mut source_items = 0usize;
-            for path in collect_files(&root)? {
+            for path in collect_files(&root, crate::quarantine::QUARANTINE_DIR, "扫描参考源失败")?
+            {
                 if !crate::formats::is_reference(&path) {
                     continue;
                 }
@@ -184,10 +158,11 @@ pub(crate) fn build_index(
             if !(1..=5).contains(minimum_rating) {
                 return Err("最低 XMP 星级必须在 1 到 5 之间".to_string());
             }
-            let root = canonical_directory(root, "XMP 评分目录")?;
+            let root = canonical_directory_from_input(root, "XMP 评分目录")?;
             let mut entries: HashMap<String, Vec<ReferenceMatch>> = HashMap::new();
             let mut source_items = 0usize;
-            for path in collect_files(&root)? {
+            for path in collect_files(&root, crate::quarantine::QUARANTINE_DIR, "扫描参考源失败")?
+            {
                 if !crate::formats::is_sidecar(&path) {
                     continue;
                 }

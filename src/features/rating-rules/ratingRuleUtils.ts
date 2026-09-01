@@ -105,14 +105,6 @@ export function validateRatingRuleDrafts(
   return { valid: true };
 }
 
-export function ratingConditionLabel(condition: RatingCondition): string {
-  if (condition.type === "unrated") return "未评分";
-  if (condition.type === "equal") return `等于 ${condition.rating} 星`;
-  if (condition.type === "atLeast") return `${condition.rating} 星及以上`;
-  if (condition.type === "atMost") return `${condition.rating} 星及以下`;
-  return `${condition.minimum}-${condition.maximum} 星`;
-}
-
 export function ruleActionLabel(action: RuleAction): string {
   if (action === "keep") return "保留";
   if (action === "copy") return "复制";

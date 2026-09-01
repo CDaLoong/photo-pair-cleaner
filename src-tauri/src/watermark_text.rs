@@ -55,7 +55,6 @@ pub(crate) struct TextMetrics {
 
 pub(crate) struct RasterizedText {
     pub(crate) image: Rgba32FImage,
-    pub(crate) metrics: TextMetrics,
     pub(crate) resolved_font: ResolvedFont,
 }
 
@@ -149,6 +148,9 @@ pub(crate) fn list_fonts(resource_dir: &Path) -> Result<Vec<FontSummary>, String
     Ok(FontCatalog::new(resource_dir)?.summaries())
 }
 
+/// 仅被 `tests/watermark_render.rs` 使用（该测试通过 `#[path]` 引入本模块）。
+/// 应用侧的文字度量是 `rasterize_text` 的副产物，不走这里。
+#[allow(dead_code)]
 pub(crate) fn measure_text(
     request: &TextRenderRequest,
     catalog: &mut FontCatalog,
@@ -162,6 +164,9 @@ pub(crate) fn measure_text(
     Ok(buffer_metrics(&buffer, request.box_width))
 }
 
+/// 仅被 `tests/watermark_render.rs` 使用（该测试通过 `#[path]` 引入本模块）。
+/// 渲染器实际是在 `watermark_render` 里做合成的。
+#[allow(dead_code)]
 pub(crate) fn draw_text(
     canvas: &mut Rgba32FImage,
     request: &TextRenderRequest,
@@ -263,7 +268,6 @@ pub(crate) fn rasterize_text(
 
     Ok(RasterizedText {
         image,
-        metrics,
         resolved_font,
     })
 }

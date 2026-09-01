@@ -1,5 +1,8 @@
+#![allow(dead_code)]
 #[path = "../src/formats.rs"]
 mod formats;
+#[path = "../src/fs_util.rs"]
+mod fs_util;
 #[allow(dead_code)]
 #[path = "../src/photo_groups.rs"]
 mod photo_groups;

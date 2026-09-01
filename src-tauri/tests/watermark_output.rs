@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+#[path = "../src/fs_util.rs"]
+mod fs_util;
 
 #[path = "../src/formats.rs"]
 mod formats;

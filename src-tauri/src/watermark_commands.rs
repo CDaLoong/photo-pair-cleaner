@@ -343,7 +343,7 @@ pub(crate) async fn reveal_watermark_export(
     task_id: String,
 ) -> Result<(), String> {
     let output_directory = store.completed_output_directory(&task_id)?;
-    tauri::async_runtime::spawn_blocking(move || crate::reveal_path(&output_directory))
+    tauri::async_runtime::spawn_blocking(move || crate::platform::reveal_path(&output_directory))
         .await
         .map_err(|error| format!("打开水印输出目录任务异常结束：{error}"))?
 }

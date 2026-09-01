@@ -12,7 +12,14 @@ import * as ratingSyncUtils from "../src/features/rating-sync/ratingSyncUtils.ts
 import * as utils from "../src/utils.ts";
 
 test("phase five registers organizer execution and recovery without a path-based cleanup command", () => {
-  const source = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  // Definitions live in commands/, registration lives in lib.rs.
+  const registration = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const definitions = ["rating", "organizer"]
+    .map((name) => fs.readFileSync(
+      new URL(`../src-tauri/src/commands/${name}.rs`, import.meta.url),
+      "utf8",
+    ))
+    .join("\n");
   for (const command of [
     "get_rating_rules",
     "save_rating_rules",
@@ -25,15 +32,20 @@ test("phase five registers organizer execution and recovery without a path-based
     "restore_rating_quarantine",
     "undo_rating_copy",
   ]) {
-    assert.match(source, new RegExp(`async fn ${command}\\b`));
-    assert.match(source, new RegExp(`\\n\\s*${command},?`));
+    assert.match(definitions, new RegExp(`async fn ${command}\\b`));
+    assert.match(registration, new RegExp(`\\n\\s*\\w+::${command},?`));
   }
-  assert.doesNotMatch(source, /async fn execute_rating_cleanup\b/);
+  assert.doesNotMatch(definitions, /async fn execute_rating_cleanup\b/);
 });
 
 test("phase five keeps cleanup inside the authorized organizer command", () => {
   const plan = fs.readFileSync(new URL("../src-tauri/src/operation_plan.rs", import.meta.url), "utf8");
-  const organizer = fs.readFileSync(new URL("../src-tauri/src/file_organizer.rs", import.meta.url), "utf8");
+  const organizer = ["execute/mod", "execute/removal", "mod"]
+    .map((name) => fs.readFileSync(
+      new URL(`../src-tauri/src/file_organizer/${name}.rs`, import.meta.url),
+      "utf8",
+    ))
+    .join("\n");
   assert.match(plan, /cleanup_destination: Option<CleanupExecutionDestination>/);
   assert.match(organizer, /CleanupExecutionDestination::Quarantine/);
   assert.match(organizer, /CleanupExecutionDestination::Trash/);
@@ -753,12 +765,6 @@ test("filmstrip scroll keeps the selected thumbnail inside the viewport", () => 
   }), 600);
 });
 
-test("nearby preview preloads follow the current browsing direction", () => {
-  assert.deepEqual(previewUtils.previewPreloadOffsets(1), [1, 2, 3, -1]);
-  assert.deepEqual(previewUtils.previewPreloadOffsets(-1), [-1, -2, -3, 1]);
-  assert.deepEqual(previewUtils.previewPreloadOffsets(0), [1, -1]);
-});
-
 test("virtual filmstrip keeps a fixed DOM window for huge directories", () => {
   const window = previewUtils.virtualFilmstripWindow({
     itemCount: 10_000,
@@ -864,11 +870,17 @@ test("preview cache retains visible leases and evicts old unpinned URLs", async 
   third.release();
 });
 
-test("preview cache evicts by estimated decoded bytes", async () => {
+test("preview cache evicts by estimated retained cost, not entry count", async () => {
+  // Cost is estimated as one byte per pixel of the requested edge, matching the
+  // compressed JPEG blobs the cache actually retains. A 4096 proxy therefore
+  // costs ~16 MiB and a 1600 proxy ~2.4 MiB. The budget below admits the large
+  // proxy alone, so loading the medium one has to evict it even though
+  // `maxEntries` is nowhere near exhausted.
+  const budget = 17 * 1024 * 1024;
   const released = [];
   const cache = new PreviewUrlCache((url) => released.push(url), {
     maxEntries: 10,
-    maxCostBytes: 70 * 1024 * 1024,
+    maxCostBytes: budget,
   });
   const large = { ...previewRequest, relativePath: "large.JPG", maxEdge: 4096 };
   const medium = { ...previewRequest, relativePath: "medium.JPG", maxEdge: 1600 };
@@ -879,7 +891,7 @@ test("preview cache evicts by estimated decoded bytes", async () => {
   assert.deepEqual(released, ["blob:large"]);
   assert.equal(cache.peek(large), null);
   assert.equal(cache.peek(medium), "blob:medium");
-  assert.ok(cache.estimatedCostBytes() <= 70 * 1024 * 1024);
+  assert.ok(cache.estimatedCostBytes() <= budget);
 });
 
 test("releasing the last pending preview lease cancels abandoned work", async () => {
@@ -988,7 +1000,7 @@ test("preview indexing streams progress and queues every display preview", () =>
     "utf8",
   );
   const backendSource = fs.readFileSync(
-    new URL("../src-tauri/src/lib.rs", import.meta.url),
+    new URL("../src-tauri/src/commands/preview.rs", import.meta.url),
     "utf8",
   );
   const previewBackendSource = fs.readFileSync(
@@ -1020,10 +1032,8 @@ test("preview indexing streams progress and queues every display preview", () =>
   assert.match(moduleSource, /onEvent: channel/);
   assert.match(moduleSource, /preview-index-progress-track/);
   assert.match(moduleSource, /preloadPreviewRequests/);
-  assert.doesNotMatch(moduleSource, /warmPhotoPreviewCache/);
   assert.match(moduleSource, /view !== "loupe"/);
   assert.match(moduleSource, /setPreloadingAssetIds\(new Set\(queue\.map/);
-  assert.doesNotMatch(moduleSource, /previewPreloadOffsets\(direction\)/);
   assert.match(moduleSource, /new AbortController\(\)/);
   assert.match(moduleSource, /恢复上次照片目录超时，请重新选择目录/);
   assert.match(moduleSource, /loupePreviewEdge/);
@@ -1032,9 +1042,7 @@ test("preview indexing streams progress and queues every display preview", () =>
   assert.match(moduleSource, /preloadPhotoPreviewUrl/);
   assert.match(moduleSource, /nativePreviewActive/);
   assert.doesNotMatch(moduleSource, /大图预加载进度/);
-  assert.match(cacheSource, /warm_photo_thumbnail/);
   assert.doesNotMatch(cacheSource, /authorize_photo_original/);
-  assert.match(backendSource, /warm_photo_thumbnail/);
   assert.match(backendSource, /async fn get_preview_cache_stats/);
   assert.match(backendSource, /async fn show_native_photo_preview/);
   assert.match(backendSource, /async fn hide_native_photo_preview/);
@@ -1047,7 +1055,10 @@ test("preview indexing streams progress and queues every display preview", () =>
   assert.match(nativePreviewBridgeSource, /VITE_ENABLE_EMBEDDED_QUICK_LOOK/);
   assert.match(nativePreviewBridgeSource, /show_native_photo_preview/);
   assert.match(nativePreviewBridgeSource, /hide_native_photo_preview/);
-  assert.match(previewBackendSource, /THUMBNAIL_CACHE_VERSION: u8 = 3/);
+  // The version only has to exist and take part in the cache key; pinning its
+  // current value here would break on every legitimate cache invalidation.
+  assert.match(previewBackendSource, /THUMBNAIL_CACHE_VERSION: u8 = \d+/);
+  assert.match(previewBackendSource, /THUMBNAIL_CACHE_VERSION\.hash\(&mut hasher\)/);
   assert.match(previewBackendSource, /PREVIEW_CACHE_BUDGET_BYTES/);
   assert.match(previewBackendSource, /PREVIEW_CACHE_MAX_ENTRIES/);
   assert.match(previewBackendSource, /thumbnail_cache_relative_path/);
@@ -1064,7 +1075,10 @@ test("preview indexing streams progress and queues every display preview", () =>
   assert.match(thumbnailSource, /rootMargin: "600px"/);
   assert.match(thumbnailSource, /acquirePhotoPreviewUrl/);
   assert.match(thumbnailSource, /qualityFirst/);
-  assert.match(thumbnailSource, /cachedFull \?\? cachedPreview/);
+  // A cached full-quality proxy must win over the 512px quick preview. The
+  // regex tolerates the `originalFirst` guard between the two operands so that
+  // adjusting that policy does not require touching this assertion.
+  assert.match(thumbnailSource, /cachedFull \?\? [^;]*cachedPreview/);
   assert.doesNotMatch(thumbnailSource, /loaded\?\.url \?\? null/);
   assert.match(thumbnailSource, /const previewPromise = previewLease\.promise/);
   assert.match(thumbnailSource, /onFullReadyRef\.current\?\.\(\)/);

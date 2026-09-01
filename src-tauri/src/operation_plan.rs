@@ -1,3 +1,4 @@
+use crate::fs_util::display_path;
 use crate::photo_groups::{PhotoIndex, PhotoMemberKind};
 use crate::rating_rules::{RatingRule, RuleAction, RuleMemberKind, validate_rule_set};
 use crate::rating_sync::{
@@ -157,6 +158,9 @@ impl OperationPlanStore {
         Ok(())
     }
 
+    /// 仅供测试使用：生产代码通过 `take_plan`/`peek_plan` 读取计划，
+    /// 那两个入口同时负责保证「一次性计划」的约束。
+    #[cfg(test)]
     pub(crate) fn current_summary(&self) -> Result<Option<OperationPlanSummary>, String> {
         Ok(self
             .current
@@ -248,10 +252,6 @@ fn member_kind(kind: PhotoMemberKind) -> RuleMemberKind {
         PhotoMemberKind::Raw => RuleMemberKind::Raw,
         PhotoMemberKind::Xmp => RuleMemberKind::Xmp,
     }
-}
-
-fn display_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 fn validate_request(

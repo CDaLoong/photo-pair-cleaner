@@ -606,6 +606,10 @@ fn render_photo(
     Ok(())
 }
 
+/// 不带资源表的便捷包装，仅被 `tests/watermark_render.rs` 使用
+/// （该测试通过 `#[path]` 引入本模块）。
+/// 应用侧始终持有资源表，直接调用 `render_base_with_resources`。
+#[allow(dead_code)]
 pub(crate) fn render_base(
     source: &Path,
     variant: &LayoutVariant,
@@ -693,6 +697,10 @@ pub(crate) fn render_base_with_resources(
     })
 }
 
+/// 使用默认渲染目标的便捷包装，仅被 `tests/watermark_render.rs` 和
+/// `tests/watermark_golden.rs` 使用（它们通过 `#[path]` 引入本模块）。
+/// 导出与预览都会显式指定目标，走 `render_request_with_target`。
+#[allow(dead_code)]
 pub(crate) fn render_request(
     source: &Path,
     request: &WatermarkRenderRequest,

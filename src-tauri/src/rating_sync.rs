@@ -1,3 +1,4 @@
+use crate::fs_util::{display_path, modified_ms};
 use crate::photo_groups::{PhotoAsset, PhotoIndex, RatingState};
 use crate::rating_metadata;
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
-use std::time::UNIX_EPOCH;
 use tempfile::NamedTempFile;
 
 const MAX_XMP_BYTES: u64 = 4 * 1024 * 1024;
@@ -345,19 +345,6 @@ pub(crate) fn resolve_rating(
             }
         }
     }
-}
-
-fn display_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-fn modified_ms(metadata: &fs::Metadata) -> Option<u64> {
-    metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
 }
 
 fn existing_snapshot(root: &Path, relative_path: &str) -> Result<TargetSnapshot, String> {

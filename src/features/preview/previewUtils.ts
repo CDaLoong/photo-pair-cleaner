@@ -305,12 +305,6 @@ export function filmstripScrollTarget({
   return Math.max(0, Math.min(scrollWidth - clientWidth, target));
 }
 
-export function previewPreloadOffsets(direction: -1 | 0 | 1): number[] {
-  if (direction > 0) return [1, 2, 3, -1];
-  if (direction < 0) return [-1, -2, -3, 1];
-  return [1, -1];
-}
-
 export interface VirtualFilmstripWindow {
   totalWidth: number;
   startIndex: number;

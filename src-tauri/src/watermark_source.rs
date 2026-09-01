@@ -1,4 +1,5 @@
 use crate::formats;
+use crate::fs_util::{self, reject_symlink};
 use crate::watermark_model::{
     WatermarkOrientation, WatermarkSourceOrigin, WatermarkSourcePhoto, WatermarkSourceSnapshot,
 };
@@ -9,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,34 +56,8 @@ fn modified_ms(metadata: &fs::Metadata) -> Result<u64, String> {
         .map_err(|_| "照片修改时间早于系统纪元".to_string())
 }
 
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
-}
-
-fn reject_symlink(path: &Path, label: &str) -> Result<fs::Metadata, String> {
-    let metadata =
-        fs::symlink_metadata(path).map_err(|error| format!("{label}不可访问：{error}"))?;
-    if metadata.file_type().is_symlink() {
-        return Err(format!("{label}不能是符号链接"));
-    }
-    Ok(metadata)
-}
-
 fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
-    let path = Path::new(value);
-    if value.trim().is_empty() || path.is_absolute() {
-        return Err("水印照片路径必须是安全相对路径".to_string());
-    }
-    if path
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("水印照片路径包含不安全片段".to_string());
-    }
-    Ok(path.to_path_buf())
+    fs_util::safe_relative_path_str(value, "水印照片路径")
 }
 
 fn reject_relative_symlinks(root: &Path, relative: &Path) -> Result<(), String> {
@@ -98,11 +73,7 @@ fn reject_relative_symlinks(root: &Path, relative: &Path) -> Result<(), String> 
 }
 
 fn canonical_directory(path: &Path) -> Result<PathBuf, String> {
-    let metadata = reject_symlink(path, "水印照片目录")?;
-    if !metadata.is_dir() {
-        return Err("水印照片目录不是文件夹".to_string());
-    }
-    fs::canonicalize(path).map_err(|error| format!("无法规范化水印照片目录：{error}"))
+    fs_util::canonical_trusted_directory(path, "水印照片目录")
 }
 
 fn canonical_file(path: &Path) -> Result<PathBuf, String> {
@@ -397,7 +368,7 @@ pub(crate) fn prepare_source(
             .then_with(|| left.relative_path.cmp(&right.relative_path))
     });
 
-    let created_at_ms = current_time_ms();
+    let created_at_ms = fs_util::now_ms();
     Ok(WatermarkSourceSnapshot {
         id: snapshot_id(created_at_ms, &photos),
         created_at_ms,

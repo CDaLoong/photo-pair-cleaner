@@ -1,8 +1,9 @@
+use crate::fs_util;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const DATABASE_VERSION: u8 = 1;
@@ -24,27 +25,16 @@ pub(crate) struct RatingUpdate {
 }
 
 fn canonical_root(root: &Path) -> Result<PathBuf, String> {
-    let root = fs::canonicalize(root).map_err(|error| format!("照片目录不可访问：{error}"))?;
-    if !root.is_dir() {
-        return Err("照片目录不是文件夹".to_string());
-    }
-    Ok(root)
+    fs_util::canonical_directory(root, "照片目录")
 }
 
 fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
-    let path = Path::new(value);
-    if value.trim().is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("评分路径必须是安全相对路径".to_string());
-    }
-    if !crate::formats::is_reference(path) && !crate::formats::is_raw(path) {
+    let path = fs_util::safe_relative_path_str(value, "评分路径")?;
+    // 评分只对成对清理认可的照片本体有意义，XMP 边车和其它文件不参与。
+    if !crate::formats::is_reference(&path) && !crate::formats::is_raw(&path) {
         return Err("只能为受支持的 JPG/RAW 照片评分".to_string());
     }
-    Ok(path.to_path_buf())
+    Ok(path)
 }
 
 fn root_key(root: &Path) -> String {

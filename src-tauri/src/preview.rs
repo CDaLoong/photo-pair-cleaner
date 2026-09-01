@@ -1,3 +1,4 @@
+use crate::fs_util::{self, modified_ms, now_ms};
 use crate::{formats, preview_cache};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
@@ -6,12 +7,11 @@ use image::{DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageRea
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const THUMBNAIL_CACHE_VERSION: u8 = 4;
 const PREVIEW_CACHE_BUDGET_BYTES: u64 = 10 * 1024 * 1024 * 1024;
@@ -21,34 +21,8 @@ pub(crate) use crate::preview_cache::PreviewCacheStats;
 static THUMBNAIL_GENERATION_LOCKS: LazyLock<Vec<Mutex<()>>> =
     LazyLock::new(|| (0..64).map(|_| Mutex::new(())).collect());
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
-}
-
-fn modified_ms(metadata: &fs::Metadata) -> Option<u64> {
-    metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-}
-
 fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
-    let path = Path::new(value);
-    if value.trim().is_empty() || path.is_absolute() {
-        return Err("预览路径必须是安全相对路径".to_string());
-    }
-    if path
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("预览路径包含不安全片段".to_string());
-    }
-    Ok(path.to_path_buf())
+    fs_util::safe_relative_path_str(value, "预览路径")
 }
 
 pub(crate) fn resolve_preview_path(root: &Path, relative_path: &str) -> Result<PathBuf, String> {

@@ -44,14 +44,12 @@ import {
   cleanableItems,
   canAuditReferenceSource,
   errorMessage,
-  formatBytes,
   formatDate,
   noticeAfterRescanFailure,
   scanHasBlockingIssues,
 } from "../../utils";
+import { STORAGE_KEYS } from "../../storageKeys";
 
-const STORAGE_KEY = "framepair.settings.v2";
-const GUIDE_STORAGE_KEY = "framepair.guide.completed.v1";
 const INITIAL_SYNC_WORKSPACE_STATE: RatingSyncWorkspaceState = {
   busy: false,
   executing: false,
@@ -83,7 +81,7 @@ interface ScanRunResult {
 
 function loadSettings(): StoredSettings {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(STORAGE_KEYS.cleanupSettings);
     if (stored) {
       return {
         referenceRoot: "",
@@ -116,7 +114,7 @@ function loadSettings(): StoredSettings {
 
 function shouldOpenGuide() {
   try {
-    return localStorage.getItem(GUIDE_STORAGE_KEY) !== "true";
+    return localStorage.getItem(STORAGE_KEYS.cleanupGuideCompleted) !== "true";
   } catch {
     return true;
   }
@@ -201,7 +199,7 @@ export function CleanupModule({ active }: CleanupModuleProps) {
 
   function persistSettings(next?: Partial<StoredSettings>) {
     localStorage.setItem(
-      STORAGE_KEY,
+      STORAGE_KEYS.cleanupSettings,
       JSON.stringify({
         referenceRoot,
         rawRoot,
@@ -487,7 +485,7 @@ export function CleanupModule({ active }: CleanupModuleProps) {
 
   function dismissGuide() {
     try {
-      localStorage.setItem(GUIDE_STORAGE_KEY, "true");
+      localStorage.setItem(STORAGE_KEYS.cleanupGuideCompleted, "true");
     } catch {
       // The guide remains available from the header when storage is unavailable.
     }

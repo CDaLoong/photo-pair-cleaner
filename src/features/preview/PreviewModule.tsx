@@ -88,10 +88,8 @@ import type {
   PreviewView,
   RatingUpdate,
 } from "./types";
+import { STORAGE_KEYS } from "../../storageKeys";
 
-const PREVIEW_ROOT_STORAGE_KEY = "framepair.preview.root.v1";
-const PREVIEW_GUIDE_STORAGE_KEY = "framepair.preview.guide.v1";
-const FOLDER_SIDEBAR_STORAGE_KEY = "framepair.preview.folder-sidebar-collapsed.v1";
 const INITIAL_LOUPE_PREVIEW_EDGE = displayPreviewEdge(1, 1, 1);
 const SYSTEM_EDITOR: ExternalEditor = {
   id: "system",
@@ -179,7 +177,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   const [index, setIndex] = useState<PhotoIndex | null>(null);
   const [root, setRoot] = useState(() => {
     try {
-      return localStorage.getItem(PREVIEW_ROOT_STORAGE_KEY) ?? "";
+      return localStorage.getItem(STORAGE_KEYS.previewRoot) ?? "";
     } catch {
       return "";
     }
@@ -217,7 +215,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   const [syncAssetId, setSyncAssetId] = useState<string | null>(null);
   const [folderSidebarCollapsed, setFolderSidebarCollapsed] = useState(() => {
     try {
-      return storedBooleanPreference(localStorage.getItem(FOLDER_SIDEBAR_STORAGE_KEY));
+      return storedBooleanPreference(localStorage.getItem(STORAGE_KEYS.previewFolderSidebarCollapsed));
     } catch {
       return false;
     }
@@ -401,7 +399,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
       if (!preserveContext && result.assets.length > 0 && !attemptedPreviewGuide.current) {
         attemptedPreviewGuide.current = true;
         try {
-          autoOpenGuide = shouldOpenPreviewGuide(localStorage.getItem(PREVIEW_GUIDE_STORAGE_KEY));
+          autoOpenGuide = shouldOpenPreviewGuide(localStorage.getItem(STORAGE_KEYS.previewGuide));
         } catch {
           autoOpenGuide = true;
         }
@@ -411,7 +409,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
         setGuideOpen(autoOpenGuide);
       }
       try {
-        localStorage.setItem(PREVIEW_ROOT_STORAGE_KEY, result.root);
+        localStorage.setItem(STORAGE_KEYS.previewRoot, result.root);
       } catch {
         // The current session remains usable if preferences cannot be stored.
       }
@@ -674,7 +672,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
   function changeFolderSidebarCollapsed(collapsed: boolean) {
     setFolderSidebarCollapsed(collapsed);
     try {
-      localStorage.setItem(FOLDER_SIDEBAR_STORAGE_KEY, String(collapsed));
+      localStorage.setItem(STORAGE_KEYS.previewFolderSidebarCollapsed, String(collapsed));
     } catch {
       // The current session remains usable if layout preferences cannot be stored.
     }
@@ -682,7 +680,7 @@ export function PreviewModule({ active, onSendToWatermark }: PreviewModuleProps)
 
   function dismissPreviewGuide() {
     try {
-      localStorage.setItem(PREVIEW_GUIDE_STORAGE_KEY, "true");
+      localStorage.setItem(STORAGE_KEYS.previewGuide, "true");
     } catch {
       // The guide remains available from the header when storage is unavailable.
     }

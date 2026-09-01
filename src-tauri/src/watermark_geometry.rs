@@ -332,6 +332,9 @@ pub(crate) fn normalized_placement(
     })
 }
 
+/// 仅被 `tests/watermark_geometry.rs` 使用（该测试通过 `#[path]` 引入本模块）。
+/// 渲染器在合成过程中会隐式裁剪，不需要显式调用。
+#[allow(dead_code)]
 pub(crate) fn clip_rect(rect: PixelRect, canvas: PixelSize) -> Option<PixelRect> {
     let left = rect.x.max(0).min(i64::from(canvas.width));
     let top = rect.y.max(0).min(i64::from(canvas.height));

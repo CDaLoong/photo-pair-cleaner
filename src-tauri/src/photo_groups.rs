@@ -1,10 +1,10 @@
 use crate::formats;
+use crate::fs_util::{display_path, modified_ms, now_ms};
 use crate::rating_metadata;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 const QUARANTINE_DIR: &str = ".framepair-quarantine";
@@ -112,26 +112,6 @@ struct PhotoAssetBuilder {
     modified_ms: Option<u64>,
     rating_state: RatingState,
     rating_issues: Vec<String>,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
-}
-
-fn modified_ms(metadata: &fs::Metadata) -> Option<u64> {
-    metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-}
-
-fn display_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 fn extension_label(path: &str) -> String {

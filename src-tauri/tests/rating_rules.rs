@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #[path = "../src/rating_rules.rs"]
 mod rating_rules;
 

@@ -91,8 +91,12 @@ test("watermark studio persists collapsible panels and restores immersive state"
     "utf8",
   );
   const shellSource = fs.readFileSync(new URL("../src/app/AppShell.tsx", import.meta.url), "utf8");
-  assert.match(moduleSource, /framepair\.watermark\.left-panel-collapsed\.v1/);
-  assert.match(moduleSource, /framepair\.watermark\.right-panel-collapsed\.v1/);
+  // 键的字面量集中在 storageKeys.ts，模块只引用符号名。
+  const keySource = fs.readFileSync(new URL("../src/storageKeys.ts", import.meta.url), "utf8");
+  assert.match(keySource, /framepair\.watermark\.left-panel-collapsed\.v1/);
+  assert.match(keySource, /framepair\.watermark\.right-panel-collapsed\.v1/);
+  assert.match(moduleSource, /STORAGE_KEYS\.watermarkLeftPanelCollapsed/);
+  assert.match(moduleSource, /STORAGE_KEYS\.watermarkRightPanelCollapsed/);
   assert.match(moduleSource, /immersiveRestoreRef/);
   assert.match(shellSource, /is-immersive/);
 });
@@ -235,7 +239,7 @@ test("watermark guide covers the complete workflow and documentation is release 
   for (const selector of ["sources-templates", "templates", "canvas", "filmstrip", "export"]) {
     assert.match(guideSource, new RegExp(selector));
   }
-  assert.match(moduleSource, /framepair\.watermark\.guide\.v1/);
+  assert.match(moduleSource, /STORAGE_KEYS\.watermarkGuide/);
   assert.match(moduleSource, /<WatermarkGuideDialog/);
   assert.match(moduleSource, /setGuideOpen\(true\)/);
   assert.match(sharedGuide, /watermark-studio/);
