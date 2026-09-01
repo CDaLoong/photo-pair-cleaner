@@ -216,8 +216,6 @@ pub(crate) fn cleanup_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats;
-    use std::path::Path;
 
     #[test]
     fn delete_validation_accepts_supported_raws_and_rejects_other_files() {

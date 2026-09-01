@@ -1,8 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main FramePair window",
+  "description": "主窗口权限。core:window:default 只含只读 getter，因此关窗需要显式授权：onCloseRequested 未 preventDefault 时由 JS API 自动调用 destroy，水印未保存时的确认离开走 close，两者都必需。",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-confirm"
+  ]
 }
-

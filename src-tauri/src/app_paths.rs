@@ -88,7 +88,6 @@ mod tests {
     use super::*;
     use crate::fs_util::modified_ms;
     use crate::pair_cleanup::{CleanupCandidate, validate_delete_candidate};
-    use std::path::Path;
 
     #[test]
     fn writes_a_utf8_audit_manifest_and_rejects_other_extensions() {
